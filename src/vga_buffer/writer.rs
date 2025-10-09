@@ -7,6 +7,9 @@ use super::constants::*;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, Ordering};
 
+/// Total number of character cells in the VGA buffer.
+const CELL_COUNT: usize = VGA_WIDTH * VGA_HEIGHT;
+
 /// Buffer accessibility tracking
 pub(super) static BUFFER_ACCESSIBLE: AtomicBool = AtomicBool::new(false);
 
@@ -23,14 +26,14 @@ impl Position {
         Self { row: 0, col: 0 }
     }
 
-    /// Calculate byte offset in VGA buffer with bounds checking
+    /// Calculate linear cell index in the VGA buffer with bounds checking.
     ///
     /// Returns `None` if the position is out of bounds.
-    fn byte_offset(&self) -> Option<usize> {
+    fn cell_index(&self) -> Option<usize> {
         if self.row >= VGA_HEIGHT || self.col >= VGA_WIDTH {
             return None;
         }
-        Some((self.row * VGA_WIDTH + self.col) * BYTES_PER_CHAR)
+        Some(self.row * VGA_WIDTH + self.col)
     }
 
     /// Move to next column, returns false if at row end
@@ -61,11 +64,116 @@ impl Position {
     }
 }
 
+/// Thin wrapper around the VGA text buffer that centralizes all raw pointer
+/// interaction. Exposes safe helpers that validate indices before touching
+/// memory so higher-level code can remain mostly safe.
+#[derive(Clone, Copy)]
+struct ScreenBuffer {
+    ptr: *mut u16,
+}
+
+impl ScreenBuffer {
+    /// Create a new screen buffer pointing at the well-known VGA text address.
+    const fn new() -> Self {
+        Self {
+            ptr: VGA_BUFFER_ADDR as *mut u16,
+        }
+    }
+
+    /// Number of accessible cells.
+    #[inline(always)]
+    fn len(&self) -> usize {
+        CELL_COUNT
+    }
+
+    /// Write a value to a cell if it is within bounds.
+    #[inline(always)]
+    fn write(&self, index: usize, value: u16) -> bool {
+        debug_assert!(index < self.len(), "VGA cell index {} out of bounds", index);
+        if index >= self.len() {
+            return false;
+        }
+
+        unsafe {
+            // SAFETY: `index` is validated against the buffer length above and the
+            // pointer is fixed to the VGA text buffer address. The Mutex guarding
+            // this writer ensures exclusive access to the buffer memory.
+            core::ptr::write_volatile(self.ptr.add(index), value);
+        }
+
+        true
+    }
+
+    /// Read a value from a cell if it is within bounds.
+    #[inline(always)]
+    fn read(&self, index: usize) -> Option<u16> {
+        if index >= self.len() {
+            return None;
+        }
+
+        Some(unsafe {
+            // SAFETY: `index` is in range as checked above, and the pointer targets
+            // the VGA text memory. Volatile read is permitted for hardware memory.
+            core::ptr::read_volatile(self.ptr.add(index))
+        })
+    }
+
+    /// Copy a range of cells within the buffer with bounds validation.
+    #[inline(always)]
+    fn copy(&self, src: usize, dst: usize, count: usize) -> bool {
+        if count == 0 {
+            return true;
+        }
+
+        let len = self.len();
+        if src >= len || dst >= len {
+            return false;
+        }
+
+        let src_end = match src.checked_add(count) {
+            Some(end) if end <= len => end,
+            _ => return false,
+        };
+
+        let dst_end = match dst.checked_add(count) {
+            Some(end) if end <= len => end,
+            _ => return false,
+        };
+
+        debug_assert!(src_end <= len);
+        debug_assert!(dst_end <= len);
+
+        unsafe {
+            // SAFETY: Source and destination ranges are within the same VGA buffer
+            // and validated not to exceed the buffer length. `ptr::copy` is safe for
+            // overlapping regions, which matches VGA scroll semantics.
+            core::ptr::copy(self.ptr.add(src), self.ptr.add(dst), count);
+        }
+
+        true
+    }
+
+    /// Fill a row with the provided encoded character value.
+    fn fill_row(&self, row: usize, encoded: u16) {
+        if row >= VGA_HEIGHT {
+            return;
+        }
+
+        let start = row * VGA_WIDTH;
+        let end = start + VGA_WIDTH;
+        for idx in start..end {
+            if !self.write(idx, encoded) {
+                break;
+            }
+        }
+    }
+}
+
 /// VGA Writer structure with bounds-checked buffer access
 pub struct VgaWriter {
     position: Position,
     color_code: ColorCode,
-    buffer: *mut u8,
+    buffer: ScreenBuffer,
 }
 
 // SAFETY: We ensure exclusive access via Mutex and interrupt disabling
@@ -78,7 +186,7 @@ impl VgaWriter {
         Self {
             position: Position::new(),
             color_code: ColorCode::normal(),
-            buffer: VGA_BUFFER_ADDR as *mut u8,
+            buffer: ScreenBuffer::new(),
         }
     }
 
@@ -89,21 +197,21 @@ impl VgaWriter {
     /// 2. Write/read test to verify write capability
     /// 3. Restoration of original value
     fn test_accessibility(&self) -> bool {
-        unsafe {
-            // Test 1: Try reading first character cell
-            let original = core::ptr::read_volatile(self.buffer as *const u16);
+        let Some(original) = self.buffer.read(0) else {
+            return false;
+        };
 
-            // Test 2: Write test pattern and read back
-            let test_pattern: u16 = 0x0F20; // White space
-            core::ptr::write_volatile(self.buffer as *mut u16, test_pattern);
-            let readback = core::ptr::read_volatile(self.buffer as *const u16);
-
-            // Test 3: Restore original value
-            core::ptr::write_volatile(self.buffer as *mut u16, original);
-
-            // Verify write/read worked
-            readback == test_pattern
+        let test_pattern: u16 = 0x0F20; // White space
+        if !self.buffer.write(0, test_pattern) {
+            return false;
         }
+
+        let readback = self.buffer.read(0);
+
+        // Restore original value regardless of the outcome.
+        let _ = self.buffer.write(0, original);
+
+        matches!(readback, Some(value) if value == test_pattern)
     }
 
     /// Verify buffer is accessible (cached result)
@@ -145,13 +253,7 @@ impl VgaWriter {
 
         let blank = Self::encode_char(b' ', self.color_code);
 
-        for col in 0..VGA_WIDTH {
-            let offset = (row * VGA_WIDTH + col) * BYTES_PER_CHAR;
-            // Additional bounds check
-            if offset + 1 < BUFFER_SIZE {
-                self.write_encoded_char_at_offset(offset, blank);
-            }
-        }
+        self.buffer.fill_row(row, blank);
     }
 
     /// Encode a character with color into a 16-bit value
@@ -159,36 +261,10 @@ impl VgaWriter {
         (color.as_u8() as u16) << 8 | ch as u16
     }
 
-    /// Write an encoded character to the buffer at a specific offset
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure offset is within buffer bounds.
-    /// This is a private method only called after bounds validation.
-    fn write_encoded_char_at_offset(&mut self, offset: usize, encoded: u16) {
-        // Debug assertion for development builds
-        debug_assert!(
-            offset + 1 < BUFFER_SIZE,
-            "VGA buffer write out of bounds: offset={}, size={}",
-            offset,
-            BUFFER_SIZE
-        );
-
-        if offset + 1 >= BUFFER_SIZE {
-            // Bounds check failed - this should never happen
-            // but we protect against it in release builds
-            return;
-        }
-
-        unsafe {
-            core::ptr::write_volatile(self.buffer.add(offset) as *mut u16, encoded);
-        }
-    }
-
     /// Write an encoded character at the current position
     fn write_encoded_char(&mut self, encoded: u16) {
-        if let Some(offset) = self.position.byte_offset() {
-            self.write_encoded_char_at_offset(offset, encoded);
+        if let Some(index) = self.position.cell_index() {
+            let _ = self.buffer.write(index, encoded);
         }
     }
 
@@ -204,25 +280,12 @@ impl VgaWriter {
         }
 
         // Validate buffer bounds before copying
-        let src_offset = BYTES_PER_ROW;
-        let dst_offset = 0;
-        let copy_size = BYTES_PER_ROW * (VGA_HEIGHT - 1);
+        let src_index = VGA_WIDTH;
+        let dst_index = 0;
+        let copy_cells = VGA_WIDTH * (VGA_HEIGHT - 1);
 
-        // Bounds check
-        if src_offset + copy_size > BUFFER_SIZE {
+        if !self.buffer.copy(src_index, dst_index, copy_cells) {
             return;
-        }
-
-        unsafe {
-            // SAFETY:
-            // - src and dst are within the same valid buffer
-            // - copy_size is validated to fit within buffer
-            // - ptr::copy handles overlapping memory correctly
-            core::ptr::copy(
-                self.buffer.add(src_offset),
-                self.buffer.add(dst_offset),
-                copy_size,
-            );
         }
 
         // Clear the last row
@@ -284,6 +347,10 @@ impl VgaWriter {
 
 impl Write for VgaWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        if !self.is_accessible() {
+            return Ok(());
+        }
+
         for byte in s.bytes() {
             let display_byte = if Self::is_printable(byte) {
                 byte
@@ -312,13 +379,13 @@ mod tests {
     #[test]
     fn test_position_byte_offset() {
         let pos = Position { row: 1, col: 2 };
-        assert_eq!(pos.byte_offset(), Some((1 * 80 + 2) * 2));
+        assert_eq!(pos.cell_index(), Some(1 * 80 + 2));
 
         let invalid_pos = Position {
             row: VGA_HEIGHT,
             col: 0,
         };
-        assert_eq!(invalid_pos.byte_offset(), None);
+        assert_eq!(invalid_pos.cell_index(), None);
     }
 
     #[test]

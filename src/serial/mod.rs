@@ -24,6 +24,7 @@ mod ports;
 pub use error::InitError;
 
 use crate::constants::*;
+use core::iter;
 use constants::MAX_INIT_ATTEMPTS;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -192,12 +193,7 @@ pub fn is_available() -> bool {
 /// - `Ok(())` if write succeeds
 /// - `Err(InitError::Timeout)` if transmitter doesn't become ready
 fn write_byte(byte: u8) -> Result<(), InitError> {
-    if !is_available() {
-        return Ok(()); // Silently succeed if no hardware
-    }
-
-    let mut ports = SERIAL_PORTS.lock();
-    ports.poll_and_write(byte)
+    write_bytes(iter::once(byte))
 }
 
 /// Write a string to the serial port
@@ -207,9 +203,33 @@ fn write_byte(byte: u8) -> Result<(), InitError> {
 /// This ensures partial output is still visible even if hardware becomes
 /// unresponsive.
 pub fn write_str(s: &str) {
-    for byte in s.bytes() {
-        let _ = write_byte(byte); // Ignore individual byte errors
+    if s.is_empty() {
+        return;
     }
+
+    let _ = write_bytes(s.bytes());
+}
+
+/// Write a sequence of bytes while holding the serial port lock once.
+fn write_bytes<I>(bytes: I) -> Result<(), InitError>
+where
+    I: IntoIterator<Item = u8>,
+{
+    if !is_available() {
+        return Ok(());
+    }
+
+    let mut ports = SERIAL_PORTS.lock();
+    let mut first_error: Option<InitError> = None;
+    for byte in bytes {
+        if let Err(err) = ports.poll_and_write(byte) {
+            if first_error.is_none() {
+                first_error = Some(err);
+            }
+        }
+    }
+
+    first_error.map_or(Ok(()), Err)
 }
 
 /// Serial writer implementing `core::fmt::Write`
