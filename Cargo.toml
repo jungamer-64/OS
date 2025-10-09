@@ -8,11 +8,14 @@ edition = "2021"
 description = "Minimal x86_64 no_std Rust kernel (tutorial scaffold)"
 
 [dependencies]
-bootloader = "0.11.12"
 x86_64 = "0.15.2"
 
 [build-dependencies]
 bootloader = "0.11.12"
+
+[package.metadata.bootloader]
+target = "x86_64-blog_os.json"
+version = "0.11.12"
 
 [profile.dev]
 panic = "abort"

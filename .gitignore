@@ -1,4 +1,10 @@
-
-
 #Ignore insiders AI rules
 .github/instructions/codacy.instructions.md
+
+# Rust build artifacts
+/target/
+
+# OS image files
+*.iso
+*.bin
+*.img
