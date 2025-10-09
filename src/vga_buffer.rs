@@ -219,7 +219,7 @@ impl VgaWriter {
             buffer: VGA_BUFFER_ADDR as *mut u8,
         }
     }
-    
+
     /// Test if VGA buffer is accessible
     ///
     /// Attempts to read from the VGA buffer to verify it's mapped.

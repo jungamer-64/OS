@@ -12,10 +12,10 @@
 //! (VGA + serial) messaging, providing a unified interface for
 //! kernel information presentation.
 
-use bootloader::BootInfo;
 use crate::constants::{FEATURES, SERIAL_HINTS, SYSTEM_INFO};
 use crate::vga_buffer::ColorCode;
 use crate::{serial_print, serial_println};
+use bootloader::BootInfo;
 use core::panic::PanicInfo;
 
 /// Broadcast a message to both VGA and serial outputs
@@ -81,7 +81,7 @@ pub fn display_boot_environment(_boot_info: &'static BootInfo) {
     } else {
         "✗ COM1 Not Present"
     };
-    
+
     crate::vga_buffer::print_colored("Serial: ", ColorCode::normal());
     let serial_color = if crate::serial::is_available() {
         ColorCode::success()
@@ -96,7 +96,7 @@ pub fn display_boot_environment(_boot_info: &'static BootInfo) {
     crate::vga_buffer::print_colored("\nNote: ", ColorCode::warning());
     crate::vga_buffer::print_colored(
         "This kernel requires BIOS text mode or CSM.\n",
-        ColorCode::normal()
+        ColorCode::normal(),
     );
     serial_println!();
     serial_println!("Note: This kernel assumes BIOS text mode at 0xB8000.");
@@ -218,7 +218,7 @@ pub fn display_panic_info_serial(info: &PanicInfo) {
     if !crate::serial::is_available() {
         return;
     }
-    
+
     serial_println!("");
     serial_separator();
     serial_println!("       !!! KERNEL PANIC !!!");

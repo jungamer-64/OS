@@ -39,5 +39,3 @@ pub const SERIAL_HINTS: &[&str] = &[
     "Kernel running. System in low-power hlt loop.",
     "Press Ctrl+A, X to exit QEMU.",
 ];
-
-

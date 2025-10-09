@@ -9,6 +9,7 @@
 ### 必要なもの
 
 - **ビルド済みのカーネルイメージ**
+
   ```bash
   cargo bootimage
   # 出力: target/x86_64-blog_os/release/bootimage-tiny_os.bin
@@ -67,6 +68,7 @@ sudo eject /dev/sdX
 ```
 
 **パラメータ説明:**
+
 - `if`: 入力ファイル (カーネルイメージ)
 - `of`: 出力先デバイス
 - `bs=1M`: 1MBブロックサイズで転送 (高速化)
@@ -135,18 +137,22 @@ cdrecord -v dev=/dev/sr0 rust_os.iso  # CLIツール
 #### メーカー別の設定例
 
 **Dell:**
+
 - `Boot Mode` → `Legacy`
 - `Secure Boot` → `Disabled`
 
 **HP:**
+
 - `Boot Options` → `Legacy Support` → `Enabled`
 - `Secure Boot` → `Disabled`
 
 **Lenovo:**
+
 - `Boot` → `Boot Mode` → `Legacy Only`
 - `Security` → `Secure Boot` → `Disabled`
 
 **ASUS:**
+
 - `Boot` → `CSM (Compatibility Support Module)` → `Enabled`
 - `Secure Boot` → `Disabled`
 
@@ -155,10 +161,12 @@ cdrecord -v dev=/dev/sr0 rust_os.iso  # CLIツール
 ⚠️ **制限事項**: 現在のカーネルはUEFI framebufferに非対応です。
 
 **UEFI環境で動作させる場合:**
+
 1. CSM (Compatibility Support Module) を有効化
 2. これにより、UEFIファームウェアがBIOSエミュレーションを提供
 
 **純粋なUEFI (CSMなし) では:**
+
 - VGA テキストモード (0xB8000) が利用できない可能性
 - 画面が真っ黒になる場合あり
 - シリアルポート出力は動作する可能性
@@ -171,10 +179,10 @@ cdrecord -v dev=/dev/sr0 rust_os.iso  # CLIツール
 
 1. **UEFIモードで起動している**
    - **解決策**: BIOS設定でCSMを有効化
-   
+
 2. **VGAバッファにアクセスできない**
    - **解決策**: シリアルポート経由で確認
-   
+
 3. **カーネルパニック**
    - **解決策**: シリアル接続で詳細を確認
 
@@ -191,9 +199,11 @@ minicom -D /dev/ttyUSB0 -b 38400
 ### シリアルポートが動作しない
 
 **原因:**
+
 - 最近のマザーボードには物理的なCOM1ポートがない
 
 **解決策:**
+
 - USB-シリアル変換ケーブルを使用
 - または、VGA出力のみで運用
 
@@ -201,8 +211,9 @@ minicom -D /dev/ttyUSB0 -b 38400
 
 1. BIOS設定でシリアルポートを確認
    - `I/O Port` が `3F8` (COM1) に設定されているか
-   
+
 2. Linux上でポート確認
+
    ```bash
    dmesg | grep ttyS
    # ttyS0 が 0x3F8 であることを確認
@@ -211,6 +222,7 @@ minicom -D /dev/ttyUSB0 -b 38400
 ### ブートループ / 再起動を繰り返す
 
 **原因:**
+
 - bootloaderの問題
 - ハードウェア非互換
 
@@ -219,6 +231,7 @@ minicom -D /dev/ttyUSB0 -b 38400
 1. **別のUSBポートを試す** (USB 2.0推奨)
 2. **BIOS設定をリセット** (Load Defaults)
 3. **デバッグビルドで確認**
+
    ```bash
    cargo bootimage  # デバッグビルド
    # (リリースビルドより情報が多い)
@@ -229,6 +242,7 @@ minicom -D /dev/ttyUSB0 -b 38400
 **確認ポイント:**
 
 1. **イメージが正しく書き込まれたか**
+
    ```bash
    # 書き込んだUSBメモリの先頭を確認
    sudo dd if=/dev/sdX bs=512 count=1 | hexdump -C
@@ -236,12 +250,14 @@ minicom -D /dev/ttyUSB0 -b 38400
    ```
 
 2. **ビルドエラーがないか**
+
    ```bash
    cargo build --release 2>&1 | tee build.log
    cargo bootimage --release 2>&1 | tee bootimage.log
    ```
 
 3. **QEMUで動作確認**
+
    ```bash
    qemu-system-x86_64 -drive format=raw,file=target/x86_64-blog_os/release/bootimage-tiny_os.bin
    ```
@@ -276,6 +292,7 @@ minicom -D /dev/ttyUSB0 -b 38400
 ### ハードウェア接続
 
 **必要なケーブル:**
+
 - Null modem cable (クロスケーブル)
 - または USB-シリアル変換 + シリアルケーブル
 

@@ -86,14 +86,14 @@ pub enum InitError {
     /// Returned when `init()` is called multiple times. This is not
     /// a fatal error - the port is already configured and ready to use.
     AlreadyInitialized,
-    
+
     /// Port hardware not present
     ///
     /// The COM1 port does not exist or is disabled in BIOS/PCI.
     /// This can happen on systems without physical serial ports or
     /// when the port is disabled in motherboard configuration.
     PortNotPresent,
-    
+
     /// Timeout during initialization
     ///
     /// The port did not respond within the expected time.
@@ -202,21 +202,21 @@ pub fn init() -> Result<(), InitError> {
 fn is_port_present() -> bool {
     unsafe {
         let mut scratch_port: Port<u8> = Port::new(SERIAL_IO_PORT + register_offset::SCRATCH);
-        
+
         // Test pattern: write and read back
         const TEST_BYTE: u8 = 0xAA;
-        
+
         // Write test pattern
         scratch_port.write(TEST_BYTE);
-        
+
         // Small delay for hardware response
         for _ in 0..100 {
             core::hint::spin_loop();
         }
-        
+
         // Read back and verify
         let readback = scratch_port.read();
-        
+
         // If port is present, we should get back what we wrote
         // If absent, we typically get 0xFF (floating bus)
         readback == TEST_BYTE
@@ -268,7 +268,7 @@ pub fn is_available() -> bool {
 /// - Timeout prevents infinite loops
 fn wait_transmit_empty() -> bool {
     let mut iterations = 0;
-    
+
     unsafe {
         // SAFETY: The line-status register read is guarded by the Mutex locking
         // strategy ensuring serialized access to the underlying port.
@@ -280,7 +280,7 @@ fn wait_transmit_empty() -> bool {
             core::hint::spin_loop();
         }
     }
-    
+
     true // Success
 }
 
@@ -302,13 +302,13 @@ fn write_byte(byte: u8) {
     if !is_available() {
         return;
     }
-    
+
     // Wait for transmit buffer with timeout
     if !wait_transmit_empty() {
         // Timeout occurred - skip this byte to prevent hang
         return;
     }
-    
+
     unsafe {
         // SAFETY: Writing to the COM1 data register is synchronized via the static
         // Mutex, ensuring only one writer mutates the hardware port at a time.

@@ -48,6 +48,7 @@ sudo dd if=target/x86_64-blog_os/release/bootimage-tiny_os.bin \
 ```
 
 **BIOS Setup:**
+
 1. Disable Secure Boot (if present)
 2. Enable Legacy BIOS mode or CSM
 3. Set USB as first boot device

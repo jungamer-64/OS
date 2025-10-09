@@ -11,11 +11,13 @@ This document describes the improvements made to ensure the kernel works reliabl
 **Problem:** Many modern motherboards don't have physical COM1 ports, or they may be disabled in BIOS/PCI configuration. Writing to non-existent I/O ports can cause CPU hangs.
 
 **Solution:**
+
 - Added `is_port_present()` function that tests the scratch register
 - Returns `InitError::PortNotPresent` if hardware is not detected
 - Kernel continues to function with VGA-only output
 
 **Implementation:**
+
 ```rust
 fn is_port_present() -> bool {
     // Test by writing to scratch register
@@ -29,11 +31,13 @@ fn is_port_present() -> bool {
 **Problem:** The serial transmit spin loop in `wait_transmit_empty()` could hang forever if the UART stops responding.
 
 **Solution:**
+
 - Added `TIMEOUT_ITERATIONS` constant (100 million cycles ≈ 100ms)
 - Modified `wait_transmit_empty()` to return `bool` indicating success/timeout
 - Functions gracefully skip bytes on timeout rather than hanging
 
 **Implementation:**
+
 ```rust
 fn wait_transmit_empty() -> bool {
     let mut iterations = 0;
@@ -53,11 +57,13 @@ fn wait_transmit_empty() -> bool {
 **Problem:** If COM1 doesn't exist, panic messages written only to serial would be invisible, making debugging impossible.
 
 **Solution:**
+
 - Modified `display_panic_info_serial()` to check `is_available()` first
 - VGA output is always attempted, regardless of serial port status
 - Panic information is guaranteed to be visible via VGA
 
 **Implementation:**
+
 ```rust
 pub fn display_panic_info_serial(info: &PanicInfo) {
     if !crate::serial::is_available() {
@@ -72,11 +78,13 @@ pub fn display_panic_info_serial(info: &PanicInfo) {
 **Problem:** On UEFI systems without CSM, the VGA text buffer at 0xB8000 may not be accessible.
 
 **Solution:**
+
 - Added `is_accessible()` method to test VGA buffer reads
 - Modified `clear()` to check accessibility before writing
 - Added documentation notes about BIOS vs UEFI requirements
 
 **Limitations:**
+
 - Current implementation assumes BIOS text mode
 - For UEFI framebuffer support, would need:
   - Boot info query for framebuffer address
@@ -88,6 +96,7 @@ pub fn display_panic_info_serial(info: &PanicInfo) {
 **Problem:** Original `InitError` only had `AlreadyInitialized` variant.
 
 **Solution:**
+
 - Added `PortNotPresent` variant for hardware detection failure
 - Added `Timeout` variant for future use
 - Implemented `Display` trait for human-readable error messages
@@ -193,6 +202,7 @@ cargo bootimage
 ### Deployment to Real Hardware
 
 1. **USB Boot:**
+
    ```bash
    # Write to USB drive (WARNING: destroys data)
    sudo dd if=target/x86_64-blog_os/release/bootimage-tiny_os.bin of=/dev/sdX bs=1M
@@ -233,6 +243,7 @@ cargo bootimage
 ## Conclusion
 
 These improvements make the kernel significantly more robust on real hardware by:
+
 - Preventing CPU hangs from missing hardware
 - Ensuring panic messages are always visible
 - Gracefully handling hardware variations
