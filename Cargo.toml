@@ -1,0 +1,21 @@
+[package]
+name = "tiny_os"
+version = "0.1.0"
+authors = [""]
+edition = "2021"
+
+[package.metadata]
+description = "Minimal x86_64 no_std Rust kernel (tutorial scaffold)"
+
+[dependencies]
+bootloader = "0.11.12"
+x86_64 = "0.15.2"
+
+[build-dependencies]
+bootloader = "0.11.12"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
