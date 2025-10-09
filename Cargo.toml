@@ -1,6 +1,6 @@
 [package]
 name = "tiny_os"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Your Name <your.email@example.com>"]
 edition = "2021"
 
@@ -26,12 +26,50 @@ lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 # Abort on panic (no unwinding in kernel space)
 panic = "abort"
 
+# Enable overflow checks even in dev builds (safety)
+overflow-checks = true
+
+# Enable debug assertions
+debug-assertions = true
+
 [profile.release]
 # Abort on panic (no unwinding in kernel space)
 panic = "abort"
+
 # Link-time optimization for smaller binary
 lto = true
-# Optimize for size
+
+# Optimize for size while maintaining performance
 opt-level = "z"
+
 # Strip debug symbols in release
 strip = true
+
+# Enable overflow checks in release (safety over speed)
+overflow-checks = true
+
+# Codegen units = 1 for better optimization
+codegen-units = 1
+
+[profile.test]
+# Use abort even in tests for consistency
+panic = "abort"
+
+# Enable overflow checks in tests
+overflow-checks = true
+
+# ============================================================================
+# Linting Configuration (via Cargo.toml metadata)
+# ============================================================================
+
+# Note: These settings are enforced via #![deny(...)] in source files
+# Listed here for documentation purposes
+
+# Denied lints (errors):
+# - unsafe_op_in_unsafe_fn: Require explicit unsafe blocks
+# - missing_debug_implementations: All public types should be debuggable
+
+# Warned lints:
+# - missing_docs: Public items should be documented
+# - unused_must_use: Results should be handled
+# - rust_2018_idioms: Follow modern Rust conventions

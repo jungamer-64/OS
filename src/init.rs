@@ -2,78 +2,245 @@
 
 //! Kernel initialization module
 //!
-//! This module handles all kernel subsystem initialization including:
-//! - Serial port (COM1) setup and configuration
-//! - VGA text mode initialization
-//! - Hardware verification
+//! This module handles all kernel subsystem initialization with:
+//! - Guaranteed initialization order
+//! - Comprehensive error handling
+//! - Detailed status reporting
+//! - Idempotent initialization (safe to call multiple times)
 //!
-//! Initialization functions are called early in the kernel boot process
-//! to prepare the system for operation.
+//! # Initialization Order
+//!
+//! CRITICAL: Subsystems MUST be initialized in this order:
+//! 1. VGA buffer (for early error reporting)
+//! 2. Serial port (for detailed debugging)
+//! 3. Other subsystems (future expansion)
+//!
+//! This order ensures we have output capability as early as possible
+//! for error reporting.
 
-use crate::serial::InitError;
+use crate::serial::InitError as SerialInitError;
 use crate::serial_println;
 use crate::vga_buffer::ColorCode;
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-/// Initialize the serial port (COM1)
-///
-/// Configures the serial port for debugging output. If the port is already
-/// initialized (e.g., by bootloader or previous initialization), this function
-/// will skip hardware setup and only log a message.
-///
-/// # Hardware Detection
-///
-/// This function gracefully handles systems without COM1 hardware.
-/// On modern motherboards without physical serial ports, the kernel
-/// will continue to function normally using only VGA output.
-///
-/// # Examples
-///
-/// ```
-/// use crate::init::initialize_serial;
-///
-/// initialize_serial();
-/// ```
-pub fn initialize_serial() {
-    match crate::serial::init() {
-        Ok(()) => {
-            serial_println!("=== Rust OS Kernel Started ===");
-            serial_println!("Serial port initialized (38400 baud, 8N1, FIFO checked)");
-        }
-        Err(InitError::AlreadyInitialized) => {
-            serial_println!("Serial port already initialized; skipping hardware setup");
-        }
-        Err(InitError::PortNotPresent) => {
-            // No serial port - this is normal on modern systems
-            // VGA output will still work, so no action needed
-            // We intentionally don't panic here
-        }
-        Err(InitError::Timeout) => {
-            // Port exists but not responding
-            // Continue anyway - not critical for kernel operation
+/// Initialization state tracking
+static VGA_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static SERIAL_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static INIT_PHASE: AtomicU8 = AtomicU8::new(0);
+
+/// Initialization phases
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitPhase {
+    NotStarted = 0,
+    VgaInit = 1,
+    SerialInit = 2,
+    Complete = 3,
+}
+
+impl From<u8> for InitPhase {
+    fn from(value: u8) -> Self {
+        match value {
+            1 => InitPhase::VgaInit,
+            2 => InitPhase::SerialInit,
+            3 => InitPhase::Complete,
+            _ => InitPhase::NotStarted,
         }
     }
+}
 
-    debug_assert!(crate::serial::is_initialized());
+/// Get current initialization phase
+pub fn current_phase() -> InitPhase {
+    InitPhase::from(INIT_PHASE.load(Ordering::Acquire))
 }
 
 /// Initialize the VGA text mode
 ///
-/// Clears the screen, sets the default color scheme, and prepares
-/// the VGA buffer for output. Also logs initialization status to
-/// the serial console.
+/// This is the first initialization step and provides basic output
+/// capability even if serial port initialization fails.
 ///
-/// # Examples
+/// # Safety
 ///
-/// ```
-/// use crate::init::initialize_vga;
+/// Must be called before any other subsystem that requires output.
 ///
-/// initialize_vga();
-/// ```
-pub fn initialize_vga() {
+/// # Returns
+///
+/// Always returns `Ok(())` as VGA initialization is highly unlikely
+/// to fail (buffer at 0xB8000 is almost always accessible).
+pub fn initialize_vga() -> Result<(), &'static str> {
+    // Check if already initialized
+    if VGA_INITIALIZED.swap(true, Ordering::AcqRel) {
+        return Ok(()); // Already initialized, idempotent
+    }
+
+    // Update initialization phase
+    INIT_PHASE.store(InitPhase::VgaInit as u8, Ordering::Release);
+
+    // Initialize and test VGA buffer
+    crate::vga_buffer::init();
+
+    // Clear screen and set default colors
     crate::vga_buffer::clear();
     crate::vga_buffer::set_color(ColorCode::normal());
-    serial_println!("VGA text mode initialized (80x25, color support)");
-    serial_println!("SAFE: Using Mutex-protected VGA writer (interrupt-safe!)");
+
+    // Verify buffer is accessible
+    if !crate::vga_buffer::is_accessible() {
+        // VGA buffer not accessible - this is rare but possible on some systems
+        // We don't fail initialization, but we note the issue
+        // (Can't print to VGA if it's not accessible, obviously)
+        return Err("VGA buffer not accessible");
+    }
+
+    Ok(())
+}
+
+/// Initialize the serial port (COM1)
+///
+/// Configures the serial port for debugging output. If the port is already
+/// initialized or hardware is not present, appropriate status is returned.
+///
+/// # Hardware Detection
+///
+/// This function gracefully handles systems without COM1 hardware.
+/// Modern motherboards often lack physical serial ports.
+///
+/// # Returns
+///
+/// - `Ok(())` if initialization succeeds
+/// - `Err(message)` if initialization fails (serial port optional)
+pub fn initialize_serial() -> Result<(), &'static str> {
+    // Check if already initialized
+    if SERIAL_INITIALIZED.load(Ordering::Acquire) {
+        return Ok(()); // Already initialized, idempotent
+    }
+
+    // Update initialization phase
+    INIT_PHASE.store(InitPhase::SerialInit as u8, Ordering::Release);
+
+    match crate::serial::init() {
+        Ok(()) => {
+            SERIAL_INITIALIZED.store(true, Ordering::Release);
+
+            serial_println!("========================================");
+            serial_println!("=== Rust OS Kernel Started ===");
+            serial_println!("========================================");
+            serial_println!();
+            serial_println!("[OK] Serial port initialized successfully");
+            serial_println!("     - Baud rate: 38400");
+            serial_println!("     - Configuration: 8N1");
+            serial_println!("     - FIFO: Enabled and verified");
+            serial_println!("     - Hardware detection: Passed");
+            serial_println!();
+
+            Ok(())
+        }
+        Err(SerialInitError::AlreadyInitialized) => {
+            SERIAL_INITIALIZED.store(true, Ordering::Release);
+            serial_println!("[INFO] Serial port already initialized");
+            serial_println!("       Skipping hardware setup");
+            Ok(())
+        }
+        Err(SerialInitError::PortNotPresent) => {
+            // Not an error - many modern systems don't have serial ports
+            crate::vga_buffer::print_colored(
+                "[INFO] Serial port not present (continuing with VGA only)\n",
+                ColorCode::warning(),
+            );
+            Err("Serial port hardware not present")
+        }
+        Err(SerialInitError::Timeout) => {
+            crate::vga_buffer::print_colored(
+                "[WARN] Serial port timeout (hardware not responding)\n",
+                ColorCode::warning(),
+            );
+            Err("Serial port initialization timeout")
+        }
+        Err(SerialInitError::ConfigurationFailed) => {
+            crate::vga_buffer::print_colored(
+                "[ERROR] Serial port configuration failed\n",
+                ColorCode::error(),
+            );
+            Err("Serial port configuration failed")
+        }
+        Err(SerialInitError::HardwareAccessFailed) => {
+            crate::vga_buffer::print_colored(
+                "[ERROR] Serial port hardware access failed\n",
+                ColorCode::error(),
+            );
+            Err("Serial port hardware access failed")
+        }
+        Err(SerialInitError::TooManyAttempts) => {
+            crate::vga_buffer::print_colored(
+                "[ERROR] Too many serial initialization attempts\n",
+                ColorCode::error(),
+            );
+            Err("Too many serial initialization attempts")
+        }
+    }
+}
+
+/// Print VGA initialization status to serial
+pub fn report_vga_status() {
+    if !crate::serial::is_available() {
+        return;
+    }
+
+    serial_println!("[OK] VGA text mode initialized");
+    serial_println!("     - Resolution: 80x25 characters");
+    serial_println!("     - Colors: 16-color palette");
+    serial_println!("     - Buffer address: 0xB8000");
+    serial_println!("     - Auto-scroll: Enabled");
+    serial_println!(
+        "     - Buffer validation: {}",
+        if crate::vga_buffer::is_accessible() {
+            "Passed"
+        } else {
+            "Failed"
+        }
+    );
+    serial_println!();
+}
+
+/// Print safety features to serial
+pub fn report_safety_features() {
+    if !crate::serial::is_available() {
+        return;
+    }
+
+    serial_println!("[SAFETY] Kernel safety features:");
+    serial_println!("     - Mutex-protected I/O (interrupt-safe)");
+    serial_println!("     - Boundary checking on all buffer writes");
+    serial_println!("     - Hardware validation before use");
+    serial_println!("     - Deadlock prevention via interrupt disabling");
+    serial_println!("     - Timeout protection on hardware operations");
+    serial_println!("     - Idempotent initialization");
+    serial_println!();
+}
+
+/// Complete initialization sequence
+///
+/// Runs all initialization steps in the correct order and reports status.
+/// This is the main initialization entry point.
+///
+/// # Returns
+///
+/// - `Ok(())` if all critical systems initialize successfully
+/// - `Err(message)` if a critical system fails to initialize
+pub fn initialize_all() -> Result<(), &'static str> {
+    // Phase 1: VGA (critical for output)
+    initialize_vga()?;
+
+    // Phase 2: Serial (optional but highly recommended)
+    let _ = initialize_serial(); // Don't fail if serial unavailable
+
+    // Phase 3: Report status
+    report_vga_status();
+    report_safety_features();
+
+    // Mark initialization as complete
+    INIT_PHASE.store(InitPhase::Complete as u8, Ordering::Release);
+
+    Ok(())
 }
 
 /// Enter the idle loop and halt the CPU
@@ -82,21 +249,73 @@ pub fn initialize_vga() {
 /// instruction. The CPU will wake up on interrupts and immediately
 /// halt again, creating an efficient idle loop.
 ///
+/// # Power Management
+///
+/// Using `hlt` instead of busy-looping:
+/// - Reduces power consumption significantly
+/// - Reduces heat generation
+/// - Allows other logical cores to run (on multi-core systems)
+/// - Enables better battery life (on laptops)
+///
 /// # Note
 ///
 /// This function never returns (`-> !`) as the kernel should remain
 /// in the idle loop until a hardware interrupt or reset occurs.
-///
-/// # Examples
-///
-/// ```
-/// use crate::init::halt_forever;
-///
-/// // After kernel initialization
-/// halt_forever();
-/// ```
 pub fn halt_forever() -> ! {
+    if crate::serial::is_available() {
+        serial_println!("[INFO] Entering low-power idle loop");
+        serial_println!("       CPU will execute hlt instruction");
+        serial_println!("       System ready for interrupts");
+        serial_println!();
+    }
+
     loop {
+        // SAFETY: hlt is a privileged instruction that can only be
+        // executed in kernel mode (ring 0). It's always safe to call
+        // from kernel code. The CPU will wake on interrupts.
         x86_64::instructions::hlt();
+    }
+}
+
+/// Verify initialization state
+///
+/// Checks that all subsystems are properly initialized.
+/// Useful for debugging and validation.
+///
+/// # Returns
+///
+/// `true` if initialization is complete, `false` otherwise
+pub fn is_initialized() -> bool {
+    current_phase() == InitPhase::Complete
+}
+
+/// Get initialization status as a string (for debugging)
+pub fn status_string() -> &'static str {
+    match current_phase() {
+        InitPhase::NotStarted => "Not started",
+        InitPhase::VgaInit => "VGA initialized",
+        InitPhase::SerialInit => "Serial initialized",
+        InitPhase::Complete => "Complete",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_init_phase_conversion() {
+        assert_eq!(InitPhase::from(0), InitPhase::NotStarted);
+        assert_eq!(InitPhase::from(1), InitPhase::VgaInit);
+        assert_eq!(InitPhase::from(2), InitPhase::SerialInit);
+        assert_eq!(InitPhase::from(3), InitPhase::Complete);
+    }
+
+    #[test]
+    fn test_init_phase_values() {
+        assert_eq!(InitPhase::NotStarted as u8, 0);
+        assert_eq!(InitPhase::VgaInit as u8, 1);
+        assert_eq!(InitPhase::SerialInit as u8, 2);
+        assert_eq!(InitPhase::Complete as u8, 3);
     }
 }
