@@ -39,3 +39,16 @@ pub const SERIAL_HINTS: &[&str] = &[
     "Kernel running. System in low-power hlt loop.",
     "Press Ctrl+A, X to exit QEMU.",
 ];
+
+// Hardware-related constants (shared across modules)
+// Serial (COM1)
+pub const SERIAL_IO_PORT: u16 = 0x3F8;
+pub const BAUD_RATE_DIVISOR: u16 = 3; // 115200 / 38400
+pub const TIMEOUT_ITERATIONS: u32 = 10_000_000;
+pub const FIFO_ENABLE_CLEAR: u8 = 0xC7;
+pub const MODEM_CTRL_ENABLE_IRQ_RTS_DSR: u8 = 0x0B;
+pub const DLAB_ENABLE: u8 = 0x80;
+pub const CONFIG_8N1: u8 = 0x03;
+pub const LSR_TRANSMIT_EMPTY: u8 = 0x20;
+pub const SCRATCH_TEST_PRIMARY: u8 = 0xAA;
+pub const SCRATCH_TEST_SECONDARY: u8 = 0x55;
