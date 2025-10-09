@@ -9,13 +9,9 @@ description = "Minimal x86_64 no_std Rust kernel (tutorial scaffold)"
 
 [dependencies]
 x86_64 = "0.15.2"
-
-[build-dependencies]
-bootloader = "0.11.12"
-
-[package.metadata.bootloader]
-target = "x86_64-blog_os.json"
-version = "0.11.12"
+bootloader = "0.9"
+spin = "0.9.8"
+lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
 
 [profile.dev]
 panic = "abort"
