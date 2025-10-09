@@ -1,134 +1,92 @@
 // src/main.rs
 
+//! Minimal x86_64 Rust Operating System Kernel
+//!
+//! This is a bare-metal OS kernel that runs directly on x86_64 hardware
+//! without requiring a host operating system. It provides:
+//!
+//! - VGA text mode output with 16-color support
+//! - Serial port (COM1) communication for debugging
+//! - Safe, interrupt-protected I/O operations
+//! - Panic handler with detailed error reporting
+//!
+//! # Architecture
+//!
+//! The kernel is organized into several modules:
+//! - `constants`: Configuration values and messages
+//! - `display`: Output formatting and presentation
+//! - `init`: Hardware initialization routines
+//! - `serial`: COM1 serial port driver
+//! - `vga_buffer`: VGA text mode driver
+//!
+//! # Safety
+//!
+//! This kernel uses `no_std` and `no_main` attributes to run in a
+//! freestanding environment. All I/O operations are protected by
+//! interrupt-safe Mutex wrappers to prevent data races.
+
 #![no_std]
 #![no_main]
 
+mod constants;
+mod display;
+mod init;
 mod serial;
 mod vga_buffer;
 
 use bootloader::{entry_point, BootInfo};
-use core::fmt::Write;
 use core::panic::PanicInfo;
-
-// Re-export color constants for convenience
-use vga_buffer::{
-    COLOR_ERROR, COLOR_INFO, COLOR_NORMAL, COLOR_PANIC, COLOR_SUCCESS, COLOR_WARNING,
-};
 
 entry_point!(kernel_main);
 
-fn kernel_main(_boot_info: &'static BootInfo) -> ! {
-    // Initialize serial port
-    serial::init();
-    serial::write_str("=== Rust OS Kernel Started ===\n");
-    serial::write_str("Serial port initialized (38400 baud, 8N1, FIFO checked)\n");
+/// Kernel entry point
+///
+/// This function is called by the bootloader after basic hardware
+/// initialization. It sets up kernel subsystems, displays boot
+/// information, and enters the idle loop.
+///
+/// # Arguments
+///
+/// * `boot_info` - Boot information from the bootloader (contains framebuffer info, memory map, etc.)
+///
+/// # Returns
+///
+/// This function never returns (`-> !`). The kernel runs indefinitely
+/// in a low-power idle loop until reset or power-off.
+fn kernel_main(boot_info: &'static BootInfo) -> ! {
+    // Initialize hardware subsystems
+    init::initialize_serial();
+    init::initialize_vga();
 
-    // Clear VGA screen
-    vga_buffer::clear();
+    // Display boot environment information
+    display::display_boot_environment(boot_info);
 
-    // Write to both serial and VGA
-    serial::write_str("VGA text mode initialized (80x25, color support)\n");
-    serial::write_str("SAFE: Using Mutex-protected VGA writer (interrupt-safe!)\n");
+    // Display boot information and feature list
+    display::display_boot_information();
+    display::display_feature_list();
+    display::display_usage_note();
 
-    // VGA output
-    vga_buffer::print_colored("=== Rust OS Kernel Started ===\n\n", COLOR_INFO);
-    vga_buffer::print_colored("Welcome to minimal x86_64 Rust OS!\n\n", COLOR_NORMAL);
-
-    vga_buffer::print_colored("bootloader: ", COLOR_INFO);
-    vga_buffer::print_colored("0.9.33\n", COLOR_NORMAL);
-    vga_buffer::print_colored("Serial: ", COLOR_INFO);
-    vga_buffer::print_colored("COM1 (0x3F8) with FIFO check\n\n", COLOR_NORMAL);
-
-    vga_buffer::print_colored("✓ Major Improvements:\n", COLOR_SUCCESS);
-    vga_buffer::print_colored("  • Replaced static mut with Mutex (SAFE!)\n", COLOR_NORMAL);
-    vga_buffer::print_colored("  • Interrupt-safe locking (no deadlock!)\n", COLOR_NORMAL);
-    vga_buffer::print_colored("  • Implemented fmt::Write trait\n", COLOR_NORMAL);
-    vga_buffer::print_colored(
-        "  • Optimized scroll with copy_nonoverlapping\n",
-        COLOR_NORMAL,
-    );
-    vga_buffer::print_colored(
-        "  • Modular code structure (vga_buffer, serial)\n",
-        COLOR_NORMAL,
-    );
-    vga_buffer::print_colored("  • Serial FIFO transmit check\n", COLOR_NORMAL);
-    vga_buffer::print_colored("  • VGA color support (16 colors)\n", COLOR_NORMAL);
-    vga_buffer::print_colored("  • VGA auto-scroll\n", COLOR_NORMAL);
-    vga_buffer::print_colored("  • CPU hlt instruction\n", COLOR_NORMAL);
-    vga_buffer::print_colored("  • Detailed panic handler\n\n", COLOR_NORMAL);
-
-    serial::write_str("\n✓ Kernel features:\n");
-    serial::write_str("  • SAFE: Mutex-protected VGA writer (no data races!)\n");
-    serial::write_str("  • SAFE: Interrupt-safe locking (no deadlock!)\n");
-    serial::write_str("  • Optimized memory copy for scroll\n");
-    serial::write_str("  • Modular architecture (serial, vga_buffer)\n");
-    serial::write_str("  • Serial port with FIFO check (hardware-safe)\n");
-    serial::write_str("  • VGA text mode with 16-color support\n");
-    serial::write_str("  • VGA auto-scroll support\n");
-    serial::write_str("  • CPU halt with hlt instruction\n");
-    serial::write_str("  • Panic handler with location info\n");
-
-    vga_buffer::print_colored("\nNote: ", COLOR_WARNING);
-    vga_buffer::print_colored("All core features tested and working!\n\n", COLOR_NORMAL);
-
-    serial::write_str("\nKernel running. System in low-power hlt loop.\n");
-    serial::write_str("Press Ctrl+A, X to exit QEMU.\n");
-
-    // Halt CPU in infinite loop
-    loop {
-        x86_64::instructions::hlt();
-    }
+    // Enter low-power idle loop
+    init::halt_forever()
 }
 
+/// Kernel panic handler
+///
+/// This function is called when a panic occurs. It displays detailed
+/// error information to both VGA and serial outputs, then halts the CPU.
+///
+/// # Arguments
+///
+/// * `info` - Information about the panic, including message and location
+///
+/// # Returns
+///
+/// This function never returns (`-> !`). The system halts permanently
+/// after displaying the panic information.
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    // Serial output (detailed)
-    serial::write_str("\n");
-    serial::write_str("═══════════════════════════════════════\n");
-    serial::write_str("       !!! KERNEL PANIC !!!\n");
-    serial::write_str("═══════════════════════════════════════\n");
+    display::display_panic_info_serial(info);
+    display::display_panic_info_vga(info);
 
-    // Use a mutable SerialWriter instance
-    let mut w = serial::SerialWriter;
-
-    // Print panic message
-    let _ = write!(w, "Message: {}\n", info.message());
-
-    // Print location
-    if let Some(location) = info.location() {
-        let _ = write!(
-            w,
-            "Location: {}:{}:{}\n",
-            location.file(),
-            location.line(),
-            location.column()
-        );
-    }
-
-    serial::write_str("═══════════════════════════════════════\n");
-    serial::write_str("System halted. CPU in hlt loop.\n");
-
-    // VGA output (prominent with color)
-    vga_buffer::print_colored("\n!!! KERNEL PANIC !!!\n\n", COLOR_PANIC);
-
-    if let Some(location) = info.location() {
-        vga_buffer::print_colored("File: ", COLOR_ERROR);
-        vga_buffer::print_colored(location.file(), COLOR_NORMAL);
-        vga_buffer::print_colored("\n", COLOR_NORMAL);
-
-        vga_buffer::print_colored("Line: ", COLOR_ERROR);
-        vga_buffer::print_colored("(see serial output)\n", COLOR_NORMAL);
-
-        vga_buffer::print_colored("Column: ", COLOR_ERROR);
-        vga_buffer::print_colored("(see serial output)\n", COLOR_NORMAL);
-    }
-
-    vga_buffer::print_colored(
-        "\nSystem halted. See serial for more details.\n",
-        COLOR_WARNING,
-    );
-
-    loop {
-        x86_64::instructions::hlt();
-    }
+    init::halt_forever()
 }

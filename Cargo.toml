@@ -1,20 +1,37 @@
 [package]
 name = "tiny_os"
-version = "0.1.0"
-authors = [""]
+version = "0.3.0"
+authors = ["Your Name <your.email@example.com>"]
 edition = "2021"
 
 [package.metadata]
-description = "Minimal x86_64 no_std Rust kernel (tutorial scaffold)"
+description = "Minimal x86_64 no_std Rust kernel with robust hardware support"
+keywords = ["os", "kernel", "no-std", "bare-metal", "x86_64"]
+categories = ["no-std", "embedded", "os"]
 
 [dependencies]
+# Bootloader for x86_64 bare metal
+bootloader = { version = "0.9", features = ["map_physical_memory"] }
+
+# x86_64 specific types and instructions
 x86_64 = "0.15.2"
-bootloader = "0.9"
+
+# Spin-based synchronization primitives (no_std compatible)
 spin = "0.9.8"
-lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
+
+# Lazy static initialization with spin locks
+lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 
 [profile.dev]
+# Abort on panic (no unwinding in kernel space)
 panic = "abort"
 
 [profile.release]
+# Abort on panic (no unwinding in kernel space)
 panic = "abort"
+# Link-time optimization for smaller binary
+lto = true
+# Optimize for size
+opt-level = "z"
+# Strip debug symbols in release
+strip = true
