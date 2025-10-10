@@ -297,6 +297,7 @@ pub enum StopBits {
 
 impl SerialConfig {
     /// Default configuration: 38400 baud, 8N1
+    #[allow(dead_code)]
     pub const fn default() -> Self {
         Self {
             port: SERIAL_IO_PORT,
@@ -307,7 +308,8 @@ impl SerialConfig {
         }
     }
 
-    /// Validate configuration
+    /// Validate configuration parameters
+    #[allow(dead_code)]
     pub const fn is_valid(&self) -> bool {
         // Port must be in valid range
         if self.port < 0x100 || self.port == u16::MAX {

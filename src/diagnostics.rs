@@ -75,6 +75,7 @@ impl SystemDiagnostics {
         self.serial_timeouts.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[allow(dead_code)]
     pub fn record_serial_reinit(&self) {
         self.serial_reinit_attempts.fetch_add(1, Ordering::Relaxed);
     }
@@ -87,10 +88,12 @@ impl SystemDiagnostics {
         self.nested_panic_detected.store(true, Ordering::SeqCst);
     }
 
+    #[allow(dead_code)]
     pub fn record_lock_contention(&self) {
         self.lock_contentions.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[allow(dead_code)]
     pub fn update_max_lock_hold(&self, cycles: u64) {
         self.max_lock_hold_cycles
             .fetch_max(cycles, Ordering::Relaxed);

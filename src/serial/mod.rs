@@ -64,6 +64,7 @@ const MAX_LOCK_HOLD_TIME: u64 = 1_000_000;
 static SERIAL_PORTS: Mutex<SerialPorts> = Mutex::new(SerialPorts::new());
 
 #[cfg(debug_assertions)]
+#[allow(dead_code)]
 fn with_lock_tracking<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
@@ -83,6 +84,7 @@ where
 
 #[cfg(not(debug_assertions))]
 #[inline]
+#[allow(dead_code)]
 fn with_lock_tracking<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
@@ -268,6 +270,7 @@ pub fn is_available() -> bool {
 ///
 /// - `Ok(())` if write succeeds
 /// - `Err(InitError::Timeout)` if transmitter doesn't become ready
+#[allow(dead_code)]
 fn write_byte(byte: u8) -> Result<(), InitError> {
     write_bytes(iter::once(byte))
 }
@@ -321,7 +324,7 @@ where
         let mut first_error: Option<InitError> = None;
         let mut success_count = 0u64;
         let mut timeout_count = 0u64;
-        
+
         for byte in bytes {
             match ports.poll_and_write(byte) {
                 Ok(_) => {
@@ -340,7 +343,7 @@ where
                 }
             }
         }
-        
+
         // Record diagnostics
         for _ in 0..success_count {
             DIAGNOSTICS.record_serial_write();

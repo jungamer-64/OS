@@ -74,24 +74,17 @@ fn validate_target_spec() {
 
             for field in &required_fields {
                 if !content.contains(field) {
-                    println!(
-                        "cargo:warning=Target spec may be missing field: {}",
-                        field
-                    );
+                    println!("cargo:warning=Target spec may be missing field: {}", field);
                 }
             }
 
             // Validate critical settings
             if !content.contains("\"panic-strategy\": \"abort\"") {
-                println!(
-                    "cargo:warning=Panic strategy should be 'abort' for kernel"
-                );
+                println!("cargo:warning=Panic strategy should be 'abort' for kernel");
             }
 
             if !content.contains("\"disable-redzone\": true") {
-                println!(
-                    "cargo:warning=disable-redzone should be true for kernel"
-                );
+                println!("cargo:warning=disable-redzone should be true for kernel");
             }
         }
         Err(e) => {

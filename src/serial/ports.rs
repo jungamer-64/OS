@@ -96,9 +96,7 @@ impl ValidationReport {
     }
 
     pub fn is_fully_valid(&self) -> bool {
-        self.scratch_tests()
-            .iter()
-            .all(|result| result.passed)
+        self.scratch_tests().iter().all(|result| result.passed)
             && self.lsr_valid
             && self.fifo_functional
             && self.baud_config_valid
@@ -254,7 +252,9 @@ impl SerialPorts {
     }
 
     fn test_fifo(&mut self) -> Result<bool, InitError> {
-        unsafe { self.fifo.write(FIFO_ENABLE_CLEAR); }
+        unsafe {
+            self.fifo.write(FIFO_ENABLE_CLEAR);
+        }
         super::wait_short();
 
         let iir = unsafe { self.fifo.read() };

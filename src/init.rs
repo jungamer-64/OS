@@ -236,7 +236,7 @@ pub fn initialize_all() -> Result<(), &'static str> {
 fn perform_initialization() -> Result<(), &'static str> {
     // Record boot timestamp for diagnostics
     DIAGNOSTICS.set_boot_time();
-    
+
     initialize_vga()?;
 
     let _ = initialize_serial();

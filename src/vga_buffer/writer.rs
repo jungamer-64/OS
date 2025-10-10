@@ -278,6 +278,7 @@ impl VgaWriter {
     }
 
     /// Write an encoded character at the current position
+    #[allow(dead_code)]
     fn write_encoded_char(&mut self, encoded: u16) {
         if let Some(index) = self.position.cell_index() {
             let _ = self.buffer.write(index, encoded);
