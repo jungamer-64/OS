@@ -13,8 +13,8 @@
 //! - Flexible output routing
 //! - Consistent formatting across outputs
 
-use crate::serial_print;
 use crate::vga_buffer::ColorCode;
+use crate::{serial_print, serial_println};
 use core::fmt::{self, Write};
 
 #[cfg(test)]
@@ -44,7 +44,11 @@ impl Output for HardwareOutput {
     fn write(&mut self, text: &str, color: ColorCode) {
         // Write to VGA if accessible
         if crate::vga_buffer::is_accessible() {
-            crate::vga_buffer::print_colored(text, color);
+            if let Err(err) = crate::vga_buffer::print_colored(text, color) {
+                if crate::serial::is_available() {
+                    serial_println!("[WARN] VGA broadcast failed: {}", err.as_str());
+                }
+            }
         }
 
         // Write to serial if available

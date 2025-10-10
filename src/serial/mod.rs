@@ -24,14 +24,13 @@ mod ports;
 pub use error::InitError;
 
 use crate::constants::*;
-use crate::diagnostics::DIAGNOSTICS;
+use crate::diagnostics::{LockTimingToken, DIAGNOSTICS};
 use crate::serial_println;
 use constants::MAX_INIT_ATTEMPTS;
 use core::fmt::{self, Write};
-use core::iter;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use ports::SerialPorts;
-use spin::Mutex;
+use spin::{Mutex, MutexGuard};
 
 #[cfg(debug_assertions)]
 use core::arch::x86_64::_rdtsc;
@@ -47,7 +46,6 @@ static INIT_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
 #[cfg(debug_assertions)]
 static LOCK_ACQUISITIONS: AtomicU64 = AtomicU64::new(0);
 #[cfg(debug_assertions)]
-#[allow(dead_code)]
 static LOCK_HOLDER_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(debug_assertions)]
 const MAX_LOCK_HOLD_TIME: u64 = 1_000_000;
@@ -63,53 +61,52 @@ const MAX_LOCK_HOLD_TIME: u64 = 1_000_000;
 /// Never acquire VGA_WRITER while holding SERIAL_PORTS.
 static SERIAL_PORTS: Mutex<SerialPorts> = Mutex::new(SerialPorts::new());
 
-#[cfg(debug_assertions)]
-#[allow(dead_code)]
-fn with_lock_tracking<F, R>(f: F) -> R
+fn acquire_serial_ports_guard() -> (MutexGuard<'static, SerialPorts>, LockTimingToken) {
+    if let Some(guard) = SERIAL_PORTS.try_lock() {
+        DIAGNOSTICS.record_lock_acquisition();
+        let token = DIAGNOSTICS.begin_lock_timing();
+        (guard, token)
+    } else {
+        DIAGNOSTICS.record_lock_contention();
+        let guard = SERIAL_PORTS.lock();
+        DIAGNOSTICS.record_lock_acquisition();
+        let token = DIAGNOSTICS.begin_lock_timing();
+        (guard, token)
+    }
+}
+
+fn execute_with_serial_ports<F, R>(f: F) -> R
 where
-    F: FnOnce() -> R,
+    F: FnOnce(&mut SerialPorts) -> R,
 {
-    let _ = LOCK_ACQUISITIONS.fetch_add(1, Ordering::SeqCst);
+    let (mut guard, token) = acquire_serial_ports_guard();
+
+    #[cfg(debug_assertions)]
     let start_time = unsafe { _rdtsc() };
 
-    let result = f();
+    #[cfg(debug_assertions)]
+    let _ = LOCK_ACQUISITIONS.fetch_add(1, Ordering::SeqCst);
 
-    let elapsed = unsafe { _rdtsc() }.saturating_sub(start_time);
-    if elapsed > MAX_LOCK_HOLD_TIME && is_available() {
-        serial_println!("[WARN] Lock held for {} cycles", elapsed);
+    let result = f(&mut guard);
+    drop(guard);
+    DIAGNOSTICS.finish_lock_timing(token);
+
+    #[cfg(debug_assertions)]
+    {
+        let elapsed = unsafe { _rdtsc() }.saturating_sub(start_time);
+        if elapsed > MAX_LOCK_HOLD_TIME && is_available() {
+            serial_println!("[WARN] Lock held for {} cycles", elapsed);
+        }
     }
 
     result
 }
 
-#[cfg(not(debug_assertions))]
-#[inline]
-#[allow(dead_code)]
-fn with_lock_tracking<F, R>(f: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    f()
-}
-
-#[cfg(debug_assertions)]
 fn with_serial_ports<F, R>(f: F) -> R
 where
     F: FnOnce(&mut SerialPorts) -> R,
 {
-    with_lock_tracking(|| {
-        let mut ports = SERIAL_PORTS.lock();
-        f(&mut ports)
-    })
-}
-
-#[cfg(not(debug_assertions))]
-fn with_serial_ports<F, R>(f: F) -> R
-where
-    F: FnOnce(&mut SerialPorts) -> R,
-{
-    let mut ports = SERIAL_PORTS.lock();
-    f(&mut ports)
+    execute_with_serial_ports(f)
 }
 
 /// Initialize serial port with robust error handling
@@ -133,6 +130,9 @@ pub fn init() -> Result<(), InitError> {
 
     // Track how often we genuinely attempt initialization
     let attempts = INIT_ATTEMPTS.fetch_add(1, Ordering::SeqCst) + 1;
+    if attempts > 1 {
+        DIAGNOSTICS.record_serial_reinit();
+    }
     if attempts > MAX_INIT_ATTEMPTS {
         INIT_ATTEMPTS.fetch_sub(1, Ordering::SeqCst);
         return Err(InitError::TooManyAttempts);
@@ -200,21 +200,21 @@ fn is_port_present_robust() -> Result<bool, InitError> {
         ports.write_scratch(SCRATCH_TEST_PRIMARY)?;
         wait_short();
         if ports.read_scratch()? != SCRATCH_TEST_PRIMARY {
-            return Ok(false);
+            return Err(InitError::HardwareAccessFailed);
         }
 
         // Test 2: Scratch register with secondary pattern
         ports.write_scratch(SCRATCH_TEST_SECONDARY)?;
         wait_short();
         if ports.read_scratch()? != SCRATCH_TEST_SECONDARY {
-            return Ok(false);
+            return Err(InitError::HardwareAccessFailed);
         }
 
         // Test 3: Scratch register with zero
         ports.write_scratch(0x00)?;
         wait_short();
         if ports.read_scratch()? != 0x00 {
-            return Ok(false);
+            return Err(InitError::HardwareAccessFailed);
         }
 
         // Test 4: Verify LSR is not all 0xFF (indicates no hardware)
@@ -254,25 +254,6 @@ pub fn is_initialized() -> bool {
 #[inline]
 pub fn is_available() -> bool {
     SERIAL_PORT_AVAILABLE.load(Ordering::Acquire)
-}
-
-/// Write a single byte to COM1 with error handling
-///
-/// This function checks hardware availability before attempting to write.
-/// If hardware is not available or a timeout occurs, the write is silently
-/// dropped to prevent blocking.
-///
-/// # Arguments
-///
-/// * `byte` - The byte to write
-///
-/// # Returns
-///
-/// - `Ok(())` if write succeeds
-/// - `Err(InitError::Timeout)` if transmitter doesn't become ready
-#[allow(dead_code)]
-fn write_byte(byte: u8) -> Result<(), InitError> {
-    write_bytes(iter::once(byte))
 }
 
 /// Write a string to the serial port
@@ -324,11 +305,13 @@ where
         let mut first_error: Option<InitError> = None;
         let mut success_count = 0u64;
         let mut timeout_count = 0u64;
+        let mut bytes_written = 0u64;
 
         for byte in bytes {
             match ports.poll_and_write(byte) {
                 Ok(_) => {
                     success_count += 1;
+                    bytes_written += 1;
                 }
                 Err(InitError::Timeout) => {
                     timeout_count += 1;
@@ -345,11 +328,10 @@ where
         }
 
         // Record diagnostics
-        for _ in 0..success_count {
-            DIAGNOSTICS.record_serial_write();
-        }
-        for _ in 0..timeout_count {
-            DIAGNOSTICS.record_serial_timeout();
+        DIAGNOSTICS.record_serial_writes(success_count);
+        DIAGNOSTICS.record_serial_timeouts(timeout_count);
+        if bytes_written > 0 {
+            DIAGNOSTICS.record_serial_bytes(bytes_written);
         }
 
         first_error.map_or(Ok(()), Err)

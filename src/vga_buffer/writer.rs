@@ -1,18 +1,160 @@
 // src/vga_buffer/writer.rs
 
-//! VGA writer implementation with bounds-checked buffer access
+//! VGA writer implementation with bounds-checked buffer access and
+//! robust error propagation.
 
 use super::color::ColorCode;
 use super::constants::*;
 use crate::diagnostics::DIAGNOSTICS;
 use core::fmt::{self, Write};
+use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Total number of character cells in the VGA buffer.
-const CELL_COUNT: usize = VGA_WIDTH * VGA_HEIGHT;
+pub const CELL_COUNT: usize = VGA_WIDTH * VGA_HEIGHT;
+const DIRTY_WORD_BITS: usize = core::mem::size_of::<u64>() * 8;
+const DIRTY_WORD_COUNT: usize = (CELL_COUNT + DIRTY_WORD_BITS - 1) / DIRTY_WORD_BITS;
 
 /// Buffer accessibility tracking
 pub(super) static BUFFER_ACCESSIBLE: AtomicBool = AtomicBool::new(false);
+
+/// Errors that can occur when interacting with the VGA subsystem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VgaError {
+    /// The VGA buffer is not currently accessible.
+    BufferNotAccessible,
+    /// The cursor position is outside the visible screen area.
+    InvalidPosition,
+    /// The underlying memory write failed.
+    WriteFailure,
+    /// The writer has not been successfully initialized yet.
+    NotInitialized,
+    /// The writer was used without the runtime lock being held.
+    NotLocked,
+}
+
+impl VgaError {
+    /// Convert the error into a human-readable static message.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            VgaError::BufferNotAccessible => "buffer not accessible",
+            VgaError::InvalidPosition => "invalid position",
+            VgaError::WriteFailure => "write failure",
+            VgaError::NotInitialized => "writer not initialized",
+            VgaError::NotLocked => "writer not locked",
+        }
+    }
+}
+
+/// Thin wrapper around the VGA text buffer that centralizes all raw pointer
+/// interaction. Exposes safe helpers that validate indices before touching
+/// memory so higher-level code can remain mostly safe.
+#[derive(Clone, Copy)]
+struct ScreenBuffer {
+    ptr: NonNull<u16>,
+}
+
+impl ScreenBuffer {
+    /// Create a new screen buffer pointing at the well-known VGA text address.
+    const fn new() -> Self {
+        // SAFETY: `VGA_BUFFER_ADDR` is the canonical VGA text memory and never null.
+        Self {
+            ptr: unsafe { NonNull::new_unchecked(VGA_BUFFER_ADDR as *mut u16) },
+        }
+    }
+
+    /// Number of accessible cells.
+    #[inline(always)]
+    fn len(&self) -> usize {
+        CELL_COUNT
+    }
+
+    #[inline(always)]
+    fn is_valid_index(&self, index: usize) -> bool {
+        index < self.len()
+    }
+
+    /// Write a value to a cell if it is within bounds.
+    #[inline(always)]
+    fn write(&self, index: usize, value: u16) -> Result<(), VgaError> {
+        if !self.is_valid_index(index) {
+            return Err(VgaError::InvalidPosition);
+        }
+
+        unsafe {
+            // SAFETY: `index` validated above and the pointer is fixed to VGA memory.
+            core::ptr::write_volatile(self.ptr.as_ptr().add(index), value);
+            core::sync::atomic::compiler_fence(Ordering::SeqCst);
+        }
+
+        Ok(())
+    }
+
+    /// Read a value from a cell if it is within bounds.
+    #[inline(always)]
+    fn read(&self, index: usize) -> Result<u16, VgaError> {
+        if !self.is_valid_index(index) {
+            return Err(VgaError::InvalidPosition);
+        }
+
+        Ok(unsafe {
+            // SAFETY: `index` is in range and the pointer targets VGA text memory.
+            core::ptr::read_volatile(self.ptr.as_ptr().add(index))
+        })
+    }
+
+    /// Copy a range of cells within the buffer with bounds validation.
+    #[inline(always)]
+    fn copy(&self, src: usize, dst: usize, count: usize) -> Result<(), VgaError> {
+        if count == 0 {
+            return Ok(());
+        }
+
+        let len = self.len();
+        let src_end = src.checked_add(count).ok_or(VgaError::InvalidPosition)?;
+        let dst_end = dst.checked_add(count).ok_or(VgaError::InvalidPosition)?;
+
+        if src >= len || dst >= len || src_end > len || dst_end > len {
+            return Err(VgaError::InvalidPosition);
+        }
+
+        unsafe {
+            // SAFETY: Ranges validated above; `ptr::copy` supports overlapping regions.
+            core::ptr::copy(
+                self.ptr.as_ptr().add(src),
+                self.ptr.as_ptr().add(dst),
+                count,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Fill a row with the provided encoded character value.
+    fn fill_row(&self, row: usize, encoded: u16) -> Result<(), VgaError> {
+        if row >= VGA_HEIGHT {
+            return Err(VgaError::InvalidPosition);
+        }
+
+        let start = row
+            .checked_mul(VGA_WIDTH)
+            .ok_or(VgaError::InvalidPosition)?;
+        debug_assert!(start + VGA_WIDTH <= self.len());
+
+        unsafe {
+            // SAFETY: Row bounds validated above and pointer fixed to VGA memory.
+            let mut offset = 0usize;
+            let row_ptr = self.ptr.as_ptr().add(start);
+            while offset < VGA_WIDTH {
+                core::ptr::write_volatile(row_ptr.add(offset), encoded);
+                offset += 1;
+            }
+            core::sync::atomic::compiler_fence(Ordering::SeqCst);
+        }
+
+        Ok(())
+    }
+}
 
 /// Position in the VGA buffer with validation
 #[derive(Debug, Clone, Copy)]
@@ -28,7 +170,6 @@ impl Position {
     }
 
     /// Calculate linear cell index in the VGA buffer with bounds checking.
-    ///
     /// Returns `None` if the position is out of bounds.
     fn cell_index(&self) -> Option<usize> {
         if self.row >= VGA_HEIGHT || self.col >= VGA_WIDTH {
@@ -39,19 +180,18 @@ impl Position {
 
     /// Move to next column, returns false if at row end
     fn advance_col(&mut self) -> bool {
-        self.col += 1;
-        self.col < VGA_WIDTH
+        if self.col + 1 < VGA_WIDTH {
+            self.col += 1;
+            true
+        } else {
+            false
+        }
     }
 
     /// Move to new line
     fn new_line(&mut self) {
         self.col = 0;
         self.row += 1;
-    }
-
-    /// Check if at end of row
-    fn is_at_row_end(&self) -> bool {
-        self.col >= VGA_WIDTH
     }
 
     /// Check if at bottom of screen
@@ -65,122 +205,24 @@ impl Position {
     }
 }
 
-/// Errors that can occur when writing to the VGA buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum VgaError {
-    /// The VGA buffer is not currently accessible.
-    BufferNotAccessible,
-    /// The cursor position is outside the visible screen area.
-    InvalidPosition,
-    /// The underlying memory write failed.
-    WriteFailure,
+/// Runtime guard that tracks exclusive access beyond Rust's borrow checker.
+pub(crate) struct RuntimeLockGuard {
+    writer: *mut VgaWriter,
 }
 
-/// Thin wrapper around the VGA text buffer that centralizes all raw pointer
-/// interaction. Exposes safe helpers that validate indices before touching
-/// memory so higher-level code can remain mostly safe.
-#[derive(Clone, Copy)]
-struct ScreenBuffer {
-    ptr: *mut u16,
-}
-
-impl ScreenBuffer {
-    /// Create a new screen buffer pointing at the well-known VGA text address.
-    const fn new() -> Self {
+impl RuntimeLockGuard {
+    fn new(writer: &mut VgaWriter) -> Self {
+        writer.runtime_locked = true;
         Self {
-            ptr: VGA_BUFFER_ADDR as *mut u16,
+            writer: writer as *mut VgaWriter,
         }
     }
+}
 
-    /// Number of accessible cells.
-    #[inline(always)]
-    fn len(&self) -> usize {
-        CELL_COUNT
-    }
-
-    /// Write a value to a cell if it is within bounds.
-    #[inline(always)]
-    fn write(&self, index: usize, value: u16) -> bool {
-        debug_assert!(index < self.len(), "VGA cell index {} out of bounds", index);
-        if index >= self.len() {
-            return false;
-        }
-
+impl Drop for RuntimeLockGuard {
+    fn drop(&mut self) {
         unsafe {
-            // SAFETY: `index` is validated against the buffer length above and the
-            // pointer is fixed to the VGA text buffer address. The Mutex guarding
-            // this writer ensures exclusive access to the buffer memory.
-            core::ptr::write_volatile(self.ptr.add(index), value);
-
-            // Ensure the write is observed before subsequent operations.
-            core::sync::atomic::compiler_fence(Ordering::SeqCst);
-        }
-
-        true
-    }
-
-    /// Read a value from a cell if it is within bounds.
-    #[inline(always)]
-    fn read(&self, index: usize) -> Option<u16> {
-        if index >= self.len() {
-            return None;
-        }
-
-        Some(unsafe {
-            // SAFETY: `index` is in range as checked above, and the pointer targets
-            // the VGA text memory. Volatile read is permitted for hardware memory.
-            core::ptr::read_volatile(self.ptr.add(index))
-        })
-    }
-
-    /// Copy a range of cells within the buffer with bounds validation.
-    #[inline(always)]
-    fn copy(&self, src: usize, dst: usize, count: usize) -> bool {
-        if count == 0 {
-            return true;
-        }
-
-        let len = self.len();
-        if src >= len || dst >= len {
-            return false;
-        }
-
-        let src_end = match src.checked_add(count) {
-            Some(end) if end <= len => end,
-            _ => return false,
-        };
-
-        let dst_end = match dst.checked_add(count) {
-            Some(end) if end <= len => end,
-            _ => return false,
-        };
-
-        debug_assert!(src_end <= len);
-        debug_assert!(dst_end <= len);
-
-        unsafe {
-            // SAFETY: Source and destination ranges are within the same VGA buffer
-            // and validated not to exceed the buffer length. `ptr::copy` is safe for
-            // overlapping regions, which matches VGA scroll semantics.
-            core::ptr::copy(self.ptr.add(src), self.ptr.add(dst), count);
-        }
-
-        true
-    }
-
-    /// Fill a row with the provided encoded character value.
-    fn fill_row(&self, row: usize, encoded: u16) {
-        if row >= VGA_HEIGHT {
-            return;
-        }
-
-        let start = row * VGA_WIDTH;
-        let end = start + VGA_WIDTH;
-        for idx in start..end {
-            if !self.write(idx, encoded) {
-                break;
-            }
+            (*self.writer).runtime_locked = false;
         }
     }
 }
@@ -190,6 +232,8 @@ pub struct VgaWriter {
     position: Position,
     color_code: ColorCode,
     buffer: ScreenBuffer,
+    initialized: bool,
+    runtime_locked: bool,
 }
 
 // SAFETY: We ensure exclusive access via Mutex and interrupt disabling
@@ -203,31 +247,56 @@ impl VgaWriter {
             position: Position::new(),
             color_code: ColorCode::normal(),
             buffer: ScreenBuffer::new(),
+            initialized: false,
+            runtime_locked: false,
         }
     }
 
-    /// Test if VGA buffer is accessible
-    ///
-    /// Attempts multiple validation tests to verify buffer accessibility:
-    /// 1. Read test from first cell
-    /// 2. Write/read test to verify write capability
-    /// 3. Restoration of original value
-    fn test_accessibility(&self) -> bool {
-        let Some(original) = self.buffer.read(0) else {
-            return false;
-        };
+    /// Mark the writer as locked for the duration of the guard.
+    pub(crate) fn runtime_guard(&mut self) -> RuntimeLockGuard {
+        RuntimeLockGuard::new(self)
+    }
 
+    fn ensure_runtime_lock(&self) -> Result<(), VgaError> {
+        if !self.runtime_locked {
+            DIAGNOSTICS.record_vga_write(false);
+            return Err(VgaError::NotLocked);
+        }
+        Ok(())
+    }
+
+    fn ensure_ready(&self) -> Result<(), VgaError> {
+        self.ensure_runtime_lock()?;
+        if !self.initialized {
+            DIAGNOSTICS.record_vga_write(false);
+            return Err(VgaError::NotInitialized);
+        }
+        if !self.is_accessible() {
+            DIAGNOSTICS.record_vga_write(false);
+            return Err(VgaError::BufferNotAccessible);
+        }
+        Ok(())
+    }
+
+    /// Test if VGA buffer is accessible.
+    fn test_accessibility(&self) -> Result<bool, VgaError> {
+        const MAX_ATTEMPTS: usize = 3;
+        let original = self.buffer.read(0)?;
         let test_pattern: u16 = 0x0F20; // White space
-        if !self.buffer.write(0, test_pattern) {
-            return false;
+
+        for _ in 0..MAX_ATTEMPTS {
+            self.buffer.write(0, test_pattern)?;
+            let readback = self.buffer.read(0)?;
+            self.buffer.write(0, original)?;
+
+            if readback == test_pattern {
+                return Ok(true);
+            }
         }
 
-        let readback = self.buffer.read(0);
-
-        // Restore original value regardless of the outcome.
+        // Ensure original value restored even if checks failed.
         let _ = self.buffer.write(0, original);
-
-        matches!(readback, Some(value) if value == test_pattern)
+        Ok(false)
     }
 
     /// Verify buffer is accessible (cached result)
@@ -235,41 +304,51 @@ impl VgaWriter {
         BUFFER_ACCESSIBLE.load(Ordering::Acquire)
     }
 
-    /// Initialize and test buffer accessibility
-    pub fn init_accessibility(&mut self) {
-        let accessible = self.test_accessibility();
+    /// Initialize and test buffer accessibility.
+    pub fn init_accessibility(&mut self) -> Result<(), VgaError> {
+        let accessible = self.test_accessibility()?;
         BUFFER_ACCESSIBLE.store(accessible, Ordering::Release);
+        self.initialized = accessible;
+
+        if accessible {
+            Ok(())
+        } else {
+            Err(VgaError::BufferNotAccessible)
+        }
     }
 
     /// Set text color
-    pub fn set_color(&mut self, color: ColorCode) {
+    pub fn set_color(&mut self, color: ColorCode) -> Result<(), VgaError> {
+        self.ensure_runtime_lock()?;
+        if self.color_code != color {
+            DIAGNOSTICS.record_vga_color_change();
+        }
         self.color_code = color;
+        Ok(())
     }
 
     /// Clear the entire screen with bounds checking
-    pub fn clear(&mut self) {
-        if !self.is_accessible() {
-            return;
-        }
+    pub fn clear(&mut self) -> Result<(), VgaError> {
+        self.ensure_ready()?;
 
         for row in 0..VGA_HEIGHT {
-            self.clear_row(row);
+            self.clear_row(row)?;
         }
 
         self.position = Position::new();
         self.color_code = ColorCode::normal();
+        Ok(())
     }
 
     /// Clear a specific row with blank characters
-    fn clear_row(&mut self, row: usize) {
-        // Bounds check
-        if row >= VGA_HEIGHT {
-            return;
-        }
-
+    fn clear_row(&mut self, row: usize) -> Result<(), VgaError> {
+        self.ensure_ready()?;
         let blank = Self::encode_char(b' ', self.color_code);
-
-        self.buffer.fill_row(row, blank);
+        let result = self.buffer.fill_row(row, blank);
+        if result.is_err() {
+            DIAGNOSTICS.record_vga_write(false);
+        }
+        result
     }
 
     /// Encode a character with color into a 16-bit value
@@ -277,57 +356,47 @@ impl VgaWriter {
         (color.as_u8() as u16) << 8 | ch as u16
     }
 
-    /// Write an encoded character at the current position
-    #[allow(dead_code)]
-    fn write_encoded_char(&mut self, encoded: u16) {
-        if let Some(index) = self.position.cell_index() {
-            let _ = self.buffer.write(index, encoded);
-        }
-    }
-
-    /// Scroll the screen up by one line with validated memory operations
-    ///
-    /// # Safety
-    ///
-    /// Uses `ptr::copy` which is safe for overlapping regions.
-    /// All offsets are validated before copying.
-    fn scroll(&mut self) {
-        if !self.is_accessible() {
-            return;
-        }
-
-        // Record scroll operation for diagnostics
+    /// Scroll the screen up by one line with validated memory operations.
+    fn scroll(&mut self) -> Result<(), VgaError> {
+        self.ensure_ready()?;
         DIAGNOSTICS.record_vga_scroll();
 
-        // Validate buffer bounds before copying
         let src_index = VGA_WIDTH;
         let dst_index = 0;
-        let copy_cells = VGA_WIDTH * (VGA_HEIGHT - 1);
+        let copy_cells = VGA_WIDTH
+            .checked_mul(VGA_HEIGHT - 1)
+            .ok_or(VgaError::InvalidPosition)?;
 
-        if !self.buffer.copy(src_index, dst_index, copy_cells) {
-            return;
+        if let Err(err) = self.buffer.copy(src_index, dst_index, copy_cells) {
+            DIAGNOSTICS.record_vga_write(false);
+            return Err(err);
         }
 
-        // Clear the last row
-        self.clear_row(VGA_HEIGHT - 1);
+        if let Err(err) = self
+            .buffer
+            .fill_row(VGA_HEIGHT - 1, Self::encode_char(b' ', self.color_code))
+        {
+            DIAGNOSTICS.record_vga_write(false);
+            return Err(err);
+        }
 
-        // Update position
         self.position.row = VGA_HEIGHT - 1;
         self.position.col = 0;
+        Ok(())
     }
 
     /// Move to a new line, scrolling if necessary
-    fn new_line(&mut self) {
+    fn new_line(&mut self) -> Result<(), VgaError> {
         self.position.new_line();
-
         if self.position.is_at_screen_bottom() {
-            self.scroll();
+            self.scroll()?;
         }
+        Ok(())
     }
 
     /// Write a single byte to the screen, ignoring any failure.
     fn write_byte(&mut self, byte: u8) {
-        let _ = self.write_byte_internal(byte);
+        let _ = self.write_byte_checked(byte);
     }
 
     /// Write a single byte with detailed error reporting.
@@ -337,51 +406,64 @@ impl VgaWriter {
     }
 
     fn write_byte_internal(&mut self, byte: u8) -> Result<(), VgaError> {
-        if !self.is_accessible() {
-            DIAGNOSTICS.record_vga_write(false);
-            return Err(VgaError::BufferNotAccessible);
-        }
+        self.ensure_ready()?;
 
         match byte {
             b'\n' => {
-                self.new_line();
+                if let Err(err) = self.new_line() {
+                    DIAGNOSTICS.record_vga_write(false);
+                    return Err(err);
+                }
                 DIAGNOSTICS.record_vga_write(true);
                 Ok(())
             }
             _ => {
-                if self.position.is_at_row_end() {
-                    self.new_line();
-                }
-
                 if !self.position.is_valid() {
                     DIAGNOSTICS.record_vga_write(false);
                     return Err(VgaError::InvalidPosition);
                 }
 
-                let Some(index) = self.position.cell_index() else {
-                    DIAGNOSTICS.record_vga_write(false);
-                    return Err(VgaError::InvalidPosition);
-                };
-
+                let index = self
+                    .position
+                    .cell_index()
+                    .ok_or(VgaError::InvalidPosition)?;
                 let encoded = Self::encode_char(byte, self.color_code);
-                if self.buffer.write(index, encoded) {
-                    let _ = self.position.advance_col();
-                    DIAGNOSTICS.record_vga_write(true);
-                    Ok(())
-                } else {
-                    DIAGNOSTICS.record_vga_write(false);
-                    Err(VgaError::WriteFailure)
+
+                self.buffer.write(index, encoded)?;
+
+                if !self.position.advance_col() {
+                    if let Err(err) = self.new_line() {
+                        DIAGNOSTICS.record_vga_write(false);
+                        return Err(err);
+                    }
                 }
+
+                DIAGNOSTICS.record_vga_write(true);
+                Ok(())
             }
         }
     }
 
+    fn write_ascii(&mut self, s: &str) -> Result<(), VgaError> {
+        for byte in s.bytes() {
+            let display_byte = if Self::is_printable(byte) {
+                byte
+            } else {
+                REPLACEMENT_CHAR
+            };
+
+            self.write_byte_checked(display_byte)?;
+        }
+        Ok(())
+    }
+
     /// Write a string with temporary color
-    pub fn write_colored(&mut self, s: &str, color: ColorCode) {
-        let old_color = self.color_code;
-        self.set_color(color);
-        let _ = self.write_str(s);
-        self.set_color(old_color);
+    pub fn write_colored(&mut self, s: &str, color: ColorCode) -> Result<(), VgaError> {
+        let previous = self.color_code;
+        self.set_color(color)?;
+        let result = self.write_ascii(s);
+        self.set_color(previous)?;
+        result
     }
 
     /// Check if a byte is printable ASCII or newline
@@ -392,19 +474,7 @@ impl VgaWriter {
 
 impl Write for VgaWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        if !self.is_accessible() {
-            return Ok(());
-        }
-
-        for byte in s.bytes() {
-            let display_byte = if Self::is_printable(byte) {
-                byte
-            } else {
-                REPLACEMENT_CHAR
-            };
-            self.write_byte(display_byte);
-        }
-        Ok(())
+        self.write_ascii(s).map_err(|_| fmt::Error)
     }
 }
 
@@ -413,7 +483,7 @@ impl Write for VgaWriter {
 pub struct DoubleBufferedWriter {
     front: ScreenBuffer,
     back: [u16; CELL_COUNT],
-    dirty: [bool; CELL_COUNT],
+    dirty: [u64; DIRTY_WORD_COUNT],
 }
 
 impl DoubleBufferedWriter {
@@ -423,31 +493,75 @@ impl DoubleBufferedWriter {
         Self {
             front: ScreenBuffer::new(),
             back: [0; CELL_COUNT],
-            dirty: [false; CELL_COUNT],
+            dirty: [0; DIRTY_WORD_COUNT],
         }
     }
 
     /// Stage a cell write in the back buffer.
     #[allow(dead_code)]
-    pub fn write_cell(&mut self, index: usize, value: u16) -> bool {
+    pub fn write_cell(&mut self, index: usize, value: u16) -> Result<(), VgaError> {
         if index >= CELL_COUNT {
-            return false;
+            return Err(VgaError::InvalidPosition);
         }
 
         self.back[index] = value;
-        self.dirty[index] = true;
-        true
+        Self::mark_dirty(&mut self.dirty, index);
+        Ok(())
     }
 
-    /// Flush dirty cells to the front buffer.
+    /// Present all pending changes to the front buffer and clear dirty state.
     #[allow(dead_code)]
-    pub fn flush(&mut self) {
-        for i in 0..CELL_COUNT {
-            if self.dirty[i] {
-                let _ = self.front.write(i, self.back[i]);
-                self.dirty[i] = false;
-            }
+    pub fn swap_buffers(&mut self) -> Result<usize, VgaError> {
+        if !BUFFER_ACCESSIBLE.load(Ordering::Acquire) {
+            return Err(VgaError::BufferNotAccessible);
         }
+
+        let mut updated = 0usize;
+
+        for (chunk_idx, chunk_bits) in self.dirty.iter_mut().enumerate() {
+            let mut bits = *chunk_bits;
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                let cell_index = chunk_idx * DIRTY_WORD_BITS + bit;
+                if cell_index >= CELL_COUNT {
+                    break;
+                }
+
+                self.front.write(cell_index, self.back[cell_index])?;
+                updated += 1;
+                bits &= bits - 1;
+            }
+
+            *chunk_bits = 0;
+        }
+
+        Ok(updated)
+    }
+
+    /// Mark every cell as dirty so that the next swap refreshes the full frame.
+    #[allow(dead_code)]
+    pub fn mark_all_dirty(&mut self) {
+        let remainder_bits = CELL_COUNT % DIRTY_WORD_BITS;
+        for (chunk_idx, chunk_bits) in self.dirty.iter_mut().enumerate() {
+            *chunk_bits = if chunk_idx == DIRTY_WORD_COUNT - 1 && remainder_bits != 0 {
+                (1u64 << remainder_bits) - 1
+            } else {
+                u64::MAX
+            };
+        }
+    }
+
+    /// Replace the back buffer with an entire pre-rendered frame.
+    #[allow(dead_code)]
+    pub fn stage_frame(&mut self, frame: &[u16; CELL_COUNT]) {
+        self.back.copy_from_slice(frame);
+        self.mark_all_dirty();
+    }
+
+    fn mark_dirty(dirty: &mut [u64; DIRTY_WORD_COUNT], index: usize) {
+        let chunk = index / DIRTY_WORD_BITS;
+        let bit = index % DIRTY_WORD_BITS;
+        dirty[chunk] |= 1u64 << bit;
     }
 }
 
@@ -474,6 +588,20 @@ mod tests {
             col: 0,
         };
         assert_eq!(invalid_pos.cell_index(), None);
+    }
+
+    #[test]
+    fn test_advance_col_behavior() {
+        let mut end_of_row = Position {
+            row: 0,
+            col: VGA_WIDTH - 1,
+        };
+        assert!(!end_of_row.advance_col());
+        assert_eq!(end_of_row.col, VGA_WIDTH - 1);
+
+        let mut mid_row = Position { row: 0, col: 0 };
+        assert!(mid_row.advance_col());
+        assert_eq!(mid_row.col, 1);
     }
 
     #[test]

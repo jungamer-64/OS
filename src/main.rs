@@ -46,15 +46,11 @@
 // Allow missing docs for entry_point macro
 #![allow(missing_docs)]
 
-mod constants;
-mod diagnostics;
-mod display;
-mod init;
-mod serial;
-mod vga_buffer;
+use tiny_os::constants::SERIAL_NON_CRITICAL_CONTINUATION_LINES;
+use tiny_os::{diagnostics, display, init, serial, vga_buffer};
+use tiny_os::{print, println, serial_println};
 
 use bootloader::{entry_point, BootInfo};
-use constants::SERIAL_NON_CRITICAL_CONTINUATION_LINES;
 use core::panic::PanicInfo;
 
 const SERIAL_KERNEL_INIT_SUCCESS_LINES: &[&str] =
@@ -79,7 +75,6 @@ entry_point!(kernel_main);
 /// # Error Handling
 ///
 /// - VGA initialization failure causes panic (no output capability)
-/// - Serial initialization failure logs warning but continues
 /// - All other errors are logged and handled gracefully
 ///
 /// # Arguments
@@ -105,26 +100,27 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             }
         }
         Err(e) => {
-            // Critical initialization failure
-            // We still try to display error and continue if possible
-            if vga_buffer::is_accessible() {
-                vga_buffer::print_colored(
-                    "[CRITICAL] Initialization failed\n",
-                    vga_buffer::ColorCode::error(),
-                );
-            }
-            if serial::is_available() {
-                serial_println!("[CRITICAL] Initialization failed: {}", e);
-            }
-
-            // For VGA failure, we must panic as we have no output
-            if e.contains("VGA") {
+            if matches!(e, init::InitError::VgaFailed(_)) {
                 panic!("Critical: VGA initialization failed - no output capability");
             }
 
-            // For non-critical failures, log and continue
-            if serial::is_available() {
-                serial_println!("[WARN] Non-critical initialization failure: {}", e);
+            let vga_accessible = vga_buffer::is_accessible();
+            let serial_available = serial::is_available();
+
+            // Log the failure through any remaining channels
+            if vga_accessible {
+                if let Err(err) = vga_buffer::print_colored(
+                    "[CRITICAL] Initialization failed\n",
+                    vga_buffer::ColorCode::error(),
+                ) {
+                    log_vga_failure("init failure banner", err);
+                }
+            }
+            if serial_available {
+                serial_println!("[CRITICAL] Initialization failed: {:?}", e);
+                serial_println!(
+                    "[WARN] Non-critical failure encountered. Continuing boot sequence."
+                );
                 serial::log_lines(SERIAL_NON_CRITICAL_CONTINUATION_LINES.iter().copied());
             }
         }
@@ -154,48 +150,83 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 /// This function validates that critical systems are functioning
 /// and logs any warnings about degraded functionality.
 fn perform_system_check() {
-    let vga_ok = vga_buffer::is_accessible();
-    let serial_ok = serial::is_available();
-    let init_complete = init::is_initialized();
+    let status = init::detailed_status();
+    let vga_ok = status.vga_available;
+    let serial_ok = status.serial_available;
+    let init_ok = matches!(status.phase, init::InitPhase::Complete);
+    let output_ok = status.has_output();
 
     // Log system status to serial if available
     if serial_ok {
         serial_println!("[CHECK] Final system check:");
+        serial_println!("     - VGA buffer: {}", ok_failed(vga_ok));
+        serial_println!("     - Serial port: {}", availability_label(serial_ok));
+        serial_println!("     - Initialization phase: {:?}", status.phase);
         serial_println!(
-            "     - VGA buffer: {}",
-            if vga_ok { "OK" } else { "FAILED" }
+            "     - Output capability: {}",
+            availability_label(output_ok)
         );
-        serial_println!(
-            "     - Serial port: {}",
-            if serial_ok { "OK" } else { "Not available" }
-        );
-        serial_println!("     - Initialization: {}", init::status_string());
         serial_println!();
     }
 
     // Display warnings on VGA for any issues
-    if vga_ok {
-        if !serial_ok {
-            vga_buffer::print_colored(
-                "[WARN] Serial port not available - debugging limited\n",
-                vga_buffer::ColorCode::warning(),
-            );
-        }
+    if !vga_ok {
+        return;
+    }
 
-        if !init_complete {
-            vga_buffer::print_colored(
-                "[WARN] Initialization not fully complete\n",
-                vga_buffer::ColorCode::warning(),
-            );
+    if !serial_ok {
+        if let Err(err) = vga_buffer::print_colored(
+            "[WARN] Serial port not available - debugging limited\n",
+            vga_buffer::ColorCode::warning(),
+        ) {
+            log_vga_failure("system check serial warning", err);
         }
+    }
 
-        // If everything is OK, show success message
-        if serial_ok && init_complete {
-            vga_buffer::print_colored(
-                "[OK] All systems operational\n\n",
-                vga_buffer::ColorCode::success(),
-            );
+    if !init_ok {
+        if let Err(err) = vga_buffer::set_color(vga_buffer::ColorCode::warning()) {
+            log_vga_failure("system check warning color", err);
         }
+        print!("[WARN] Core initialization incomplete: ");
+        println!("{}", init::status_string());
+        if let Err(err) = vga_buffer::set_color(vga_buffer::ColorCode::normal()) {
+            log_vga_failure("system check reset color", err);
+        }
+    }
+
+    if serial_ok && init_ok {
+        if let Err(err) = vga_buffer::print_colored(
+            "[OK] All core systems operational\n\n",
+            vga_buffer::ColorCode::success(),
+        ) {
+            log_vga_failure("system check success banner", err);
+        }
+    }
+}
+
+fn ok_failed(ok: bool) -> &'static str {
+    if ok {
+        "OK"
+    } else {
+        "FAILED"
+    }
+}
+
+fn availability_label(ok: bool) -> &'static str {
+    if ok {
+        "Available"
+    } else {
+        "Unavailable"
+    }
+}
+
+fn log_vga_failure(context: &str, err: vga_buffer::VgaError) {
+    if serial::is_available() {
+        serial_println!(
+            "[WARN] VGA output failed during {}: {}",
+            context,
+            err.as_str()
+        );
     }
 }
 
@@ -237,7 +268,7 @@ fn perform_system_check() {
 /// after displaying the panic information.
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    use crate::diagnostics::DIAGNOSTICS;
+    use tiny_os::diagnostics::DIAGNOSTICS;
 
     // Record panic in diagnostics
     let panic_num = DIAGNOSTICS.record_panic();
@@ -276,15 +307,23 @@ fn panic(info: &PanicInfo) -> ! {
     }
 
     if vga_buffer::is_accessible() {
-        vga_buffer::print_colored(
+        if let Err(err) = vga_buffer::print_colored(
             "\nThe system has encountered a critical error and must halt.\n",
             vga_buffer::ColorCode::error(),
-        );
-        vga_buffer::print_colored(
+        ) {
+            log_vga_failure("panic banner", err);
+        }
+        if let Err(err) = vga_buffer::print_colored(
             "Please check serial output for detailed information.\n",
             vga_buffer::ColorCode::warning(),
-        );
-        vga_buffer::print_colored("System halted.\n\n", vga_buffer::ColorCode::normal());
+        ) {
+            log_vga_failure("panic advisory", err);
+        }
+        if let Err(err) =
+            vga_buffer::print_colored("System halted.\n\n", vga_buffer::ColorCode::normal())
+        {
+            log_vga_failure("panic footer", err);
+        }
     }
 
     if !output_success {
@@ -294,9 +333,16 @@ fn panic(info: &PanicInfo) -> ! {
     init::halt_forever()
 }
 
+/// 最終手段のパニック出力（VGA/Serialが両方失敗した場合）
+///
+/// **警告**: これはデバッグエミュレータ（QEMU/Bochsなど）が提供する
+/// 非標準の E9 I/O ポートを利用します。実機では動作しない可能性が高いです。
+/// 目的は、パニック発生をホスト側へ通知する最後の手段です。
 fn emergency_panic_output(info: &PanicInfo) {
     use x86_64::instructions::port::Port;
 
+    // SAFETY: The 0xE9 port is treated as a debug console by common emulators.
+    // We only touch it after other output mechanisms failed, while interrupts are disabled.
     let mut port = Port::<u8>::new(0xE9);
     let msg = b"!!! KERNEL PANIC - OUTPUT FAILED !!!\n";
 
@@ -308,7 +354,17 @@ fn emergency_panic_output(info: &PanicInfo) {
 
     if let Some(location) = info.location() {
         unsafe {
-            for byte in location.file().bytes().take(50) {
+            let prefix = b"File: ";
+            for &byte in prefix {
+                port.write(byte);
+            }
+
+            for &byte in location.file().as_bytes().iter().take(80) {
+                port.write(byte);
+            }
+
+            let suffix = b"\nLocation info truncated\n";
+            for &byte in suffix {
                 port.write(byte);
             }
         }

@@ -9,7 +9,7 @@
     "target-pointer-width": 64,
     "target-c-int-width": 32,
     "linker-flavor": "ld",
-    "linker": "ld.lld",
+    "linker": "rust-lld",
     "executables": true,
     "disable-redzone": true,
     "features": "",

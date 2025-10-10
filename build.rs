@@ -8,9 +8,54 @@
 //! - Generate build information
 //! - Validate target specifications
 
+use serde::de::{self, Deserializer};
+use serde::Deserialize;
 use std::env;
+use std::fs;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::Command;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[derive(Debug, Deserialize)]
+struct TargetSpec {
+    #[serde(rename = "llvm-target")]
+    llvm_target: String,
+    #[serde(rename = "data-layout")]
+    data_layout: String,
+    arch: String,
+    #[serde(
+        rename = "target-pointer-width",
+        deserialize_with = "deserialize_pointer_width"
+    )]
+    target_pointer_width: u16,
+    #[serde(rename = "disable-redzone")]
+    disable_redzone: bool,
+    #[serde(rename = "panic-strategy")]
+    panic_strategy: String,
+}
+
+fn deserialize_pointer_width<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum PointerWidthRaw {
+        Integer(u64),
+        Text(String),
+    }
+
+    match PointerWidthRaw::deserialize(deserializer)? {
+        PointerWidthRaw::Integer(value) => {
+            u16::try_from(value).map_err(|_| de::Error::custom("target-pointer-width out of range"))
+        }
+        PointerWidthRaw::Text(text) => text.parse::<u16>().map_err(|_| {
+            de::Error::custom(format!(
+                "target-pointer-width must be numeric, received '{text}'"
+            ))
+        }),
+    }
+}
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -34,19 +79,46 @@ fn main() {
 ///
 /// Checks for required tools and configurations.
 fn validate_environment() {
-    // Check for nightly toolchain
-    let rustc_version = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
-    println!("cargo:rustc-env=RUSTC_PATH={}", rustc_version);
+    let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    println!("cargo:rustc-env=RUSTC_PATH={rustc}");
 
-    // Verify we're using nightly (required for unstable features)
-    let channel = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
-    if !channel.is_empty() {
-        println!("cargo:warning=Build channel: {}", channel);
+    let rustc_version_output = Command::new(&rustc)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok());
+
+    if let Some(version) = rustc_version_output.as_deref() {
+        let version = version.trim();
+        println!("cargo:rustc-env=RUSTC_VERSION={version}");
+        if !version.contains("nightly") {
+            println!(
+                "cargo:warning=Rust nightly toolchain not detected (reported version: {version})."
+            );
+        }
+    } else {
+        println!("cargo:warning=Failed to determine rustc version via '{rustc} --version'.");
     }
 
-    // Check for rust-src component
-    let sysroot = env::var("RUSTUP_TOOLCHAIN").unwrap_or_else(|_| "unknown".to_string());
-    println!("cargo:rustc-env=RUST_SYSROOT={}", sysroot);
+    let sysroot_path = Command::new(&rustc)
+        .args(["--print", "sysroot"])
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|s| s.trim().to_string());
+
+    if let Some(sysroot) = sysroot_path {
+        println!("cargo:rustc-env=RUST_SYSROOT={sysroot}");
+        let rust_src = Path::new(&sysroot).join("lib/rustlib/src/rust/library");
+        if !rust_src.exists() {
+            println!(
+                "cargo:warning=rust-src component not found at {}. install with `rustup component add rust-src`.",
+                rust_src.display()
+            );
+        }
+    } else {
+        println!("cargo:warning=Failed to determine rustc sysroot via '{rustc} --print sysroot'.");
+    }
 }
 
 /// Validate the target specification file
@@ -55,42 +127,50 @@ fn validate_environment() {
 fn validate_target_spec() {
     let target_path = Path::new("x86_64-blog_os.json");
 
-    if !target_path.exists() {
-        panic!("Target specification file not found: x86_64-blog_os.json");
-    }
+    assert!(
+        target_path.exists(),
+        "Target specification file not found: x86_64-blog_os.json"
+    );
 
     // Read and validate JSON (simple string checks to avoid dependencies)
-    match std::fs::read_to_string(target_path) {
-        Ok(content) => {
-            // Basic validation - check for required fields
-            let required_fields = [
-                "llvm-target",
-                "data-layout",
-                "arch",
-                "target-pointer-width",
-                "disable-redzone",
-                "panic-strategy",
-            ];
+    let content = fs::read_to_string(target_path)
+        .unwrap_or_else(|e| panic!("Failed to read target specification: {e}"));
 
-            for field in &required_fields {
-                if !content.contains(field) {
-                    println!("cargo:warning=Target spec may be missing field: {}", field);
-                }
-            }
+    let spec: TargetSpec = serde_json::from_str(&content)
+        .unwrap_or_else(|e| panic!("Target specification is not valid JSON: {e}"));
 
-            // Validate critical settings
-            if !content.contains("\"panic-strategy\": \"abort\"") {
-                println!("cargo:warning=Panic strategy should be 'abort' for kernel");
-            }
+    assert!(
+        !spec.llvm_target.trim().is_empty(),
+        "Target specification is missing a valid 'llvm-target' value"
+    );
 
-            if !content.contains("\"disable-redzone\": true") {
-                println!("cargo:warning=disable-redzone should be true for kernel");
-            }
-        }
-        Err(e) => {
-            panic!("Failed to read target specification: {}", e);
-        }
-    }
+    assert!(
+        !spec.data_layout.trim().is_empty(),
+        "Target specification is missing a valid 'data-layout' value"
+    );
+
+    assert!(
+        spec.arch == "x86_64",
+        "Target specification has unexpected architecture '{}' (expected 'x86_64')",
+        spec.arch
+    );
+
+    assert_eq!(
+        spec.target_pointer_width, 64,
+        "Target specification uses unsupported pointer width {} (expected 64)",
+        spec.target_pointer_width
+    );
+
+    assert!(
+        spec.disable_redzone,
+        "Target specification must set 'disable-redzone' to true"
+    );
+
+    assert_eq!(
+        spec.panic_strategy.as_str(),
+        "abort",
+        "Target specification must set 'panic-strategy' to 'abort'"
+    );
 }
 
 /// Print build information
@@ -99,28 +179,28 @@ fn validate_target_spec() {
 fn print_build_info() {
     // Profile (debug/release)
     let profile = env::var("PROFILE").unwrap_or_else(|_| "unknown".to_string());
-    println!("cargo:rustc-env=BUILD_PROFILE={}", profile);
+    println!("cargo:rustc-env=BUILD_PROFILE={profile}");
 
     // Target triple
     let target = env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
-    println!("cargo:rustc-env=BUILD_TARGET={}", target);
+    println!("cargo:rustc-env=BUILD_TARGET={target}");
 
     // Build timestamp (seconds since UNIX_EPOCH)
-    let timestamp = SystemTime::now()
+    let timestamp_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_else(|_| "0".to_string());
-    println!("cargo:rustc-env=BUILD_TIMESTAMP={}", timestamp);
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_secs();
+    println!("cargo:rustc-env=BUILD_TIMESTAMP={timestamp_secs}");
 
     // Git commit (if available)
     if let Ok(output) = std::process::Command::new("git")
-        .args(&["rev-parse", "--short", "HEAD"])
+        .args(["rev-parse", "--short", "HEAD"])
         .output()
     {
         if output.status.success() {
             if let Ok(commit) = String::from_utf8(output.stdout) {
                 let commit = commit.trim();
-                println!("cargo:rustc-env=BUILD_COMMIT={}", commit);
+                println!("cargo:rustc-env=BUILD_COMMIT={commit}");
             }
         }
     }
@@ -143,14 +223,3 @@ fn setup_bootloader() {
     // Rerun if bootloader config changes
     println!("cargo:rerun-if-changed=Cargo.toml");
 }
-
-// Additional dependencies for build script
-//
-// Add these to Cargo.toml [build-dependencies] if needed:
-// ```toml
-// [build-dependencies]
-// serde_json = "1.0"
-// chrono = "0.4"
-// ```
-//
-// For now, we use a simplified version without these dependencies.

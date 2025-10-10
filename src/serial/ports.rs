@@ -1,13 +1,26 @@
 // src/serial/ports.rs
 
 //! Serial port hardware access and operations
+//!
+//! # Safety Improvements
+//! - Centralized unsafe operations with explicit documentation
+//! - Timeout handling with proper error propagation
+//! - Validated state transitions
+//! - Hardware validation with detailed reporting
 
 use super::constants::{port_addr, register_offset};
 use super::error::InitError;
 use crate::constants::*;
-use core::arch::x86_64::_rdtsc;
-use core::time::Duration;
 use x86_64::instructions::port::Port;
+
+/// Hardware operation state tracking
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HardwareState {
+    Uninitialized,
+    Configuring,
+    Ready,
+    Error,
+}
 
 /// Private operation enum for centralized unsafe access
 pub(super) enum PortOp {
@@ -16,9 +29,11 @@ pub(super) enum PortOp {
     ScratchRead,
     LineStatusRead,
     ModemStatusRead,
-    /// Poll LSR and write when ready, returns true on success
     PollAndWrite(u8),
 }
+
+/// Result type for port operations
+type PortResult<T> = Result<T, InitError>;
 
 /// Serial ports with validated safe access patterns
 pub struct SerialPorts {
@@ -30,9 +45,10 @@ pub struct SerialPorts {
     line_status: Port<u8>,
     modem_status: Port<u8>,
     scratch: Port<u8>,
+    state: HardwareState,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ValidationReport {
     scratch_tests: [ScratchTestResult; 4],
     scratch_count: usize,
@@ -103,28 +119,6 @@ impl ValidationReport {
     }
 }
 
-#[allow(dead_code)]
-struct TimeoutGuard {
-    start: u64,
-    timeout_cycles: u64,
-}
-
-impl TimeoutGuard {
-    fn new(timeout: Duration) -> Self {
-        let start = unsafe { _rdtsc() };
-        let timeout_cycles = timeout.as_micros() as u64 * 2000;
-        Self {
-            start,
-            timeout_cycles,
-        }
-    }
-
-    fn is_expired(&self) -> bool {
-        let current = unsafe { _rdtsc() };
-        current.saturating_sub(self.start) >= self.timeout_cycles
-    }
-}
-
 impl SerialPorts {
     pub const fn new() -> Self {
         Self {
@@ -136,105 +130,94 @@ impl SerialPorts {
             line_status: Port::new(port_addr(register_offset::LINE_STATUS)),
             modem_status: Port::new(port_addr(register_offset::MODEM_STATUS)),
             scratch: Port::new(port_addr(register_offset::SCRATCH)),
+            state: HardwareState::Uninitialized,
         }
     }
 
-    /// Configure UART registers
-    ///
-    /// # Safety
-    ///
-    /// This function performs port I/O to known COM1 registers. It is
-    /// safe to call because:
-    /// - The ports are fixed hardware I/O addresses for COM1 (0x3F8+offset)
-    /// - Calls are serialized through the `SERIAL_PORTS` mutex
-    /// - Only called during initialization or with proper locking
-    /// - Configuration values are validated constants
-    pub fn configure(&mut self) -> Result<(), InitError> {
-        self.perform_op(PortOp::Configure)
-            .map(|_| ())
-            .ok_or(InitError::ConfigurationFailed)
+    /// Configure UART registers with state validation
+    pub fn configure(&mut self) -> PortResult<()> {
+        // State transition validation
+        match self.state {
+            HardwareState::Ready => {
+                // Already configured, skip
+                return Ok(());
+            }
+            HardwareState::Configuring => {
+                return Err(InitError::ConfigurationFailed);
+            }
+            _ => {}
+        }
+
+        self.state = HardwareState::Configuring;
+
+        let result = self.configure_internal();
+
+        match result {
+            Ok(_) => {
+                self.state = HardwareState::Ready;
+                Ok(())
+            }
+            Err(e) => {
+                self.state = HardwareState::Error;
+                Err(e)
+            }
+        }
     }
 
-    /// Write to the scratch register
-    ///
-    /// The scratch register (offset 7) is documented in UART spec as
-    /// side-effect-free and used for simple presence detection.
-    /// Writing arbitrary bytes here cannot change device configuration.
-    pub fn write_scratch(&mut self, value: u8) -> Result<(), InitError> {
-        self.perform_op(PortOp::ScratchWrite(value))
-            .map(|_| ())
-            .ok_or(InitError::HardwareAccessFailed)
+    /// Internal configuration logic
+    fn configure_internal(&mut self) -> PortResult<()> {
+        // SAFETY: Configuration sequence follows UART 16550 spec
+        // 1. Disable interrupts
+        // 2. Set baud rate via DLAB
+        // 3. Configure line parameters
+        // 4. Enable and clear FIFO
+        // 5. Set modem control
+        self.perform_op(PortOp::Configure)?;
+
+        // Verify configuration
+        super::wait_short();
+
+        let lsr = self.read_line_status()?;
+        if lsr == 0 || lsr == 0xFF {
+            return Err(InitError::ConfigurationFailed);
+        }
+
+        Ok(())
     }
 
-    /// Read from the scratch register
-    ///
-    /// Reading the scratch register is safe and used only for detection;
-    /// on systems without hardware, reads typically return 0xFF.
-    pub fn read_scratch(&mut self) -> Result<u8, InitError> {
-        self.perform_op(PortOp::ScratchRead)
-            .ok_or(InitError::HardwareAccessFailed)
+    /// Write to scratch register with validation
+    pub fn write_scratch(&mut self, value: u8) -> PortResult<()> {
+        self.perform_op(PortOp::ScratchWrite(value)).map(|_| ())
     }
 
-    /// Read the Line Status Register (LSR)
-    ///
-    /// LSR reads are read-only and safe to poll. The mutex ensures we don't
-    /// race with concurrent configuration writes.
-    pub fn read_line_status(&mut self) -> Result<u8, InitError> {
+    /// Read from scratch register with validation
+    pub fn read_scratch(&mut self) -> PortResult<u8> {
+        match self.perform_op(PortOp::ScratchRead) {
+            Ok(val) => Ok(val),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Read Line Status Register
+    pub fn read_line_status(&mut self) -> PortResult<u8> {
         self.perform_op(PortOp::LineStatusRead)
-            .ok_or(InitError::HardwareAccessFailed)
     }
 
-    /// Read the Modem Status Register (MSR)
-    ///
-    /// Used for additional hardware validation.
-    pub fn read_modem_status(&mut self) -> Result<u8, InitError> {
+    /// Read Modem Status Register
+    pub fn read_modem_status(&mut self) -> PortResult<u8> {
         self.perform_op(PortOp::ModemStatusRead)
-            .ok_or(InitError::HardwareAccessFailed)
     }
 
-    /// Poll the LSR and write a byte when transmitter is ready
-    ///
-    /// This method centralizes the transmit wait and actual write into a
-    /// single operation to minimize unsafe blocks and ensure atomic behavior.
-    ///
-    /// Returns `Ok(())` on success, `Err(InitError::Timeout)` if transmitter
-    /// doesn't become ready within the timeout period.
-    pub fn poll_and_write(&mut self, byte: u8) -> Result<(), InitError> {
-        match self.perform_op(PortOp::PollAndWrite(byte)) {
-            Some(1) => Ok(()),
-            _ => Err(InitError::Timeout),
-        }
+    /// Poll LSR and write byte when ready
+    pub fn poll_and_write(&mut self, byte: u8) -> PortResult<()> {
+        self.perform_op(PortOp::PollAndWrite(byte)).map(|_| ())
     }
 
-    /// Poll with a custom timeout before writing a byte.
-    #[allow(dead_code)]
-    pub fn poll_and_write_with_timeout(
-        &mut self,
-        byte: u8,
-        timeout: Duration,
-    ) -> Result<(), InitError> {
-        let guard = TimeoutGuard::new(timeout);
-
-        loop {
-            if guard.is_expired() {
-                return Err(InitError::Timeout);
-            }
-
-            unsafe {
-                if (self.line_status.read() & LSR_TRANSMIT_EMPTY) != 0 {
-                    self.data.write(byte);
-                    return Ok(());
-                }
-            }
-
-            core::hint::spin_loop();
-        }
-    }
-
-    /// Perform a comprehensive hardware validation sequence.
-    pub fn comprehensive_validation(&mut self) -> Result<ValidationReport, InitError> {
+    /// Comprehensive hardware validation
+    pub fn comprehensive_validation(&mut self) -> PortResult<ValidationReport> {
         let mut report = ValidationReport::new();
 
+        // Test scratch register with multiple patterns
         for &pattern in &[0x00, 0x55, 0xAA, 0xFF] {
             self.write_scratch(pattern)?;
             super::wait_short();
@@ -242,31 +225,42 @@ impl SerialPorts {
             report.record_scratch(pattern, readback, pattern == readback);
         }
 
+        // Validate LSR
         let lsr = self.read_line_status()?;
         report.lsr_valid = lsr != 0xFF && (lsr & 0x60) != 0;
 
+        // Test FIFO functionality
         report.fifo_functional = self.test_fifo()?;
+
+        // Verify baud rate configuration
         report.baud_config_valid = self.verify_baud_rate()?;
 
         Ok(report)
     }
 
-    fn test_fifo(&mut self) -> Result<bool, InitError> {
+    /// Test FIFO functionality
+    fn test_fifo(&mut self) -> PortResult<bool> {
+        // SAFETY: Writing to FIFO control register to enable FIFO
         unsafe {
             self.fifo.write(FIFO_ENABLE_CLEAR);
         }
         super::wait_short();
 
+        // SAFETY: Reading IIR to check FIFO status
         let iir = unsafe { self.fifo.read() };
         Ok((iir & 0xC0) == 0xC0)
     }
 
-    fn verify_baud_rate(&mut self) -> Result<bool, InitError> {
+    /// Verify baud rate configuration
+    fn verify_baud_rate(&mut self) -> PortResult<bool> {
+        // SAFETY: Temporarily enable DLAB to read divisor latch
         unsafe {
             let original_lcr = self.line_control.read();
             self.line_control.write(original_lcr | DLAB_ENABLE);
+
             let dll = self.data.read();
             let dlh = self.interrupt_enable.read();
+
             self.line_control.write(original_lcr);
 
             let divisor = ((dlh as u16) << 8) | dll as u16;
@@ -274,69 +268,88 @@ impl SerialPorts {
         }
     }
 
-    /// Perform a port operation inside a single unsafe block
-    ///
-    /// Centralizes all unsafe port I/O operations for easier auditing.
+    /// Perform port operation with centralized unsafe access
     ///
     /// # Safety
     ///
-    /// All raw I/O accesses are centralized here. Callers must hold the
-    /// `SERIAL_PORTS` mutex to ensure exclusive access. Port addresses
-    /// are validated to be within COM1 range (0x3F8-0x3FF).
-    ///
-    /// # Returns
-    ///
-    /// - `Some(value)` for successful read operations
-    /// - `Some(1)` for successful write operations
-    /// - `None` for failed operations (timeout, invalid state)
-    fn perform_op(&mut self, op: PortOp) -> Option<u8> {
-        // SAFETY:
-        // 1. All port addresses are compile-time constants in valid I/O range
-        // 2. Exclusive access guaranteed by SERIAL_PORTS mutex
-        // 3. Operations follow UART specification requirements
-        // 4. No memory safety violations possible with port I/O
+    /// All port I/O is performed within this function under the following guarantees:
+    /// - Port addresses are validated compile-time constants
+    /// - Exclusive access via SERIAL_PORTS mutex
+    /// - Operations follow UART 16550 specification
+    /// - No memory safety violations possible with port I/O
+    fn perform_op(&mut self, op: PortOp) -> PortResult<u8> {
+        // SAFETY: See function documentation
         unsafe {
             match op {
                 PortOp::Configure => {
-                    // Disable interrupts first
+                    // Step 1: Disable all interrupts
                     self.interrupt_enable.write(0x00);
 
-                    // Set DLAB to configure baud rate
+                    // Step 2: Enable DLAB to set baud rate
                     self.line_control.write(DLAB_ENABLE);
                     self.data.write((BAUD_RATE_DIVISOR & 0xFF) as u8);
                     self.interrupt_enable
                         .write(((BAUD_RATE_DIVISOR >> 8) & 0xFF) as u8);
 
-                    // Configure 8N1 and clear DLAB
+                    // Step 3: Set 8N1 and clear DLAB
                     self.line_control.write(CONFIG_8N1);
 
-                    // Enable and clear FIFO
+                    // Step 4: Enable and clear FIFO
                     self.fifo.write(FIFO_ENABLE_CLEAR);
 
-                    // Enable modem control
+                    // Step 5: Set modem control (DTR, RTS, OUT2)
                     self.modem_control.write(MODEM_CTRL_ENABLE_IRQ_RTS_DSR);
 
-                    Some(1)
+                    Ok(1)
                 }
                 PortOp::ScratchWrite(v) => {
                     self.scratch.write(v);
-                    Some(1)
+                    Ok(1)
                 }
-                PortOp::ScratchRead => Some(self.scratch.read()),
-                PortOp::LineStatusRead => Some(self.line_status.read()),
-                PortOp::ModemStatusRead => Some(self.modem_status.read()),
+                PortOp::ScratchRead => Ok(self.scratch.read()),
+                PortOp::LineStatusRead => Ok(self.line_status.read()),
+                PortOp::ModemStatusRead => Ok(self.modem_status.read()),
                 PortOp::PollAndWrite(b) => {
                     // Poll with timeout
                     for _ in 0..TIMEOUT_ITERATIONS {
                         if (self.line_status.read() & LSR_TRANSMIT_EMPTY) != 0 {
                             self.data.write(b);
-                            return Some(1);
+                            return Ok(1);
                         }
                         core::hint::spin_loop();
                     }
-                    None // Timeout
+                    Err(InitError::Timeout)
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validation_report_new() {
+        let report = ValidationReport::new();
+        assert_eq!(report.scratch_count, 0);
+        assert!(!report.lsr_valid);
+        assert!(!report.fifo_functional);
+        assert!(!report.baud_config_valid);
+    }
+
+    #[test]
+    fn test_validation_report_record() {
+        let mut report = ValidationReport::new();
+        report.record_scratch(0xAA, 0xAA, true);
+        assert_eq!(report.scratch_count, 1);
+        assert_eq!(report.scratch_tests()[0].pattern, 0xAA);
+        assert!(report.scratch_tests()[0].passed);
+    }
+
+    #[test]
+    fn test_hardware_state_transitions() {
+        assert_ne!(HardwareState::Uninitialized, HardwareState::Ready);
+        assert_ne!(HardwareState::Configuring, HardwareState::Error);
     }
 }

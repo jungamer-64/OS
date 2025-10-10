@@ -23,12 +23,13 @@ mod color;
 mod constants;
 mod writer;
 
+use crate::diagnostics::DIAGNOSTICS;
 pub use color::ColorCode;
-#[allow(unused_imports)]
-pub use color::VgaColor;
+pub use constants::{VGA_HEIGHT, VGA_WIDTH};
 use core::fmt;
 use core::sync::atomic::Ordering;
 use spin::Mutex;
+pub use writer::{DoubleBufferedWriter, VgaError, CELL_COUNT};
 use writer::{VgaWriter, BUFFER_ACCESSIBLE};
 use x86_64::instructions::interrupts;
 
@@ -54,11 +55,28 @@ static VGA_WRITER: Mutex<VgaWriter> = Mutex::new(VgaWriter::new());
 /// - No interrupt can try to acquire VGA_WRITER while we hold it
 /// - No nested lock attempts from the same execution context
 /// - Safe concurrent access from multiple code paths
-fn with_writer<F, R>(f: F) -> R
+fn with_writer<F, R>(f: F) -> Result<R, VgaError>
 where
-    F: FnOnce(&mut VgaWriter) -> R,
+    F: FnOnce(&mut VgaWriter) -> Result<R, VgaError>,
 {
-    interrupts::without_interrupts(|| f(&mut VGA_WRITER.lock()))
+    interrupts::without_interrupts(|| {
+        let mut guard = match VGA_WRITER.try_lock() {
+            Some(guard) => guard,
+            None => {
+                DIAGNOSTICS.record_lock_contention();
+                VGA_WRITER.lock()
+            }
+        };
+
+        DIAGNOSTICS.record_lock_acquisition();
+        let token = DIAGNOSTICS.begin_lock_timing();
+        let runtime_guard = guard.runtime_guard();
+        let result = f(&mut guard);
+        drop(runtime_guard);
+        drop(guard);
+        DIAGNOSTICS.finish_lock_timing(token);
+        result
+    })
 }
 
 /// Global print! macro
@@ -80,9 +98,9 @@ macro_rules! println {
 /// Print function called by macros
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
-    with_writer(|writer| {
+    let _ = with_writer(|writer| {
         use core::fmt::Write;
-        let _ = writer.write_fmt(args);
+        writer.write_fmt(args).map_err(|_| VgaError::WriteFailure)
     });
 }
 
@@ -90,10 +108,8 @@ pub fn _print(args: fmt::Arguments) {
 ///
 /// Should be called once during kernel initialization.
 /// Tests buffer accessibility and caches the result.
-pub fn init() {
-    with_writer(|writer| {
-        writer.init_accessibility();
-    });
+pub fn init() -> Result<(), VgaError> {
+    with_writer(|writer| writer.init_accessibility())
 }
 
 /// Check if VGA buffer is accessible
@@ -102,18 +118,16 @@ pub fn is_accessible() -> bool {
 }
 
 /// Clear the screen
-pub fn clear() {
-    with_writer(|writer| {
-        writer.clear();
-    });
+pub fn clear() -> Result<(), VgaError> {
+    with_writer(|writer| writer.clear())
 }
 
 /// Set the text color
-pub fn set_color(color: ColorCode) {
-    with_writer(|writer| writer.set_color(color));
+pub fn set_color(color: ColorCode) -> Result<(), VgaError> {
+    with_writer(|writer| writer.set_color(color))
 }
 
 /// Print colored text
-pub fn print_colored(s: &str, color: ColorCode) {
-    with_writer(|writer| writer.write_colored(s, color));
+pub fn print_colored(s: &str, color: ColorCode) -> Result<(), VgaError> {
+    with_writer(|writer| writer.write_colored(s, color))
 }

@@ -13,7 +13,7 @@ pub enum InitError {
     Timeout,
     /// Configuration failed
     ConfigurationFailed,
-    /// Hardware access failed
+    /// Hardware access failed（将来の詳細エラー処理で使用予定）
     HardwareAccessFailed,
     /// Too many initialization attempts
     TooManyAttempts,
