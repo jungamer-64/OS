@@ -12,6 +12,7 @@
 pub mod constants;
 pub mod diagnostics;
 pub mod display;
+pub mod errors;
 pub mod init;
 pub mod qemu;
 pub mod serial;

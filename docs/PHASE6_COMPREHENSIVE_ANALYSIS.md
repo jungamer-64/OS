@@ -69,7 +69,9 @@ Phase 6では、コードベース全体の堅牢性を検証し、12件の新�
 ```rust
 #[cfg(test)]
 extern crate std;  // ← no_std環境でstdクレートが見つからない
+
 ```
+
 
 **説明**: `no_std`ターゲットで`#[cfg(test)]`条件付きコンパイルを使用しているため、テストクレート関連のエラーが報告されます。これは**正常な動作**です。
 
@@ -118,7 +120,9 @@ pub fn read(&self, index: usize) -> Result<T, BufferError> {
         Ok(core::ptr::read_volatile(ptr))
     }
 }
+
 ```
+
 
 **Microsoft Docsパターン適合**: "Constrain memory access to valid ranges before performing operations"
 
@@ -139,7 +143,9 @@ pub fn read(&self, index: usize) -> Result<T, BufferError> {
 // 行519
 last_error.expect("last_error should always be Some after retries")
 // ↑ リトライループ後は必ずSome、不変条件が保証されている
+
 ```
+
 
 ### 3.3 `panic!`使用スキャン (3件)
 
@@ -156,7 +162,9 @@ if !output_success {
     // VGAもシリアルも使えない場合、パニックは正当
     panic!("Critical: VGA initialization failed - no output capability");
 }
+
 ```
+
 
 ### 3.4 安全性監査の結論
 
@@ -214,7 +222,9 @@ pub enum KernelError {
 }
 
 pub type Result<T> = core::result::Result<T, KernelError>;
+
 ```
+
 
 **特徴**:
 
@@ -246,7 +256,9 @@ pub enum LockId {
 }
 
 pub struct LockGuard { /* RAII guard */ }
+
 ```
+
 
 **特徴**:
 
@@ -281,7 +293,9 @@ pub enum PanicState {
 }
 
 pub struct PanicGuard { /* 状態遷移管理 */ }
+
 ```
+
 
 **特徴**:
 
@@ -317,7 +331,9 @@ pub enum BufferError {
     Overflow,
     Misaligned,
 }
+
 ```
+
 
 **特徴**:
 
@@ -344,7 +360,9 @@ pub enum BufferError {
 pub struct ValidIndex(usize);  // 0 < BUFFER_SIZE を保証
 pub struct ValidRange { start: ValidIndex, len: usize }
 pub struct SafeBuffer { /* VGA buffer wrapper */ }
+
 ```
+
 
 **特徴**:
 
@@ -379,7 +397,9 @@ pub enum TimeoutResult<T> {
     Success(T),
     Timeout { elapsed: Duration, last_error: Option<E> },
 }
+
 ```
+
 
 **特徴**:
 
@@ -431,7 +451,9 @@ pub fn read(&self, index: usize) -> Result<T, BufferError> {
     }
     unsafe { /* 安全確認後のみ */ }
 }
+
 ```
+
 
 #### ✅ 2. 構造化エラー型
 
@@ -446,7 +468,9 @@ pub enum InitError {
     InvalidStateTransition,
     // ...
 }
+
 ```
+
 
 #### ✅ 3. フォールバック値パターン
 
@@ -456,7 +480,9 @@ pub enum InitError {
 
 ```rust
 core::str::from_utf8(&self.buf[..self.len]).unwrap_or("<fmt error>")
+
 ```
+
 
 #### ✅ 4. 詳細なエラーメッセージ
 
@@ -467,7 +493,9 @@ core::str::from_utf8(&self.buf[..self.len]).unwrap_or("<fmt error>")
 ```rust
 let context = b"Context: Multiple panic attempts detected\n";
 let action = b"Action: Emergency system halt to prevent data corruption\n";
+
 ```
+
 
 ### 5.3 適用不可能なパターン (no_std環境制約)
 
@@ -489,7 +517,9 @@ let action = b"Action: Emergency system halt to prevent data corruption\n";
 $ cargo build --release 2>&1 | grep -E "(Compiling|Finished|warning|error)"
 warning: `panic` setting is ignored for `test` profile
 Finished `release` profile [optimized] target(s) in 0.03s
+
 ```
+
 
 **結果**:
 
@@ -534,7 +564,9 @@ fn new_function() -> Result<(), UnifiedVgaError> { /* ... */ }
 
 // 3. 既存コード移行 (3-5ファイルずつ)
 // 4. テスト実行 (各ステップ後)
+
 ```
+
 
 **Step 2: lock_manager.rs 統合**
 
@@ -551,7 +583,9 @@ let _guard = LOCK_MANAGER.acquire(LockId::Vga)?;
 VGA_WRITER.lock().write_str("test");  // guard は Drop で自動解放
 
 // 3. 全ロック箇所を順次移行
+
 ```
+
 
 **期待効果**:
 
@@ -626,19 +660,27 @@ VGA_WRITER.lock().write_str("test");  // guard は Drop で自動解放
 
 **error.rs 統合後**:
 
+
 ```
+
 エラーハンドリング: 良好 → 優秀
 統一性: +30%
 `?` 演算子利用: +50%
+
 ```
+
 
 **lock_manager.rs 統合後**:
 
+
 ```
+
 デッドロック防止: 手動 → 自動
 デッドロックリスク: -95%
 ロック診断能力: +100%
+
 ```
+
 
 ---
 
@@ -710,7 +752,9 @@ cargo build --release 2>&1 | grep -E "(Compiling|Finished|warning|error)"
 # ファイル変更検出
 git status --short
 git diff --name-status
+
 ```
+
 
 ### 10.2 新規ファイル詳細情報
 
@@ -723,7 +767,9 @@ pub enum SerialError { AlreadyInitialized, PortNotPresent, Timeout, Configuratio
 pub enum InitError { VgaFailed, SerialFailed, InvalidStateTransition, AlreadyInitialized, InProgress, ConcurrentInitialization }
 pub enum DisplayError { VgaError, SerialError, AllOutputsFailed }
 pub trait ErrorContext { fn detailed_description(&self) -> &'static str; }
+
 ```
+
 
 #### src/sync/lock_manager.rs API
 
@@ -732,7 +778,9 @@ pub fn acquire_lock(id: LockId) -> Result<LockGuard, LockOrderViolation>;
 pub fn try_acquire_lock(id: LockId) -> Option<LockGuard>;
 pub fn is_held(id: LockId) -> bool;
 pub fn get_stats() -> LockStats;
+
 ```
+
 
 ### 10.3 Microsoft Docs 参照リンク
 
