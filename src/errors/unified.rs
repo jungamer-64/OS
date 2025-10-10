@@ -23,10 +23,10 @@ pub enum KernelError {
 impl fmt::Display for KernelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            KernelError::Vga(e) => write!(f, "VGA error: {}", e),
-            KernelError::Serial(e) => write!(f, "Serial error: {}", e),
-            KernelError::Init(e) => write!(f, "Init error: {}", e),
-            KernelError::Display(e) => write!(f, "Display error: {}", e),
+            Self::Vga(e) => write!(f, "VGA error: {e}"),
+            Self::Serial(e) => write!(f, "Serial error: {e}"),
+            Self::Init(e) => write!(f, "Init error: {e}"),
+            Self::Display(e) => write!(f, "Display error: {e}"),
         }
     }
 }
@@ -49,14 +49,15 @@ pub enum VgaError {
 }
 
 impl VgaError {
+    #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
-            VgaError::BufferNotAccessible => "buffer not accessible",
-            VgaError::InvalidPosition => "invalid position",
-            VgaError::WriteFailure => "write failure",
-            VgaError::NotInitialized => "not initialized",
-            VgaError::NotLocked => "writer not locked",
-            VgaError::BufferOverflow => "buffer overflow",
+            Self::BufferNotAccessible => "buffer not accessible",
+            Self::InvalidPosition => "invalid position",
+            Self::WriteFailure => "write failure",
+            Self::NotInitialized => "not initialized",
+            Self::NotLocked => "writer not locked",
+            Self::BufferOverflow => "buffer overflow",
         }
     }
 }
@@ -69,7 +70,7 @@ impl fmt::Display for VgaError {
 
 impl From<VgaError> for KernelError {
     fn from(err: VgaError) -> Self {
-        KernelError::Vga(err)
+        Self::Vga(err)
     }
 }
 
@@ -97,21 +98,21 @@ pub enum SerialError {
 impl fmt::Display for SerialError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SerialError::AlreadyInitialized => write!(f, "already initialized"),
-            SerialError::PortNotPresent => write!(f, "hardware not present"),
-            SerialError::Timeout => write!(f, "operation timeout"),
-            SerialError::ConfigurationFailed => write!(f, "configuration failed"),
-            SerialError::HardwareAccessFailed => write!(f, "hardware access failed"),
-            SerialError::TooManyAttempts => write!(f, "too many attempts"),
-            SerialError::InvalidBaudRate => write!(f, "invalid baud rate"),
-            SerialError::FifoError => write!(f, "FIFO error"),
+            Self::AlreadyInitialized => write!(f, "already initialized"),
+            Self::PortNotPresent => write!(f, "hardware not present"),
+            Self::Timeout => write!(f, "operation timeout"),
+            Self::ConfigurationFailed => write!(f, "configuration failed"),
+            Self::HardwareAccessFailed => write!(f, "hardware access failed"),
+            Self::TooManyAttempts => write!(f, "too many attempts"),
+            Self::InvalidBaudRate => write!(f, "invalid baud rate"),
+            Self::FifoError => write!(f, "FIFO error"),
         }
     }
 }
 
 impl From<SerialError> for KernelError {
     fn from(err: SerialError) -> Self {
-        KernelError::Serial(err)
+        Self::Serial(err)
     }
 }
 
@@ -131,17 +132,17 @@ pub enum InitError {
 impl fmt::Display for InitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            InitError::VgaFailed(e) => write!(f, "VGA init failed: {}", e),
-            InitError::SerialFailed(e) => write!(f, "Serial init failed: {}", e),
-            InitError::AlreadyInitialized => write!(f, "already initialized"),
-            InitError::PrerequisitesNotMet => write!(f, "prerequisites not met"),
+            Self::VgaFailed(e) => write!(f, "VGA init failed: {e}"),
+            Self::SerialFailed(e) => write!(f, "Serial init failed: {e}"),
+            Self::AlreadyInitialized => write!(f, "already initialized"),
+            Self::PrerequisitesNotMet => write!(f, "prerequisites not met"),
         }
     }
 }
 
 impl From<InitError> for KernelError {
     fn from(err: InitError) -> Self {
-        KernelError::Init(err)
+        Self::Init(err)
     }
 }
 
@@ -159,33 +160,33 @@ pub enum DisplayError {
 impl fmt::Display for DisplayError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DisplayError::NoOutputAvailable => write!(f, "no output available"),
-            DisplayError::FormatError => write!(f, "format error"),
-            DisplayError::SubsystemError => write!(f, "subsystem error"),
+            Self::NoOutputAvailable => write!(f, "no output available"),
+            Self::FormatError => write!(f, "format error"),
+            Self::SubsystemError => write!(f, "subsystem error"),
         }
     }
 }
 
 impl From<DisplayError> for KernelError {
     fn from(err: DisplayError) -> Self {
-        KernelError::Display(err)
+        Self::Display(err)
     }
 }
 
 /// Result type alias for kernel operations
 pub type Result<T> = core::result::Result<T, KernelError>;
 
-/// Additional conversions for VgaError
+/// Additional conversions for `VgaError`
 impl From<VgaError> for InitError {
     fn from(err: VgaError) -> Self {
-        InitError::VgaFailed(err)
+        Self::VgaFailed(err)
     }
 }
 
-/// Additional conversions for SerialError
+/// Additional conversions for `SerialError`
 impl From<SerialError> for InitError {
     fn from(err: SerialError) -> Self {
-        InitError::SerialFailed(err)
+        Self::SerialFailed(err)
     }
 }
 
@@ -198,10 +199,10 @@ pub trait ErrorContext {
 impl ErrorContext for KernelError {
     fn context(&self) -> &'static str {
         match self {
-            KernelError::Vga(_) => "Error occurred in VGA buffer subsystem",
-            KernelError::Serial(_) => "Error occurred in serial port subsystem",
-            KernelError::Init(_) => "Error occurred during kernel initialization",
-            KernelError::Display(_) => "Error occurred in display subsystem",
+            Self::Vga(_) => "Error occurred in VGA buffer subsystem",
+            Self::Serial(_) => "Error occurred in serial port subsystem",
+            Self::Init(_) => "Error occurred during kernel initialization",
+            Self::Display(_) => "Error occurred in display subsystem",
         }
     }
 }
@@ -209,12 +210,12 @@ impl ErrorContext for KernelError {
 impl ErrorContext for VgaError {
     fn context(&self) -> &'static str {
         match self {
-            VgaError::BufferNotAccessible => "VGA buffer memory could not be accessed",
-            VgaError::InvalidPosition => "Attempted to write to invalid screen position",
-            VgaError::WriteFailure => "Failed to write to VGA buffer",
-            VgaError::NotInitialized => "VGA writer must be initialized before use",
-            VgaError::NotLocked => "VGA writer lock must be acquired before writing",
-            VgaError::BufferOverflow => "VGA buffer capacity exceeded",
+            Self::BufferNotAccessible => "VGA buffer memory could not be accessed",
+            Self::InvalidPosition => "Attempted to write to invalid screen position",
+            Self::WriteFailure => "Failed to write to VGA buffer",
+            Self::NotInitialized => "VGA writer must be initialized before use",
+            Self::NotLocked => "VGA writer lock must be acquired before writing",
+            Self::BufferOverflow => "VGA buffer capacity exceeded",
         }
     }
 }
@@ -222,14 +223,14 @@ impl ErrorContext for VgaError {
 impl ErrorContext for SerialError {
     fn context(&self) -> &'static str {
         match self {
-            SerialError::AlreadyInitialized => "Serial port cannot be initialized twice",
-            SerialError::PortNotPresent => "Serial port hardware is not available",
-            SerialError::Timeout => "Serial operation timed out waiting for hardware",
-            SerialError::ConfigurationFailed => "Failed to configure serial port registers",
-            SerialError::HardwareAccessFailed => "Could not access serial port I/O registers",
-            SerialError::TooManyAttempts => "Exceeded maximum retry attempts for serial operation",
-            SerialError::InvalidBaudRate => "Specified baud rate is not supported",
-            SerialError::FifoError => "Serial FIFO buffer encountered an error",
+            Self::AlreadyInitialized => "Serial port cannot be initialized twice",
+            Self::PortNotPresent => "Serial port hardware is not available",
+            Self::Timeout => "Serial operation timed out waiting for hardware",
+            Self::ConfigurationFailed => "Failed to configure serial port registers",
+            Self::HardwareAccessFailed => "Could not access serial port I/O registers",
+            Self::TooManyAttempts => "Exceeded maximum retry attempts for serial operation",
+            Self::InvalidBaudRate => "Specified baud rate is not supported",
+            Self::FifoError => "Serial FIFO buffer encountered an error",
         }
     }
 }
@@ -237,12 +238,10 @@ impl ErrorContext for SerialError {
 impl ErrorContext for InitError {
     fn context(&self) -> &'static str {
         match self {
-            InitError::VgaFailed(_) => "VGA subsystem initialization failed",
-            InitError::SerialFailed(_) => "Serial subsystem initialization failed",
-            InitError::AlreadyInitialized => "Kernel subsystems are already initialized",
-            InitError::PrerequisitesNotMet => {
-                "Required conditions for initialization not satisfied"
-            }
+            Self::VgaFailed(_) => "VGA subsystem initialization failed",
+            Self::SerialFailed(_) => "Serial subsystem initialization failed",
+            Self::AlreadyInitialized => "Kernel subsystems are already initialized",
+            Self::PrerequisitesNotMet => "Required conditions for initialization not satisfied",
         }
     }
 }
@@ -250,9 +249,9 @@ impl ErrorContext for InitError {
 impl ErrorContext for DisplayError {
     fn context(&self) -> &'static str {
         match self {
-            DisplayError::NoOutputAvailable => "No display output methods are available",
-            DisplayError::FormatError => "Failed to format output string",
-            DisplayError::SubsystemError => "Underlying display subsystem error",
+            Self::NoOutputAvailable => "No display output methods are available",
+            Self::FormatError => "Failed to format output string",
+            Self::SubsystemError => "Underlying display subsystem error",
         }
     }
 }

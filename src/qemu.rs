@@ -13,7 +13,7 @@ pub enum QemuExitCode {
 }
 
 /// Write the exit code to QEMU's debug exit port and halt the CPU.
-#[inline(always)]
+#[inline]
 pub fn exit_qemu(code: QemuExitCode) -> ! {
     // SAFETY: Port 0xF4 is the QEMU ISA debug exit. Writing to it is safe in
     // the kernel context and causes QEMU to exit with the provided status.

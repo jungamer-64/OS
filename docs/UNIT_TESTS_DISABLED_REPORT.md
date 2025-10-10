@@ -9,6 +9,7 @@ This report documents the disabling of unit tests in the Tiny OS kernel codebase
 ## Problem Statement
 
 The codebase contained numerous unit test modules using the standard `#[test]` attribute, which requires:
+
 - The `test` crate (not available in `no_std`)
 - Standard library types like `Vec`, `String`, `format!` macro
 - The standard test framework
@@ -18,10 +19,13 @@ These tests could not compile in the bare-metal `no_std` environment.
 ## Solution
 
 All unit test modules have been disabled by changing their conditional compilation from:
+
 ```rust
 #[cfg(test)]
 ```
+
 to:
+
 ```rust
 #[cfg(all(test, feature = "std-tests"))]
 ```
@@ -31,12 +35,15 @@ This requires an explicit opt-in via the `std-tests` feature in `Cargo.toml`, wh
 ## Files Modified
 
 ### Configuration
+
 - `Cargo.toml`: Added `std-tests` feature definition
 
 ### Test Modules Disabled
+
 The following files had their `#[cfg(test)]` directives updated:
 
 #### Core Library
+
 - `src/constants.rs`
 - `src/diagnostics.rs`
 - `src/display.rs`
@@ -44,38 +51,46 @@ The following files had their `#[cfg(test)]` directives updated:
 - `src/lib.rs`
 
 #### Display Subsystem
+
 - `src/display/boot.rs` - Removed test module entirely
 - `src/display/core.rs` - Removed test module entirely
 - `src/display/panic.rs`
 - `src/display/tests.rs` - Removed test module entirely
 
 #### Memory Management
+
 - `src/memory/safety.rs`
 
 #### Panic Handling
+
 - `src/panic/handler.rs`
 - `src/panic/state.rs`
 
 #### Serial I/O
+
 - `src/serial/error.rs`
 - `src/serial/mod.rs`
 - `src/serial/ports.rs`
 - `src/serial/timeout.rs`
 
 #### Synchronization
+
 - `src/sync/lock_manager.rs`
 
 #### VGA Buffer
+
 - `src/vga_buffer/color.rs`
 - `src/vga_buffer/safe_buffer.rs`
 - `src/vga_buffer/writer.rs`
 
 ### Integration Tests
+
 - `tests/io_synchronization.rs`: Fixed format string syntax to use explicit format arguments instead of capture syntax
 
 ## Build Results
 
 ### Before Changes
+
 - Multiple compilation errors:
   - `can't find crate for 'test'` (multiple occurrences)
   - `can't find crate for 'alloc'` (in test modules)
@@ -83,6 +98,7 @@ The following files had their `#[cfg(test)]` directives updated:
   - Missing `format!` macro
 
 ### After Changes
+
 - ✅ Library builds successfully: `cargo clippy`
 - ✅ Release build succeeds: `cargo clippy --release`
 - ✅ Binary builds: `cargo build --release`
@@ -104,6 +120,7 @@ The following files had their `#[cfg(test)]` directives updated:
 ## Alternative: Integration Tests
 
 The kernel should be tested through integration tests in the `tests/` directory, which:
+
 - Have their own entry points
 - Can use the custom test framework
 - Better simulate real kernel boot scenarios
