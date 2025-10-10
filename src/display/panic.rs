@@ -7,7 +7,12 @@
 
 use crate::vga_buffer::ColorCode;
 use crate::{serial_print, serial_println};
+use core::cmp;
+use core::fmt::{self, Write};
 use core::panic::PanicInfo;
+
+#[cfg(test)]
+extern crate std;
 
 /// Separator line for panic messages
 const PANIC_SEPARATOR: &str = "========================================\n";
@@ -15,6 +20,83 @@ const PANIC_SHORT_SEP: &str = "----------------------------------------\n";
 
 /// Maximum length for truncated messages (prevent excessive output)
 const MAX_MESSAGE_LENGTH: usize = 500;
+
+struct TruncatingBuffer {
+    buf: [u8; MAX_MESSAGE_LENGTH],
+    len: usize,
+    truncated: bool,
+}
+
+impl TruncatingBuffer {
+    const fn new() -> Self {
+        Self {
+            buf: [0; MAX_MESSAGE_LENGTH],
+            len: 0,
+            truncated: false,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("<fmt error>")
+    }
+
+    fn was_truncated(&self) -> bool {
+        self.truncated
+    }
+}
+
+impl Write for TruncatingBuffer {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        if self.truncated {
+            return Ok(());
+        }
+
+        let remaining = self.buf.len().saturating_sub(self.len);
+        if remaining == 0 {
+            self.truncated = true;
+            return Ok(());
+        }
+
+        let mut copy_len = cmp::min(remaining, s.len());
+        while copy_len > 0 && !s.is_char_boundary(copy_len) {
+            copy_len -= 1;
+        }
+
+        if copy_len == 0 {
+            self.truncated = true;
+            return Ok(());
+        }
+
+        self.buf[self.len..self.len + copy_len].copy_from_slice(&s.as_bytes()[..copy_len]);
+        self.len += copy_len;
+        if copy_len < s.len() {
+            self.truncated = true;
+        }
+
+        Ok(())
+    }
+}
+
+fn truncate_borrowed_message(message: &str) -> (&str, bool) {
+    if message.len() <= MAX_MESSAGE_LENGTH {
+        return (message, false);
+    }
+
+    let mut end = MAX_MESSAGE_LENGTH;
+    while end > 0 && !message.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    if end == 0 {
+        return ("", true);
+    }
+
+    (&message[..end], true)
+}
+
+fn log_truncation_notice() {
+    serial_println!("  [message truncated to {} chars]", MAX_MESSAGE_LENGTH);
+}
 
 /// Display panic information to serial output
 ///
@@ -82,10 +164,18 @@ fn display_panic_message_serial(info: &PanicInfo) {
 
     // Format the panic message - info.message() already provides formatting support
     if let Some(msg_str) = info.message().as_str() {
-        serial_println!("{}", msg_str);
+        let (display, truncated) = truncate_borrowed_message(msg_str);
+        serial_println!("{}", display);
+        if truncated {
+            log_truncation_notice();
+        }
     } else {
-        // For more complex formatted messages, print using the Arguments directly
-        serial_println!("{}", info.message());
+        let mut buffer = TruncatingBuffer::new();
+        let _ = fmt::write(&mut buffer, format_args!("{}", info.message()));
+        serial_println!("{}", buffer.as_str());
+        if buffer.was_truncated() {
+            log_truncation_notice();
+        }
     }
 
     serial_println!();
@@ -246,6 +336,9 @@ fn serial_short_separator() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::fmt::Write as _;
+    use std::iter;
+    use std::string::String;
 
     #[test]
     fn test_max_message_length_reasonable() {
@@ -257,5 +350,38 @@ mod tests {
     fn test_separator_lengths() {
         assert_eq!(PANIC_SEPARATOR.len(), 41); // 40 '=' + newline
         assert_eq!(PANIC_SHORT_SEP.len(), 41); // 40 '-' + newline
+    }
+
+    #[test]
+    fn truncate_borrowed_message_respects_utf8_boundaries() {
+        let long_msg: String = iter::repeat("é")
+            .take((MAX_MESSAGE_LENGTH / 2) + 50)
+            .collect();
+        let (snippet, truncated) = truncate_borrowed_message(&long_msg);
+        assert!(truncated, "long UTF-8 message should be truncated");
+        assert!(snippet.len() <= MAX_MESSAGE_LENGTH);
+        assert!(snippet.is_char_boundary(snippet.len()));
+    }
+
+    #[test]
+    fn truncating_buffer_limits_output() {
+        let mut buffer = TruncatingBuffer::new();
+        let long_input: String = iter::repeat('A').take(MAX_MESSAGE_LENGTH + 128).collect();
+        let _ = buffer.write_str(&long_input);
+
+        assert!(buffer.was_truncated());
+        assert!(buffer.as_str().len() <= MAX_MESSAGE_LENGTH);
+    }
+
+    #[test]
+    fn truncating_buffer_accepts_multiple_writes() {
+        let mut buffer = TruncatingBuffer::new();
+        let part: String = iter::repeat('B').take(MAX_MESSAGE_LENGTH / 2).collect();
+        let _ = buffer.write_str(&part);
+        let _ = buffer.write_str(&part);
+        let _ = buffer.write_str("extra");
+
+        assert!(buffer.was_truncated());
+        assert!(buffer.as_str().len() <= MAX_MESSAGE_LENGTH);
     }
 }

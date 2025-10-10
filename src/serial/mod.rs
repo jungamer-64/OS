@@ -24,9 +24,9 @@ mod ports;
 pub use error::InitError;
 
 use crate::constants::*;
-use core::iter;
 use constants::MAX_INIT_ATTEMPTS;
 use core::fmt::{self, Write};
+use core::iter;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use ports::SerialPorts;
 use spin::Mutex;
@@ -62,14 +62,24 @@ static SERIAL_PORTS: Mutex<SerialPorts> = Mutex::new(SerialPorts::new());
 /// - `Err(InitError::Timeout)` if hardware doesn't respond
 /// - `Err(InitError::TooManyAttempts)` if called too many times
 pub fn init() -> Result<(), InitError> {
-    // Check initialization attempts
-    let attempts = INIT_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
-    if attempts >= MAX_INIT_ATTEMPTS {
+    // Fast-path check to avoid inflating attempt counter when already initialized
+    if SERIAL_INITIALIZED.load(Ordering::Acquire) {
+        return Err(InitError::AlreadyInitialized);
+    }
+
+    // Track how often we genuinely attempt initialization
+    let attempts = INIT_ATTEMPTS.fetch_add(1, Ordering::SeqCst) + 1;
+    if attempts > MAX_INIT_ATTEMPTS {
+        INIT_ATTEMPTS.fetch_sub(1, Ordering::SeqCst);
         return Err(InitError::TooManyAttempts);
     }
 
-    // Check if already initialized
-    if SERIAL_INITIALIZED.swap(true, Ordering::AcqRel) {
+    // Reserve the initialized flag for this attempt; if another thread won the race, back off
+    if SERIAL_INITIALIZED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        INIT_ATTEMPTS.fetch_sub(1, Ordering::SeqCst);
         return Err(InitError::AlreadyInitialized);
     }
 
@@ -208,6 +218,28 @@ pub fn write_str(s: &str) {
     }
 
     let _ = write_bytes(s.bytes());
+}
+
+/// Write a collection of lines to the serial port, inserting newlines automatically.
+///
+/// Empty strings are interpreted as explicit blank lines. The helper quietly
+/// returns when the serial hardware is not available, mirroring the behaviour of
+/// the existing printing macros.
+pub fn log_lines<'a, I>(lines: I)
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    if !is_available() {
+        return;
+    }
+
+    for line in lines {
+        if line.is_empty() {
+            serial_println!();
+        } else {
+            serial_println!("{}", line);
+        }
+    }
 }
 
 /// Write a sequence of bytes while holding the serial port lock once.

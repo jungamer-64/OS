@@ -259,7 +259,7 @@ impl SerialConfig {
     /// Validate configuration
     pub const fn is_valid(&self) -> bool {
         // Port must be in valid range
-    if self.port < 0x100 || self.port == u16::MAX {
+        if self.port < 0x100 || self.port == u16::MAX {
             return false;
         }
 

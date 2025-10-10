@@ -53,6 +53,12 @@ mod vga_buffer;
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 
+const SERIAL_KERNEL_INIT_SUCCESS_LINES: [&str; 2] =
+    ["[OK] All kernel subsystems initialized successfully", ""];
+
+const SERIAL_NON_CRITICAL_CONTINUATION_LINES: [&str; 2] =
+    ["       Continuing with available subsystems", ""];
+
 entry_point!(kernel_main);
 
 /// Kernel entry point
@@ -94,8 +100,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         Ok(()) => {
             // Initialization successful
             if serial::is_available() {
-                serial_println!("[OK] All kernel subsystems initialized successfully");
-                serial_println!();
+                serial::log_lines(SERIAL_KERNEL_INIT_SUCCESS_LINES);
             }
         }
         Err(e) => {
@@ -119,8 +124,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             // For non-critical failures, log and continue
             if serial::is_available() {
                 serial_println!("[WARN] Non-critical initialization failure: {}", e);
-                serial_println!("       Continuing with available subsystems");
-                serial_println!();
+                serial::log_lines(SERIAL_NON_CRITICAL_CONTINUATION_LINES);
             }
         }
     }

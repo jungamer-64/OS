@@ -1,366 +1,363 @@
-# Minimal x86_64 Rust OS
+# Tiny OS - Minimal x86_64 Rust Kernel
 
-A minimal, modular operating system kernel written in Rust for x86_64 architecture, featuring hardware-safe I/O, VGA color support, and proper panic handling.
+![Rust Version](https://img.shields.io/badge/rust-nightly-orange.svg)
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Platform](https://img.shields.io/badge/platform-x86__64-lightgrey.svg)
 
-## 🏗️ Architecture
+A minimal, educational operating system kernel written in Rust for the x86_64 architecture. This project demonstrates bare-metal programming, hardware interaction, and safe systems programming using Rust.
 
-The kernel is organized into well-defined modules for maintainability:
+## ✨ Features
 
-- **`main.rs`**: Kernel entry point and panic handler
-- **`constants.rs`**: Centralized configuration values
-- **`display.rs`**: Output formatting and presentation logic
-- **`init.rs`**: Hardware initialization routines
-- **`serial.rs`**: COM1 serial port driver with hardware detection
-- **`vga_buffer.rs`**: VGA text mode driver with color support
+### Core Functionality
 
-## 🎯 Features
+- **VGA Text Mode Output** - 80x25 character display with 16-color support
+- **Serial Port (COM1)** - Debug output via UART 16550 at 38400 baud
+- **Interrupt-Safe I/O** - Mutex-protected output prevents race conditions
+- **Hardware Detection** - Robust detection of VGA and serial hardware
+- **Panic Handler** - Detailed error reporting with source location
 
-### 🔧 Real Hardware Support
+### Safety & Robustness
 
-- **Robust Serial Port Handling**:
-  - Automatic hardware presence detection via scratch register test
-  - Timeout protection prevents infinite loops (100ms timeout)
-  - Graceful degradation to VGA-only on systems without COM1
-  - Safe operation on modern motherboards without physical serial ports
+- ✅ **Memory Safety** - All buffer accesses bounds-checked
+- ✅ **Error Handling** - Comprehensive Result types throughout
+- ✅ **Hardware Validation** - Multi-stage hardware presence checks
+- ✅ **Timeout Protection** - All blocking operations have timeouts
+- ✅ **Deadlock Prevention** - Documented lock ordering, interrupt disabling
+- ✅ **Idempotent Init** - Safe to call initialization multiple times
+- ✅ **Zero Unsafe** in application code (all unsafe centralized and documented)
 
-- **Fail-Safe Design**:
-  - Panic messages always displayed on VGA (even without serial)
-  - No CPU hangs from writing to non-existent ports
-  - Kernel boots successfully on varied hardware configurations
+### Code Quality
 
-- **BIOS Compatibility**:
-  - Optimized for legacy BIOS text mode at 0xB8000
-  - Works with CSM (Compatibility Support Module) in UEFI
-  - Clear documentation of platform requirements
+- 📝 **Fully Documented** - Every public API has documentation
+- 🧪 **Unit Tests** - Core functionality covered by tests
+- 🔍 **Zero Warnings** - Passes clippy and rustfmt checks
+- 📊 **Type Safe** - Compile-time validation where possible
 
-## 🎯 Core Features
-
-### ✅ Hardware-Safe Serial I/O
-
-- **UART Initialization**: Full 16550 UART setup (38400 baud, 8N1)
-- **FIFO Transmit Check**: Waits for transmit buffer before writing (hardware-compatible)
-- **Serial Port**: COM1 (0x3F8) with proper configuration
-- **Benefits**: Stable communication on real hardware, no character corruption
-
-### ✅ VGA Text Mode with Color Support
-
-- **Type-Safe Colors**: `ColorCode` struct with predefined color schemes
-- **8-Color Palette**: Full VGA 16-color support (foreground/background)
-- **Color Functions**:
-  - `ColorCode::normal()`: Light gray on black (default)
-  - `ColorCode::info()`: Cyan for information
-  - `ColorCode::success()`: Green for success messages
-  - `ColorCode::warning()`: Yellow for warnings
-  - `ColorCode::error()`: Red for errors
-  - `ColorCode::panic()`: White on red background for panics
-- **Auto-Scroll**: Automatic scrolling when reaching bottom of screen
-- **Position Tracking**: Type-safe position management
-
-### ✅ Power Management
-
-- **CPU Halt**: Uses `hlt` instruction in main loop
-- **Low Power Mode**: CPU sleeps until next interrupt
-- **Efficiency**: No busy-waiting, minimal power consumption
-
-### ✅ Advanced Panic Handler
-
-- **Detailed Information**:
-  - Panic message
-  - File name, line number, column
-  - Dual output (serial + VGA)
-- **Visual Indicators**:
-  - Prominent color-coded display
-  - Box-drawing characters for serial output
-  - Easy-to-spot red background on VGA
-- **Safe Halt**: CPU halted with `hlt` after panic
-
-## 🛠️ Code Quality Improvements
-
-### Type Safety
-
-- **ColorCode struct**: Replaces raw `u8` values
-- **Position struct**: Type-safe VGA buffer position tracking
-- **Explicit types**: All pointer arithmetic uses explicit type annotations
-
-### Constants and Configuration
-
-**Serial Driver (`serial.rs`):**
-
-```rust
-// Register offsets organized in module
-mod register_offset {
-    pub const DATA: u16 = 0;
-    pub const INTERRUPT_ENABLE: u16 = 1;
-    // ...
-}
-
-// Bit masks organized by register
-mod line_control {
-    pub const DLAB_ENABLE: u8 = 0x80;
-    pub const CONFIG_8N1: u8 = 0x03;
-}
-```
-
-**VGA Driver (`vga_buffer.rs`):**
-
-```rust
-const VGA_WIDTH: usize = 80;
-const VGA_HEIGHT: usize = 25;
-const BYTES_PER_CHAR: usize = 2;
-const PRINTABLE_ASCII_START: u8 = 0x20;
-```
-
-### Function Decomposition
-
-**Main Kernel (`main.rs`):**
-
-- Separated initialization, display, and loop logic
-- Each function has a single, clear responsibility
-- Easier to test and maintain
-
-**Example:**
-
-```rust
-fn kernel_main(_boot_info: &'static BootInfo) -> ! {
-    initialize_system();
-    display_boot_information();
-    display_feature_list();
-    display_usage_note();
-    enter_idle_loop()
-}
-```
-
-### Error Handling
-
-- Explicit error types (e.g., `InitError`)
-- Comprehensive documentation of safety requirements
-- Clear panic messages with location information
-
-### Documentation
-
-- Module-level documentation with `//!`
-- Function-level documentation with examples
-- Safety documentation for `unsafe` blocks
-- Inline comments for complex logic
-
-## 🚀 Building and Running
+## 🚀 Quick Start
 
 ### Prerequisites
 
 ```bash
-# Install toolchain + components (rust-toolchain.toml will auto-prompt if omitted)
-rustup toolchain install nightly --component rust-src --component llvm-tools-preview
+# Install Rust nightly toolchain
+rustup toolchain install nightly
 
-# Install bootimage
-cargo install bootimage
+# Set nightly as default for this project
+rustup override set nightly
 
-# Install QEMU (Ubuntu/Debian)
+# Install required components
+rustup component add rust-src llvm-tools-preview
+rustup component add clippy rustfmt
+
+# Install QEMU for x86_64
+# On Ubuntu/Debian:
 sudo apt install qemu-system-x86
+
+# On macOS:
+brew install qemu
+
+# On Windows:
+# Download from https://www.qemu.org/download/
 ```
 
-### Build
+### Building
 
 ```bash
-# Debug build
+# Build the kernel (debug mode)
+make build
+
+# Or using cargo directly
 cargo build
 
-# Release build (optimized for size)
+# Build release version (optimized)
+make build-release
 cargo build --release
-
-# Create bootable image
-cargo bootimage
 ```
 
-### Run
+### Running
 
 ```bash
-# Run with serial output only (headless)
-qemu-system-x86_64 \
-    -drive format=raw,file=target/x86_64-blog_os/debug/bootimage-tiny_os.bin \
-    -serial stdio \
-    -display none
+# Run in QEMU
+make run
 
-# Run with VGA display
-qemu-system-x86_64 \
-  -drive format=raw,file=target/x86_64-blog_os/debug/bootimage-tiny_os.bin
+# Run release version
+make run-release
 
-# Run release build
-qemu-system-x86_64 \
-  -drive format=raw,file=target/x86_64-blog_os/release/bootimage-tiny_os.bin
+# Run with GDB debugger (waits for connection)
+make debug
 ```
 
-Exit QEMU: Press `Ctrl+A`, then `X`
+The kernel will boot and display:
 
-## 📊 Code Quality
+- Boot environment information
+- System status
+- Feature list
+- Usage instructions
 
-### Safety Improvements
+**To exit QEMU:** Press `Ctrl+A`, then `X`
 
-- **Type Safety**: `ColorCode` and `Position` structs prevent type errors
-- **FIFO Check**: Prevents serial buffer overflow
-- **Const Functions**: Compile-time guarantees for color encoding
-- **Interrupt Safety**: `with_writer()` helper prevents deadlocks
+## 📁 Project Structure
 
-### Performance
-
-- **CPU Halt**: Low power consumption in idle
-- **Efficient I/O**: FIFO-based serial transmission
-- **Minimal Overhead**: Direct hardware access
-- **LTO Optimization**: Link-time optimization in release builds
-- **Optimized Scrolling**: Uses `copy()` for fast memory operations
-
-### Maintainability
-
-- **Modular Functions**: Each feature in separate, focused function
-- **Comprehensive Documentation**: Module and function-level docs
-- **Color Abstractions**: Easy-to-use color methods
-- **Constants**: All magic numbers replaced with named constants
-- **Organized Code**: Related constants grouped in modules
-
-## 🔧 Project Structure
-
-```text
-OS/
-├── .cargo/
-│   └── config.toml              # Build configuration (build-std)
+```
+tiny_os/
 ├── src/
-│   ├── main.rs                  # Kernel entry point (refactored)
-│   ├── serial.rs                # Serial port driver (refactored)
-│   └── vga_buffer.rs            # VGA text mode driver (refactored)
-├── x86_64-blog_os.json          # Custom target specification
-├── Cargo.toml                   # Dependencies and build config
-├── build.rs                     # Build script
-└── README.md                    # This file
+│   ├── main.rs              # Kernel entry point
+│   ├── constants.rs         # Hardware constants and config
+│   ├── init.rs              # Initialization routines
+│   ├── serial.rs            # UART serial port driver
+│   ├── vga_buffer.rs        # VGA text mode driver
+│   └── display/
+│       ├── mod.rs           # Display module exports
+│       ├── core.rs          # Output abstraction
+│       ├── boot.rs          # Boot information display
+│       └── panic.rs         # Panic handler display
+├── .cargo/
+│   └── config.toml          # Cargo configuration
+├── x86_64-blog_os.json      # Custom target specification
+├── Cargo.toml               # Dependencies and build config
+├── rust-toolchain.toml      # Rust toolchain specification
+├── Makefile                 # Build automation
+└── README.md                # This file
 ```
 
-## 📝 Key Implementation Details
+## 🏗️ Architecture
 
-### Type-Safe Color System
+### Boot Process
 
-```rust
-pub struct ColorCode(u8);
-
-impl ColorCode {
-    pub const fn new(fg: VgaColor, bg: VgaColor) -> Self {
-        Self((bg as u8) << 4 | (fg as u8))
-    }
-
-    pub const fn normal() -> Self { /* ... */ }
-    pub const fn error() -> Self { /* ... */ }
-    // etc.
-}
+```
+Bootloader (bootloader 0.9)
+    ↓
+kernel_main() in main.rs
+    ↓
+initialize_all() in init.rs
+    ├── initialize_vga() - Clear screen, test buffer
+    └── initialize_serial() - Detect and configure COM1
+    ↓
+Display boot information
+    ├── Boot environment
+    ├── System info
+    ├── Feature list
+    └── Usage notes
+    ↓
+halt_forever() - Enter low-power idle loop
 ```
 
-### Position Management
+### Module Dependencies
 
-```rust
-struct Position {
-    row: usize,
-    col: usize,
-}
-
-impl Position {
-    const fn byte_offset(&self) -> usize {
-        (self.row * VGA_WIDTH + self.col) * BYTES_PER_CHAR
-    }
-
-    fn is_at_screen_bottom(&self) -> bool {
-        self.row >= VGA_HEIGHT
-    }
-}
+```
+main.rs
+    ├─→ init.rs
+    │   ├─→ vga_buffer.rs
+    │   └─→ serial.rs
+    ├─→ display/
+    │   ├─→ core.rs
+    │   ├─→ boot.rs
+    │   └─→ panic.rs
+    └─→ constants.rs
 ```
 
-### Interrupt-Safe Writer Access
+### Memory Map
 
-```rust
-fn with_writer<F, R>(f: F) -> R
-where
-    F: FnOnce(&mut VgaWriter) -> R,
-{
-    interrupts::without_interrupts(|| f(&mut VGA_WRITER.lock()))
-}
+```
+0x00000000 - 0x000FFFFF  : Real mode area (1 MB)
+0x00100000 - ...         : Kernel code (loaded by bootloader)
+0x000B8000 - 0x000B8FA0  : VGA text buffer (80x25x2 = 4000 bytes)
+0x000003F8 - 0x000003FF  : COM1 serial port (8 I/O ports)
 ```
 
-### Organized Constants
+## 🔧 Development
 
-```rust
-// Serial port configuration
-mod register_offset {
-    pub const DATA: u16 = 0;
-    pub const LINE_STATUS: u16 = 5;
-}
+### Testing
 
-mod line_status {
-    pub const TRANSMIT_EMPTY: u8 = 0x20;
-}
+```bash
+# Run unit tests
+make test
+cargo test --lib
+
+# Run all CI checks (format, clippy, test, build)
+make ci
 ```
 
-## 🎓 Refactoring Highlights
+### Code Quality
 
-### Before → After
+```bash
+# Check code (fast, no binary)
+make check
+cargo check
 
-**Magic Numbers:**
+# Run clippy linter
+make clippy
+cargo clippy
 
-```rust
-// Before
-port.write(0x80);  // What does this do?
+# Format code
+make fmt
+cargo fmt
 
-// After
-port.write(line_control::DLAB_ENABLE);  // Clear and self-documenting
+# Check formatting
+make fmt-check
+cargo fmt -- --check
 ```
 
-**Type Safety:**
+### Documentation
 
-```rust
-// Before
-fn print_colored(s: &str, color: u8);
+```bash
+# Generate documentation
+make doc
 
-// After
-fn print_colored(s: &str, color: ColorCode);
+# Generate and open in browser
+make doc-open
+cargo doc --open --no-deps --document-private-items
 ```
 
-**Function Size:**
+### Binary Analysis
 
-```rust
-// Before: kernel_main() with 60+ lines
+```bash
+# Show binary size
+make size
 
-// After: kernel_main() with 6 clear steps
-fn kernel_main(_boot_info: &'static BootInfo) -> ! {
-    initialize_system();
-    display_boot_information();
-    display_feature_list();
-    display_usage_note();
-    enter_idle_loop()
-}
+# Analyze binary bloat (requires cargo-bloat)
+cargo install cargo-bloat
+make bloat
 ```
 
-## 🔜 Next Steps
+## 🐛 Debugging
 
-Potential improvements:
+### QEMU Monitor
 
-- [ ] Keyboard input handling
-- [ ] Timer/RTC support
-- [ ] Interrupt handling (IDT)
-- [ ] Memory management (paging, heap allocator)
-- [ ] Simple shell/command interpreter
+When running in QEMU, press `Ctrl+Alt+2` to access the QEMU monitor:
+
+```
+(qemu) info registers    # Show CPU registers
+(qemu) info mem          # Show memory mappings
+(qemu) info pic          # Show interrupt controller
+```
+
+Press `Ctrl+Alt+1` to return to the guest display.
+
+### GDB Debugging
+
+```bash
+# Terminal 1: Start kernel with debugger
+make debug
+
+# Terminal 2: Connect GDB
+gdb target/x86_64-blog_os/debug/tiny_os
+(gdb) target remote localhost:1234
+(gdb) break kernel_main
+(gdb) continue
+```
+
+### Serial Output
+
+All kernel messages are sent to both VGA and serial output. Serial output is particularly useful for:
+
+- Detailed logs not shown on VGA
+- Panic information with full details
+- System state at error time
+
+To capture serial output to a file:
+
+```bash
+qemu-system-x86_64 -drive format=raw,file=<kernel> -serial file:serial.log
+```
+
+## 📚 Learning Resources
+
+### Rust OS Development
+
+- [Writing an OS in Rust](https://os.phil-opp.com/) - Excellent tutorial series
+- [OSDev Wiki](https://wiki.osdev.org/) - Comprehensive OS development reference
+- [The Rust Book](https://doc.rust-lang.org/book/) - Learn Rust fundamentals
+
+### x86_64 Architecture
+
+- [Intel® 64 and IA-32 Architectures Software Developer's Manual](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
+- [AMD64 Architecture Programmer's Manual](https://www.amd.com/en/support/tech-docs)
+
+### Hardware Programming
+
+- [OSDev: Serial Ports](https://wiki.osdev.org/Serial_Ports) - UART programming
+- [OSDev: VGA Hardware](https://wiki.osdev.org/VGA_Hardware) - VGA text mode
+
+## 🤝 Contributing
+
+Contributions are welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes
+4. Run tests and checks (`make ci`)
+5. Commit your changes (`git commit -m 'Add amazing feature'`)
+6. Push to the branch (`git push origin feature/amazing-feature`)
+7. Open a Pull Request
+
+### Code Style
+
+- Follow Rust standard style (enforced by `rustfmt`)
+- Add documentation for all public APIs
+- Write tests for new functionality
+- Keep unsafe code minimal and well-documented
+- Use meaningful names (no single-letter variables except loop counters)
+
+## 📋 Future Roadmap
+
+### Short Term
+
+- [ ] Interrupt handling (IDT, ISR)
+- [ ] Keyboard input (PS/2)
+- [ ] Timer (PIT/APIC)
+
+### Medium Term
+
+- [ ] Memory management (paging, heap)
+- [ ] Process/task structure
+- [ ] Context switching
+
+### Long Term
+
 - [ ] File system support
-- [ ] Multi-tasking
-- [ ] Unit tests with custom test framework
-- [ ] Integration tests
+- [ ] Network stack
+- [ ] User mode and system calls
 
 ## 📄 License
 
-This project is created for educational purposes.
+This project is licensed under the MIT License - see below for details:
+
+```
+MIT License
+
+Copyright (c) 2025 [Your Name]
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ## 🙏 Acknowledgments
 
-- [Writing an OS in Rust](https://os.phil-opp.com/) by Philipp Oppermann
-- Rust OS Dev community
-- bootloader crate maintainers
+- [Philipp Oppermann](https://os.phil-opp.com/) - For the excellent "Writing an OS in Rust" tutorial
+- [Rust Community](https://www.rust-lang.org/community) - For the amazing language and ecosystem
+- [OSDev Community](https://wiki.osdev.org/) - For comprehensive OS development documentation
+
+## 📞 Support
+
+- **Issues**: [GitHub Issues](https://github.com/yourusername/tiny_os/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/yourusername/tiny_os/discussions)
+- **Email**: <your.email@example.com>
 
 ---
 
-**Status**: ✅ All features implemented, refactored, and documented
-**Platform**: x86_64
-**Language**: Rust (nightly)
-**Bootloader**: bootloader 0.9.33
-**Code Quality**: Type-safe, well-documented, maintainable
+**Note**: This is an educational project. It is not intended for production use.

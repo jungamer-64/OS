@@ -18,10 +18,50 @@
 //! This order ensures we have output capability as early as possible
 //! for error reporting.
 
-use crate::serial::InitError as SerialInitError;
+use crate::serial::{self, InitError as SerialInitError};
 use crate::serial_println;
 use crate::vga_buffer::ColorCode;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+/// Serial banner lines emitted after a successful initialization.
+const SERIAL_INIT_SUCCESS_LINES: [&str; 10] = [
+    "========================================",
+    "=== Rust OS Kernel Started ===",
+    "========================================",
+    "",
+    "[OK] Serial port initialized successfully",
+    "     - Baud rate: 38400",
+    "     - Configuration: 8N1",
+    "     - FIFO: Enabled and verified",
+    "     - Hardware detection: Passed",
+    "",
+];
+
+/// Serial notice when initialization discovers the port was already configured.
+const SERIAL_ALREADY_INITIALIZED_LINES: [&str; 2] = [
+    "[INFO] Serial port already initialized",
+    "       Skipping hardware setup",
+];
+
+/// Static listing of safety features for serial output.
+const SERIAL_SAFETY_FEATURE_LINES: [&str; 8] = [
+    "[SAFETY] Kernel safety features:",
+    "     - Mutex-protected I/O (interrupt-safe)",
+    "     - Boundary checking on all buffer writes",
+    "     - Hardware validation before use",
+    "     - Deadlock prevention via interrupt disabling",
+    "     - Timeout protection on hardware operations",
+    "     - Idempotent initialization",
+    "",
+];
+
+/// Log messages emitted before entering the idle loop.
+const SERIAL_IDLE_LOOP_LINES: [&str; 4] = [
+    "[INFO] Entering low-power idle loop",
+    "       CPU will execute hlt instruction",
+    "       System ready for interrupts",
+    "",
+];
 
 /// Initialization state tracking
 static VGA_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -121,23 +161,13 @@ pub fn initialize_serial() -> Result<(), &'static str> {
         Ok(()) => {
             SERIAL_INITIALIZED.store(true, Ordering::Release);
 
-            serial_println!("========================================");
-            serial_println!("=== Rust OS Kernel Started ===");
-            serial_println!("========================================");
-            serial_println!();
-            serial_println!("[OK] Serial port initialized successfully");
-            serial_println!("     - Baud rate: 38400");
-            serial_println!("     - Configuration: 8N1");
-            serial_println!("     - FIFO: Enabled and verified");
-            serial_println!("     - Hardware detection: Passed");
-            serial_println!();
+            serial::log_lines(SERIAL_INIT_SUCCESS_LINES);
 
             Ok(())
         }
         Err(SerialInitError::AlreadyInitialized) => {
             SERIAL_INITIALIZED.store(true, Ordering::Release);
-            serial_println!("[INFO] Serial port already initialized");
-            serial_println!("       Skipping hardware setup");
+            serial::log_lines(SERIAL_ALREADY_INITIALIZED_LINES);
             Ok(())
         }
         Err(SerialInitError::PortNotPresent) => {
@@ -207,14 +237,7 @@ pub fn report_safety_features() {
         return;
     }
 
-    serial_println!("[SAFETY] Kernel safety features:");
-    serial_println!("     - Mutex-protected I/O (interrupt-safe)");
-    serial_println!("     - Boundary checking on all buffer writes");
-    serial_println!("     - Hardware validation before use");
-    serial_println!("     - Deadlock prevention via interrupt disabling");
-    serial_println!("     - Timeout protection on hardware operations");
-    serial_println!("     - Idempotent initialization");
-    serial_println!();
+    serial::log_lines(SERIAL_SAFETY_FEATURE_LINES);
 }
 
 /// Complete initialization sequence
@@ -263,10 +286,7 @@ pub fn initialize_all() -> Result<(), &'static str> {
 /// in the idle loop until a hardware interrupt or reset occurs.
 pub fn halt_forever() -> ! {
     if crate::serial::is_available() {
-        serial_println!("[INFO] Entering low-power idle loop");
-        serial_println!("       CPU will execute hlt instruction");
-        serial_println!("       System ready for interrupts");
-        serial_println!();
+        serial::log_lines(SERIAL_IDLE_LOOP_LINES);
     }
 
     loop {

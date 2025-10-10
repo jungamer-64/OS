@@ -1,74 +1,195 @@
+// src/display/core.rs
+
+//! Display core functionality
+//!
+//! Provides the fundamental output abstraction layer that allows
+//! writing to multiple outputs (VGA, serial) through a unified interface.
+//!
+//! # Design
+//!
+//! The `Output` trait abstracts over different output targets, allowing
+//! functions to be output-agnostic. This enables:
+//! - Testing with mock outputs
+//! - Flexible output routing
+//! - Consistent formatting across outputs
+
 use crate::serial_print;
 use crate::vga_buffer::ColorCode;
-use core::cmp;
 use core::fmt::{self, Write};
 
-/// Text output target abstraction.
+#[cfg(test)]
+extern crate std;
+
+/// Text output target abstraction
+///
+/// Implementors of this trait can receive formatted text output
+/// with color information.
 pub trait Output {
+    /// Write text with a specific color
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - The text to write
+    /// * `color` - The color code to use
     fn write(&mut self, text: &str, color: ColorCode);
 }
 
-/// Hardware-backed dual output (VGA + serial).
+/// Hardware-backed dual output (VGA + serial)
+///
+/// Writes to both VGA buffer and serial port simultaneously.
+/// This ensures output is visible both on screen and in logs.
 pub struct HardwareOutput;
 
 impl Output for HardwareOutput {
     fn write(&mut self, text: &str, color: ColorCode) {
-        crate::vga_buffer::print_colored(text, color);
-        serial_print!("{}", text);
+        // Write to VGA if accessible
+        if crate::vga_buffer::is_accessible() {
+            crate::vga_buffer::print_colored(text, color);
+        }
+
+        // Write to serial if available
+        if crate::serial::is_available() {
+            serial_print!("{}", text);
+        }
     }
 }
 
+/// Create a hardware output instance
 pub(crate) fn hardware_output() -> HardwareOutput {
     HardwareOutput
 }
 
-struct StackString {
-    buf: [u8; 512],
-    len: usize,
+struct OutputWriter<'a, O> {
+    out: &'a mut O,
+    color: ColorCode,
 }
 
-impl StackString {
-    const fn new() -> Self {
-        Self {
-            buf: [0u8; 512],
-            len: 0,
-        }
-    }
-
-    fn as_str(&self) -> &str {
-        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("<fmt error>")
-    }
-}
-
-impl Write for StackString {
+impl<'a, O: Output> Write for OutputWriter<'a, O> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        let bytes = s.as_bytes();
-        let space = self.buf.len().saturating_sub(self.len);
-        let to_copy = cmp::min(space, bytes.len());
-        self.buf[self.len..self.len + to_copy].copy_from_slice(&bytes[..to_copy]);
-        self.len += to_copy;
+        self.out.write(s, self.color);
         Ok(())
     }
 }
 
+/// Broadcast a message to hardware outputs
+///
+/// # Arguments
+///
+/// * `message` - The message to broadcast
+/// * `color` - The color to use
+///
+/// # Examples
+///
+/// ```
+/// broadcast("Hello, world!\n", ColorCode::normal());
+/// ```
 #[allow(dead_code)]
 pub fn broadcast(message: &str, color: ColorCode) {
     let mut out = hardware_output();
     broadcast_with(&mut out, message, color);
 }
 
+/// Broadcast a message to a specific output
+///
+/// # Arguments
+///
+/// * `out` - The output target
+/// * `message` - The message to broadcast
+/// * `color` - The color to use
 pub fn broadcast_with<O: Output>(out: &mut O, message: &str, color: ColorCode) {
     broadcast_args_with(out, format_args!("{}", message), color);
 }
 
+/// Broadcast formatted arguments to hardware outputs
+///
+/// # Arguments
+///
+/// * `args` - Format arguments
+/// * `color` - The color to use
 #[allow(dead_code)]
 pub fn broadcast_args(args: fmt::Arguments, color: ColorCode) {
     let mut out = hardware_output();
     broadcast_args_with(&mut out, args, color);
 }
 
+/// Broadcast formatted arguments to a specific output
+///
+/// This is the core formatting function that all other broadcast
+/// functions eventually call.
+///
+/// # Arguments
+///
+/// * `out` - The output target
+/// * `args` - Format arguments
+/// * `color` - The color to use
+///
+/// # Implementation Notes
+///
+/// Streams formatted data directly to the provided output without requiring
+/// intermediate heap buffers. Formatting errors are ignored intentionally,
+/// matching the infallible write semantics of the concrete outputs.
 pub fn broadcast_args_with<O: Output>(out: &mut O, args: fmt::Arguments, color: ColorCode) {
-    let mut buf = StackString::new();
-    let _ = buf.write_fmt(args);
-    out.write(buf.as_str(), color);
+    let mut writer = OutputWriter { out, color };
+    let _ = fmt::write(&mut writer, args);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::string::String;
+    use std::vec::Vec;
+
+    /// Mock output for testing
+    struct MockOutput {
+        writes: Vec<(String, ColorCode)>,
+    }
+
+    impl MockOutput {
+        fn new() -> Self {
+            Self { writes: Vec::new() }
+        }
+
+        fn get_writes(&self) -> &[(String, ColorCode)] {
+            &self.writes
+        }
+
+        fn concat(&self) -> String {
+            self.writes
+                .iter()
+                .fold(String::new(), |mut acc, (text, _)| {
+                    acc.push_str(text);
+                    acc
+                })
+        }
+    }
+
+    impl Output for MockOutput {
+        fn write(&mut self, text: &str, color: ColorCode) {
+            self.writes.push((String::from(text), color));
+        }
+    }
+
+    #[test]
+    fn test_broadcast_with_mock() {
+        let mut mock = MockOutput::new();
+        broadcast_with(&mut mock, "Test message", ColorCode::normal());
+
+        assert_eq!(mock.concat(), "Test message");
+        assert!(mock
+            .get_writes()
+            .iter()
+            .all(|(_, color)| *color == ColorCode::normal()));
+    }
+
+    #[test]
+    fn test_broadcast_args_with_mock() {
+        let mut mock = MockOutput::new();
+        broadcast_args_with(&mut mock, format_args!("Value: {}", 42), ColorCode::info());
+
+        assert_eq!(mock.concat(), "Value: 42");
+        assert!(mock
+            .get_writes()
+            .iter()
+            .all(|(_, color)| *color == ColorCode::info()));
+    }
 }
