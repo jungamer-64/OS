@@ -2,8 +2,8 @@
 .github/instructions/codacy.instructions.md
 
 # Rust build artifacts
-target/*
-
+target/
+node_modules/
 # OS image files
 *.iso
 *.bin

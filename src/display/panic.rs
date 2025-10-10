@@ -50,7 +50,7 @@ impl TruncatingBuffer {
         core::str::from_utf8(&self.buf[..self.len]).unwrap_or("<fmt error>")
     }
 
-    fn was_truncated(&self) -> bool {
+    const fn was_truncated(&self) -> bool {
         self.truncated
     }
 }
@@ -361,8 +361,7 @@ fn serial_short_separator() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::fmt::Write as _;
-    use std::iter;
+    use core::iter;
     use std::string::String;
 
     #[test]

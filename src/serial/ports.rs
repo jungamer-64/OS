@@ -10,6 +10,7 @@
 
 use super::constants::{port_addr, register_offset};
 use super::error::InitError;
+use super::timeout::{self, AdaptiveTimeout, TimeoutConfig, TimeoutResult};
 use crate::constants::*;
 use x86_64::instructions::port::Port;
 
@@ -29,7 +30,6 @@ pub(super) enum PortOp {
     ScratchRead,
     LineStatusRead,
     ModemStatusRead,
-    PollAndWrite(u8),
 }
 
 /// Result type for port operations
@@ -46,6 +46,8 @@ pub struct SerialPorts {
     modem_status: Port<u8>,
     scratch: Port<u8>,
     state: HardwareState,
+    /// Adaptive timeout for write operations
+    adaptive_timeout: AdaptiveTimeout,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -131,6 +133,7 @@ impl SerialPorts {
             modem_status: Port::new(port_addr(register_offset::MODEM_STATUS)),
             scratch: Port::new(port_addr(register_offset::SCRATCH)),
             state: HardwareState::Uninitialized,
+            adaptive_timeout: AdaptiveTimeout::new(TimeoutConfig::default_timeout()),
         }
     }
 
@@ -208,9 +211,40 @@ impl SerialPorts {
         self.perform_op(PortOp::ModemStatusRead)
     }
 
-    /// Poll LSR and write byte when ready
+    /// Poll LSR and write byte when ready (using adaptive timeout)
     pub fn poll_and_write(&mut self, byte: u8) -> PortResult<()> {
-        self.perform_op(PortOp::PollAndWrite(byte)).map(|_| ())
+        let config = self.adaptive_timeout.current_config();
+        let result = self.poll_and_write_with_timeout(byte, config);
+
+        // Update adaptive timeout based on result
+        match result {
+            Ok(_) => self.adaptive_timeout.record_success(),
+            Err(InitError::Timeout) => self.adaptive_timeout.record_failure(),
+            _ => {}
+        }
+
+        result
+    }
+
+    /// Poll LSR and write byte with specified timeout
+    fn poll_and_write_with_timeout(&mut self, byte: u8, config: TimeoutConfig) -> PortResult<()> {
+        let result = timeout::poll_with_timeout(config, || {
+            // SAFETY: Reading line status register
+            let lsr = unsafe { self.line_status.read() };
+            (lsr & LSR_TRANSMIT_EMPTY) != 0
+        });
+
+        match result {
+            TimeoutResult::Ok(()) => {
+                // SAFETY: Writing to data port when transmit buffer is empty
+                unsafe {
+                    self.data.write(byte);
+                }
+                timeout::record_poll_success();
+                Ok(())
+            }
+            TimeoutResult::Timeout { .. } => Err(InitError::Timeout),
+        }
     }
 
     /// Comprehensive hardware validation
@@ -309,19 +343,18 @@ impl SerialPorts {
                 PortOp::ScratchRead => Ok(self.scratch.read()),
                 PortOp::LineStatusRead => Ok(self.line_status.read()),
                 PortOp::ModemStatusRead => Ok(self.modem_status.read()),
-                PortOp::PollAndWrite(b) => {
-                    // Poll with timeout
-                    for _ in 0..TIMEOUT_ITERATIONS {
-                        if (self.line_status.read() & LSR_TRANSMIT_EMPTY) != 0 {
-                            self.data.write(b);
-                            return Ok(1);
-                        }
-                        core::hint::spin_loop();
-                    }
-                    Err(InitError::Timeout)
-                }
             }
         }
+    }
+
+    /// Get adaptive timeout statistics
+    pub fn timeout_stats(&self) -> (u32, u32, u32) {
+        self.adaptive_timeout.stats()
+    }
+
+    /// Reset adaptive timeout statistics
+    pub fn reset_timeout_stats(&mut self) {
+        self.adaptive_timeout.reset();
     }
 }
 

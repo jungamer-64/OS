@@ -251,7 +251,7 @@ const _: () = assert!(
 );
 
 // ============================================================================
-/// Type-Safe Configuration
+// Type-Safe Configuration
 // ============================================================================
 
 /// Serial port configuration structure
@@ -297,6 +297,7 @@ pub enum StopBits {
 
 impl SerialConfig {
     /// Default configuration: 38400 baud, 8N1
+    #[must_use]
     #[allow(dead_code)]
     pub const fn default() -> Self {
         Self {
@@ -309,6 +310,7 @@ impl SerialConfig {
     }
 
     /// Validate configuration parameters
+    #[must_use]
     #[allow(dead_code)]
     pub const fn is_valid(&self) -> bool {
         // Port must be in valid range
@@ -357,7 +359,7 @@ mod tests {
     #[test]
     fn test_baud_rate_calculation() {
         // Verify baud rate calculation is correct
-        let expected_baud = 115200 / BAUD_RATE_DIVISOR as u32;
+        let expected_baud = 115_200 / u32::from(BAUD_RATE_DIVISOR);
         assert_eq!(expected_baud, 38400);
     }
 }

@@ -3,6 +3,11 @@ name = "tiny_os"
 version = "0.4.0"
 authors = ["Your Name <your.email@example.com>"]
 edition = "2021"
+description = "Minimal x86_64 no_std Rust kernel with robust hardware support"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/jungamer-64/OS"
+keywords = ["os", "kernel", "no-std", "bare-metal", "x86_64"]
+categories = ["no-std", "embedded", "os"]
 
 [package.metadata]
 description = "Minimal x86_64 no_std Rust kernel with robust hardware support"

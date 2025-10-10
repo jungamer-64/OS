@@ -81,6 +81,13 @@ impl ScreenBuffer {
             return Err(VgaError::InvalidPosition);
         }
 
+        // Debug-only assertion following Microsoft Docs best practices:
+        // "Debug.Assert before unsafe code" - helps catch issues in development
+        debug_assert!(
+            index < BUFFER_SIZE,
+            "VGA buffer index {index} exceeds buffer size {BUFFER_SIZE}"
+        );
+
         unsafe {
             // SAFETY: `index` validated above and the pointer is fixed to VGA memory.
             core::ptr::write_volatile(self.ptr.as_ptr().add(index), value);
@@ -395,6 +402,7 @@ impl VgaWriter {
     }
 
     /// Write a single byte to the screen, ignoring any failure.
+    #[allow(dead_code)]
     fn write_byte(&mut self, byte: u8) {
         let _ = self.write_byte_checked(byte);
     }

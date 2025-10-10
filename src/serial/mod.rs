@@ -20,8 +20,13 @@
 mod constants;
 mod error;
 mod ports;
+mod timeout;
 
 pub use error::InitError;
+pub use timeout::{
+    poll_with_timeout, poll_with_timeout_value, retry_with_timeout, timeout_stats, AdaptiveTimeout,
+    RetryConfig, RetryResult, TimeoutConfig, TimeoutContext, TimeoutResult,
+};
 
 use crate::constants::*;
 use crate::diagnostics::{LockTimingToken, DIAGNOSTICS};
@@ -46,6 +51,7 @@ static INIT_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
 #[cfg(debug_assertions)]
 static LOCK_ACQUISITIONS: AtomicU64 = AtomicU64::new(0);
 #[cfg(debug_assertions)]
+#[allow(dead_code)]
 static LOCK_HOLDER_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(debug_assertions)]
 const MAX_LOCK_HOLD_TIME: u64 = 1_000_000;
@@ -82,7 +88,11 @@ where
     let (mut guard, token) = acquire_serial_ports_guard();
 
     #[cfg(debug_assertions)]
-    let start_time = unsafe { _rdtsc() };
+    let start_time = unsafe {
+        // Debug-only TSC read for lock timing diagnostics
+        // SAFETY: RDTSC is safe, read-only, non-privileged instruction
+        _rdtsc()
+    };
 
     #[cfg(debug_assertions)]
     let _ = LOCK_ACQUISITIONS.fetch_add(1, Ordering::SeqCst);
@@ -93,7 +103,11 @@ where
 
     #[cfg(debug_assertions)]
     {
-        let elapsed = unsafe { _rdtsc() }.saturating_sub(start_time);
+        let elapsed = unsafe {
+            // SAFETY: RDTSC is safe, read-only, non-privileged instruction
+            _rdtsc()
+        }
+        .saturating_sub(start_time);
         if elapsed > MAX_LOCK_HOLD_TIME && is_available() {
             serial_println!("[WARN] Lock held for {} cycles", elapsed);
         }
@@ -189,48 +203,60 @@ fn configure_uart() -> Result<(), InitError> {
 /// 2. Line Status Register validation
 /// 3. Modem Status Register validation
 ///
+/// Uses retry logic for robustness.
+///
 /// # Returns
 ///
 /// - `Ok(true)` if hardware is present and responsive
 /// - `Ok(false)` if hardware is not present
 /// - `Err(InitError)` if detection encountered an error
 fn is_port_present_robust() -> Result<bool, InitError> {
-    with_serial_ports(|ports| -> Result<bool, InitError> {
-        // Test 1: Scratch register with primary pattern
-        ports.write_scratch(SCRATCH_TEST_PRIMARY)?;
-        wait_short();
-        if ports.read_scratch()? != SCRATCH_TEST_PRIMARY {
-            return Err(InitError::HardwareAccessFailed);
-        }
+    use timeout::{retry_with_timeout, RetryConfig, RetryResult};
 
-        // Test 2: Scratch register with secondary pattern
-        ports.write_scratch(SCRATCH_TEST_SECONDARY)?;
-        wait_short();
-        if ports.read_scratch()? != SCRATCH_TEST_SECONDARY {
-            return Err(InitError::HardwareAccessFailed);
-        }
+    // Use retry mechanism for hardware detection
+    let result = retry_with_timeout(RetryConfig::quick_retry(), || {
+        with_serial_ports(|ports| -> Option<Result<bool, InitError>> {
+            // Test 1: Scratch register with primary pattern
+            ports.write_scratch(SCRATCH_TEST_PRIMARY).ok()?;
+            wait_short();
+            if ports.read_scratch().ok()? != SCRATCH_TEST_PRIMARY {
+                return Some(Err(InitError::HardwareAccessFailed));
+            }
 
-        // Test 3: Scratch register with zero
-        ports.write_scratch(0x00)?;
-        wait_short();
-        if ports.read_scratch()? != 0x00 {
-            return Err(InitError::HardwareAccessFailed);
-        }
+            // Test 2: Scratch register with secondary pattern
+            ports.write_scratch(SCRATCH_TEST_SECONDARY).ok()?;
+            wait_short();
+            if ports.read_scratch().ok()? != SCRATCH_TEST_SECONDARY {
+                return Some(Err(InitError::HardwareAccessFailed));
+            }
 
-        // Test 4: Verify LSR is not all 0xFF (indicates no hardware)
-        let lsr = ports.read_line_status()?;
-        if lsr == 0xFF {
-            return Ok(false);
-        }
+            // Test 3: Scratch register with zero
+            ports.write_scratch(0x00).ok()?;
+            wait_short();
+            if ports.read_scratch().ok()? != 0x00 {
+                return Some(Err(InitError::HardwareAccessFailed));
+            }
 
-        // Test 5: Verify MSR is not all 0xFF
-        let msr = ports.read_modem_status()?;
-        if msr == 0xFF {
-            return Ok(false);
-        }
+            // Test 4: Verify LSR is not all 0xFF (indicates no hardware)
+            let lsr = ports.read_line_status().ok()?;
+            if lsr == 0xFF {
+                return Some(Ok(false));
+            }
 
-        Ok(true)
-    })
+            // Test 5: Verify MSR is not all 0xFF
+            let msr = ports.read_modem_status().ok()?;
+            if msr == 0xFF {
+                return Some(Ok(false));
+            }
+
+            Some(Ok(true))
+        })
+    });
+
+    match result {
+        RetryResult::Ok(inner_result) => inner_result,
+        RetryResult::Failed { .. } => Err(InitError::Timeout),
+    }
 }
 
 /// Short delay for hardware response
@@ -244,13 +270,43 @@ pub(super) fn wait_short() {
     }
 }
 
-/// Return whether the serial port has been initialized
+/// Wait with timeout for a condition
+///
+/// Uses the timeout module for robust waiting with backoff.
+#[inline]
+#[allow(dead_code)]
+pub(super) fn wait_with_timeout<F>(condition: F, config: TimeoutConfig) -> Result<(), InitError>
+where
+    F: FnMut() -> bool,
+{
+    match timeout::poll_with_timeout(config, condition) {
+        timeout::TimeoutResult::Ok(()) => Ok(()),
+        timeout::TimeoutResult::Timeout { .. } => Err(InitError::Timeout),
+    }
+}
+
+/// Check if serial port has been initialized
+///
+/// Returns `true` if `init()` has completed successfully, even if
+/// the hardware is not actually present.
+///
+/// # Returns
+///
+/// `true` if initialization has been attempted, `false` otherwise
 #[inline]
 pub fn is_initialized() -> bool {
     SERIAL_INITIALIZED.load(Ordering::Acquire)
 }
 
-/// Return whether the serial port hardware is available
+/// Check if serial port hardware is available
+///
+/// Returns `true` only if both initialized and hardware detected.
+/// Use this before attempting serial writes to avoid hangs on
+/// systems without COM1 hardware.
+///
+/// # Returns
+///
+/// `true` if serial hardware is present and functional, `false` otherwise
 #[inline]
 pub fn is_available() -> bool {
     SERIAL_PORT_AVAILABLE.load(Ordering::Acquire)
@@ -371,6 +427,36 @@ macro_rules! serial_println {
     ($fmt:expr, $($arg:tt)*) => ($crate::serial_print!(
         concat!($fmt, "\n"), $($arg)*
     ));
+}
+
+/// Get serial port timeout statistics
+///
+/// Get timeout statistics
+///
+/// Returns `(successes, failures, multiplier_percentage)`
+#[must_use]
+pub fn get_timeout_stats() -> (u32, u32, u32) {
+    if !is_available() {
+        return (0, 0, 100);
+    }
+    with_serial_ports(|ports| ports.timeout_stats())
+}
+
+/// Reset serial port timeout statistics
+pub fn reset_timeout_stats() {
+    if !is_available() {
+        return;
+    }
+    with_serial_ports(|ports| ports.reset_timeout_stats())
+}
+
+/// Get global timeout statistics from timeout module
+/// Get global timeout statistics
+///
+/// Returns `(total_writes, total_timeouts)`
+#[must_use]
+pub fn get_global_timeout_stats() -> (u64, u64) {
+    timeout::timeout_stats()
 }
 
 // Unit tests (compile in test configuration only)

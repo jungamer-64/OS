@@ -59,7 +59,8 @@ impl Output for HardwareOutput {
 }
 
 /// Create a hardware output instance
-pub(crate) fn hardware_output() -> HardwareOutput {
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) const fn hardware_output() -> HardwareOutput {
     HardwareOutput
 }
 
@@ -68,7 +69,7 @@ struct OutputWriter<'a, O> {
     color: ColorCode,
 }
 
-impl<'a, O: Output> Write for OutputWriter<'a, O> {
+impl<O: Output> Write for OutputWriter<'_, O> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         self.out.write(s, self.color);
         Ok(())
@@ -101,7 +102,7 @@ pub fn broadcast(message: &str, color: ColorCode) {
 /// * `message` - The message to broadcast
 /// * `color` - The color to use
 pub fn broadcast_with<O: Output>(out: &mut O, message: &str, color: ColorCode) {
-    broadcast_args_with(out, format_args!("{}", message), color);
+    broadcast_args_with(out, format_args!("{message}"), color);
 }
 
 /// Broadcast formatted arguments to hardware outputs
@@ -160,7 +161,7 @@ mod tests {
         fn concat(&self) -> String {
             self.writes
                 .iter()
-                .fold(String::new(), |mut acc, (text, _)| {
+                .fold(String::new(), |mut acc: String, (text, _)| {
                     acc.push_str(text);
                     acc
                 })

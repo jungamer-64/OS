@@ -372,7 +372,14 @@ pub fn is_initialized() -> bool {
     current_phase() == InitPhase::Complete
 }
 
-/// Get initialization status string
+/// Get human-readable initialization status
+///
+/// Returns a static string describing the current initialization phase.
+///
+/// # Returns
+///
+/// A descriptive status string (e.g., "VGA initialized", "Complete")
+#[must_use]
 pub fn status_string() -> &'static str {
     match current_phase() {
         InitPhase::NotStarted => "Not started",
@@ -383,7 +390,14 @@ pub fn status_string() -> &'static str {
     }
 }
 
-/// Get detailed initialization status（将来の診断情報拡張で使用予定）
+/// Get detailed initialization status
+///
+/// Returns comprehensive diagnostic information about the initialization
+/// state of all subsystems. Useful for debugging and health monitoring.
+///
+/// # Returns
+///
+/// An `InitStatus` structure containing phase and subsystem states
 pub fn detailed_status() -> InitStatus {
     InitStatus {
         phase: current_phase(),
@@ -408,7 +422,8 @@ impl InitStatus {
         self.vga_available && matches!(self.phase, InitPhase::Complete)
     }
 
-    /// Check if system has output capability
+    /// Check if any output is available
+    #[must_use]
     pub const fn has_output(&self) -> bool {
         self.vga_available || self.serial_available
     }
