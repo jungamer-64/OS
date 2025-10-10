@@ -31,6 +31,8 @@ pub enum VgaError {
     NotInitialized,
     /// The writer was used without the runtime lock being held.
     NotLocked,
+    /// Lock order violation detected.
+    LockOrderViolation,
 }
 
 impl VgaError {
@@ -42,6 +44,7 @@ impl VgaError {
             VgaError::WriteFailure => "write failure",
             VgaError::NotInitialized => "writer not initialized",
             VgaError::NotLocked => "writer not locked",
+            VgaError::LockOrderViolation => "lock order violation",
         }
     }
 }

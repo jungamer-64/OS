@@ -24,6 +24,7 @@ mod constants;
 mod writer;
 
 use crate::diagnostics::DIAGNOSTICS;
+use crate::sync::lock_manager::{acquire_lock, LockId};
 pub use color::ColorCode;
 pub use constants::{VGA_HEIGHT, VGA_WIDTH};
 use core::fmt;
@@ -60,6 +61,10 @@ where
     F: FnOnce(&mut VgaWriter) -> Result<R, VgaError>,
 {
     interrupts::without_interrupts(|| {
+        // Acquire lock order enforcement first
+        let _lock_guard = acquire_lock(LockId::Vga)
+            .map_err(|_| VgaError::LockOrderViolation)?;
+        
         let mut guard = match VGA_WRITER.try_lock() {
             Some(guard) => guard,
             None => {

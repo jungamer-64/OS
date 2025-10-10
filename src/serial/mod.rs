@@ -31,6 +31,7 @@ pub use timeout::{
 use crate::constants::*;
 use crate::diagnostics::{LockTimingToken, DIAGNOSTICS};
 use crate::serial_println;
+use crate::sync::lock_manager::{acquire_lock, LockId};
 use constants::MAX_INIT_ATTEMPTS;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -68,6 +69,10 @@ const MAX_LOCK_HOLD_TIME: u64 = 1_000_000;
 static SERIAL_PORTS: Mutex<SerialPorts> = Mutex::new(SerialPorts::new());
 
 fn acquire_serial_ports_guard() -> (MutexGuard<'static, SerialPorts>, LockTimingToken) {
+    // Acquire lock order enforcement first
+    let _lock_guard = acquire_lock(LockId::Serial)
+        .expect("Serial lock should always be acquirable (highest priority)");
+    
     if let Some(guard) = SERIAL_PORTS.try_lock() {
         DIAGNOSTICS.record_lock_acquisition();
         let token = DIAGNOSTICS.begin_lock_timing();

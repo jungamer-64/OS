@@ -513,10 +513,24 @@ where
         }
     }
 
-    // SAFETY: last_error is guaranteed to be Some because we always execute at least one attempt
-    RetryResult::Failed {
-        attempts: config.max_retries + 1,
-        last_error: last_error.expect("last_error should always be Some after retries"),
+    // last_error is guaranteed to be Some because we always execute at least one attempt
+    // This match is safer than expect() and provides explicit error handling
+    match last_error {
+        Some(err) => RetryResult::Failed {
+            attempts: config.max_retries + 1,
+            last_error: err,
+        },
+        None => {
+            // This should never happen due to loop logic, but handle gracefully
+            // Use default TimeoutError if somehow last_error is None
+            RetryResult::Failed {
+                attempts: config.max_retries + 1,
+                last_error: TimeoutError {
+                    iterations: 0,
+                    total_waits: 0,
+                },
+            }
+        }
     }
 }
 

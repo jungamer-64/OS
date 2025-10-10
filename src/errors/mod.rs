@@ -9,9 +9,9 @@ pub mod unified;
 
 // Re-export unified types for new code
 pub use unified::{
-    DisplayError as UnifiedDisplayError, InitError as UnifiedInitError,
-    KernelError as UnifiedKernelError, SerialError as UnifiedSerialError,
-    VgaError as UnifiedVgaError, Result as UnifiedResult, ErrorContext,
+    DisplayError as UnifiedDisplayError, ErrorContext, InitError as UnifiedInitError,
+    KernelError as UnifiedKernelError, Result as UnifiedResult, SerialError as UnifiedSerialError,
+    VgaError as UnifiedVgaError,
 };
 
 // Legacy error types remain available via their original paths

@@ -11,6 +11,13 @@
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 /// Lock identifiers with defined ordering
+/// 
+/// # Lock Ordering Rules
+/// Following Microsoft Docs: "Don't trust the environment your code runs in"
+/// Locks must be acquired in ascending order to prevent deadlocks:
+/// 1. Serial (priority 0) - highest priority
+/// 2. Vga (priority 1) - medium priority  
+/// 3. Diagnostics (priority 2) - lowest priority
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum LockId {

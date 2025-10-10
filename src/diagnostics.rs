@@ -29,6 +29,11 @@ pub struct SystemDiagnostics {
     nested_panic_detected: AtomicBool,
     last_panic_location: AtomicU64, // パック化されたファイル/行情報（将来の詳細パニックトレースで使用予定）
 
+    // 健全性チェック用フラグ
+    // Following Microsoft Docs: "Offer graceful degradations"
+    health_check_failures: AtomicU64,
+    data_integrity_violations: AtomicU64,
+
     // ロック関連メトリクス
     lock_contentions: AtomicU64,
     max_lock_hold_cycles: AtomicU64,
@@ -60,6 +65,8 @@ impl SystemDiagnostics {
             panic_count: AtomicU32::new(0),
             nested_panic_detected: AtomicBool::new(false),
             last_panic_location: AtomicU64::new(0),
+            health_check_failures: AtomicU64::new(0),
+            data_integrity_violations: AtomicU64::new(0),
             lock_contentions: AtomicU64::new(0),
             max_lock_hold_cycles: AtomicU64::new(0),
             total_lock_acquisitions: AtomicU64::new(0),
@@ -76,6 +83,34 @@ impl SystemDiagnostics {
     pub fn set_boot_time(&self) {
         let tsc = read_tsc();
         self.boot_timestamp.store(tsc, Ordering::Relaxed);
+    }
+
+    /// Record health check failure
+    /// Following Microsoft Docs: "Provide detailed error messages for debugging"
+    #[inline]
+    pub fn record_health_check_failure(&self) {
+        self.health_check_failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record data integrity violation
+    /// Following Microsoft Docs: "Don't trust the environment your code runs in"
+    #[inline]
+    pub fn record_data_integrity_violation(&self) {
+        self.data_integrity_violations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Get health check failure count
+    #[inline]
+    #[must_use]
+    pub fn health_check_failures(&self) -> u64 {
+        self.health_check_failures.load(Ordering::Relaxed)
+    }
+
+    /// Get data integrity violation count  
+    #[inline]
+    #[must_use]
+    pub fn data_integrity_violations(&self) -> u64 {
+        self.data_integrity_violations.load(Ordering::Relaxed)
     }
 
     /// Record VGA write operation
@@ -233,6 +268,8 @@ impl SystemDiagnostics {
             max_lock_hold_cycles: self.max_lock_hold_cycles.load(Ordering::Relaxed),
             total_lock_acquisitions: self.total_lock_acquisitions.load(Ordering::Relaxed),
             uptime_cycles: current_tsc.saturating_sub(self.boot_timestamp.load(Ordering::Relaxed)),
+            health_check_failures: self.health_check_failures.load(Ordering::Relaxed),
+            data_integrity_violations: self.data_integrity_violations.load(Ordering::Relaxed),
         }
     }
 
@@ -328,6 +365,9 @@ pub struct DiagnosticSnapshot {
     pub max_lock_hold_cycles: u64,
     pub total_lock_acquisitions: u64,
     pub uptime_cycles: u64,
+    // Defensive programming metrics
+    pub health_check_failures: u64,
+    pub data_integrity_violations: u64,
 }
 
 /// ヘルス状態

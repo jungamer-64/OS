@@ -269,20 +269,43 @@ fn log_vga_failure(context: &str, err: vga_buffer::VgaError) {
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     use tiny_os::diagnostics::DIAGNOSTICS;
+    use tiny_os::panic::{enter_panic, PanicLevel};
 
-    // Record panic in diagnostics
-    let panic_num = DIAGNOSTICS.record_panic();
+    // Atomic panic level detection
+    let panic_level = enter_panic();
 
-    if panic_num > 0 {
-        DIAGNOSTICS.mark_nested_panic();
+    // Record in diagnostics
+    DIAGNOSTICS.record_panic();
 
-        if serial::is_available() {
-            serial_println!("[CRITICAL] Nested panic detected! Halting immediately.");
+    match panic_level {
+        PanicLevel::Primary => {
+            // First panic - full output
         }
+        PanicLevel::Nested => {
+            // Nested panic - minimal output
+            DIAGNOSTICS.mark_nested_panic();
 
-        loop {
-            x86_64::instructions::hlt();
+            if serial::is_available() {
+                serial_println!("[CRITICAL] Nested panic detected! Halting immediately.");
+            }
+
+            loop {
+                x86_64::instructions::hlt();
+            }
         }
+        PanicLevel::Critical => {
+            // Critical failure - emergency halt
+            x86_64::instructions::interrupts::disable();
+            
+            if serial::is_available() {
+                serial_println!("[FATAL] Critical panic failure! Emergency halt.");
+            }
+
+            loop {
+                x86_64::instructions::hlt();
+            }
+        }
+        PanicLevel::Normal => unreachable!("enter_panic() never returns Normal"),
     }
 
     let mut output_success = false;

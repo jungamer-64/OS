@@ -14,8 +14,10 @@ pub mod diagnostics;
 pub mod display;
 pub mod errors;
 pub mod init;
+pub mod panic;
 pub mod qemu;
 pub mod serial;
+pub mod sync;
 pub mod vga_buffer;
 
 pub use qemu::{exit_qemu, QemuExitCode};
