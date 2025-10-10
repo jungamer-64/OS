@@ -4,6 +4,7 @@
 
 use super::color::ColorCode;
 use super::constants::*;
+use crate::diagnostics::DIAGNOSTICS;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -64,6 +65,18 @@ impl Position {
     }
 }
 
+/// Errors that can occur when writing to the VGA buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum VgaError {
+    /// The VGA buffer is not currently accessible.
+    BufferNotAccessible,
+    /// The cursor position is outside the visible screen area.
+    InvalidPosition,
+    /// The underlying memory write failed.
+    WriteFailure,
+}
+
 /// Thin wrapper around the VGA text buffer that centralizes all raw pointer
 /// interaction. Exposes safe helpers that validate indices before touching
 /// memory so higher-level code can remain mostly safe.
@@ -99,6 +112,9 @@ impl ScreenBuffer {
             // pointer is fixed to the VGA text buffer address. The Mutex guarding
             // this writer ensures exclusive access to the buffer memory.
             core::ptr::write_volatile(self.ptr.add(index), value);
+
+            // Ensure the write is observed before subsequent operations.
+            core::sync::atomic::compiler_fence(Ordering::SeqCst);
         }
 
         true
@@ -279,6 +295,9 @@ impl VgaWriter {
             return;
         }
 
+        // Record scroll operation for diagnostics
+        DIAGNOSTICS.record_vga_scroll();
+
         // Validate buffer bounds before copying
         let src_index = VGA_WIDTH;
         let dst_index = 0;
@@ -305,28 +324,53 @@ impl VgaWriter {
         }
     }
 
-    /// Write a single byte to the screen
+    /// Write a single byte to the screen, ignoring any failure.
     fn write_byte(&mut self, byte: u8) {
+        let _ = self.write_byte_internal(byte);
+    }
+
+    /// Write a single byte with detailed error reporting.
+    #[allow(dead_code)]
+    pub fn write_byte_checked(&mut self, byte: u8) -> Result<(), VgaError> {
+        self.write_byte_internal(byte)
+    }
+
+    fn write_byte_internal(&mut self, byte: u8) -> Result<(), VgaError> {
         if !self.is_accessible() {
-            return;
+            DIAGNOSTICS.record_vga_write(false);
+            return Err(VgaError::BufferNotAccessible);
         }
 
         match byte {
-            b'\n' => self.new_line(),
+            b'\n' => {
+                self.new_line();
+                DIAGNOSTICS.record_vga_write(true);
+                Ok(())
+            }
             _ => {
                 if self.position.is_at_row_end() {
                     self.new_line();
                 }
 
-                // Validate position before writing
                 if !self.position.is_valid() {
-                    return;
+                    DIAGNOSTICS.record_vga_write(false);
+                    return Err(VgaError::InvalidPosition);
                 }
 
-                let encoded = Self::encode_char(byte, self.color_code);
-                self.write_encoded_char(encoded);
+                let Some(index) = self.position.cell_index() else {
+                    DIAGNOSTICS.record_vga_write(false);
+                    return Err(VgaError::InvalidPosition);
+                };
 
-                self.position.advance_col();
+                let encoded = Self::encode_char(byte, self.color_code);
+                if self.buffer.write(index, encoded) {
+                    let _ = self.position.advance_col();
+                    DIAGNOSTICS.record_vga_write(true);
+                    Ok(())
+                } else {
+                    DIAGNOSTICS.record_vga_write(false);
+                    Err(VgaError::WriteFailure)
+                }
             }
         }
     }
@@ -360,6 +404,49 @@ impl Write for VgaWriter {
             self.write_byte(display_byte);
         }
         Ok(())
+    }
+}
+
+/// Double-buffered VGA writer to minimize display tearing.
+#[allow(dead_code)]
+pub struct DoubleBufferedWriter {
+    front: ScreenBuffer,
+    back: [u16; CELL_COUNT],
+    dirty: [bool; CELL_COUNT],
+}
+
+impl DoubleBufferedWriter {
+    /// Create a new double-buffered writer with a clean back buffer.
+    #[allow(dead_code)]
+    pub const fn new() -> Self {
+        Self {
+            front: ScreenBuffer::new(),
+            back: [0; CELL_COUNT],
+            dirty: [false; CELL_COUNT],
+        }
+    }
+
+    /// Stage a cell write in the back buffer.
+    #[allow(dead_code)]
+    pub fn write_cell(&mut self, index: usize, value: u16) -> bool {
+        if index >= CELL_COUNT {
+            return false;
+        }
+
+        self.back[index] = value;
+        self.dirty[index] = true;
+        true
+    }
+
+    /// Flush dirty cells to the front buffer.
+    #[allow(dead_code)]
+    pub fn flush(&mut self) {
+        for i in 0..CELL_COUNT {
+            if self.dirty[i] {
+                let _ = self.front.write(i, self.back[i]);
+                self.dirty[i] = false;
+            }
+        }
     }
 }
 

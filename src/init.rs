@@ -18,55 +18,23 @@
 //! This order ensures we have output capability as early as possible
 //! for error reporting.
 
+use crate::constants::{
+    SERIAL_ALREADY_INITIALIZED_LINES, SERIAL_IDLE_LOOP_LINES, SERIAL_INIT_SUCCESS_LINES,
+    SERIAL_SAFETY_FEATURE_LINES,
+};
+use crate::diagnostics::DIAGNOSTICS;
 use crate::serial::{self, InitError as SerialInitError};
 use crate::serial_println;
 use crate::vga_buffer::ColorCode;
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-
-/// Serial banner lines emitted after a successful initialization.
-const SERIAL_INIT_SUCCESS_LINES: [&str; 10] = [
-    "========================================",
-    "=== Rust OS Kernel Started ===",
-    "========================================",
-    "",
-    "[OK] Serial port initialized successfully",
-    "     - Baud rate: 38400",
-    "     - Configuration: 8N1",
-    "     - FIFO: Enabled and verified",
-    "     - Hardware detection: Passed",
-    "",
-];
-
-/// Serial notice when initialization discovers the port was already configured.
-const SERIAL_ALREADY_INITIALIZED_LINES: [&str; 2] = [
-    "[INFO] Serial port already initialized",
-    "       Skipping hardware setup",
-];
-
-/// Static listing of safety features for serial output.
-const SERIAL_SAFETY_FEATURE_LINES: [&str; 8] = [
-    "[SAFETY] Kernel safety features:",
-    "     - Mutex-protected I/O (interrupt-safe)",
-    "     - Boundary checking on all buffer writes",
-    "     - Hardware validation before use",
-    "     - Deadlock prevention via interrupt disabling",
-    "     - Timeout protection on hardware operations",
-    "     - Idempotent initialization",
-    "",
-];
-
-/// Log messages emitted before entering the idle loop.
-const SERIAL_IDLE_LOOP_LINES: [&str; 4] = [
-    "[INFO] Entering low-power idle loop",
-    "       CPU will execute hlt instruction",
-    "       System ready for interrupts",
-    "",
-];
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 /// Initialization state tracking
 static VGA_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static SERIAL_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static INIT_PHASE: AtomicU8 = AtomicU8::new(0);
+static INIT_LOCK: AtomicU32 = AtomicU32::new(0);
+
+const INIT_MAGIC: u32 = 0xDEADBEEF;
 
 /// Initialization phases
 #[repr(u8)]
@@ -161,13 +129,14 @@ pub fn initialize_serial() -> Result<(), &'static str> {
         Ok(()) => {
             SERIAL_INITIALIZED.store(true, Ordering::Release);
 
-            serial::log_lines(SERIAL_INIT_SUCCESS_LINES);
+            // Display success banner
+            serial::log_lines(SERIAL_INIT_SUCCESS_LINES.iter().copied());
 
             Ok(())
         }
         Err(SerialInitError::AlreadyInitialized) => {
             SERIAL_INITIALIZED.store(true, Ordering::Release);
-            serial::log_lines(SERIAL_ALREADY_INITIALIZED_LINES);
+            serial::log_lines(SERIAL_ALREADY_INITIALIZED_LINES.iter().copied());
             Ok(())
         }
         Err(SerialInitError::PortNotPresent) => {
@@ -237,30 +206,44 @@ pub fn report_safety_features() {
         return;
     }
 
-    serial::log_lines(SERIAL_SAFETY_FEATURE_LINES);
+    serial::log_lines(SERIAL_SAFETY_FEATURE_LINES.iter().copied());
 }
 
 /// Complete initialization sequence
 ///
 /// Runs all initialization steps in the correct order and reports status.
-/// This is the main initialization entry point.
+/// This is the main initialization entry point. Also records boot timestamp
+/// for system diagnostics.
 ///
 /// # Returns
 ///
 /// - `Ok(())` if all critical systems initialize successfully
 /// - `Err(message)` if a critical system fails to initialize
 pub fn initialize_all() -> Result<(), &'static str> {
-    // Phase 1: VGA (critical for output)
+    match INIT_LOCK.compare_exchange(0, INIT_MAGIC, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => {
+            let result = perform_initialization();
+            if result.is_err() {
+                INIT_LOCK.store(0, Ordering::Release);
+            }
+            result
+        }
+        Err(current) if current == INIT_MAGIC => Ok(()),
+        Err(_) => Err("Initialization in inconsistent state"),
+    }
+}
+
+fn perform_initialization() -> Result<(), &'static str> {
+    // Record boot timestamp for diagnostics
+    DIAGNOSTICS.set_boot_time();
+    
     initialize_vga()?;
 
-    // Phase 2: Serial (optional but highly recommended)
-    let _ = initialize_serial(); // Don't fail if serial unavailable
+    let _ = initialize_serial();
 
-    // Phase 3: Report status
     report_vga_status();
     report_safety_features();
 
-    // Mark initialization as complete
     INIT_PHASE.store(InitPhase::Complete as u8, Ordering::Release);
 
     Ok(())
@@ -286,7 +269,7 @@ pub fn initialize_all() -> Result<(), &'static str> {
 /// in the idle loop until a hardware interrupt or reset occurs.
 pub fn halt_forever() -> ! {
     if crate::serial::is_available() {
-        serial::log_lines(SERIAL_IDLE_LOOP_LINES);
+        serial::log_lines(SERIAL_IDLE_LOOP_LINES.iter().copied());
     }
 
     loop {

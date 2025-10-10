@@ -45,19 +45,18 @@
 #![warn(missing_docs)]
 
 mod constants;
+mod diagnostics;
 mod display;
 mod init;
 mod serial;
 mod vga_buffer;
 
 use bootloader::{entry_point, BootInfo};
+use constants::SERIAL_NON_CRITICAL_CONTINUATION_LINES;
 use core::panic::PanicInfo;
 
-const SERIAL_KERNEL_INIT_SUCCESS_LINES: [&str; 2] =
-    ["[OK] All kernel subsystems initialized successfully", ""];
-
-const SERIAL_NON_CRITICAL_CONTINUATION_LINES: [&str; 2] =
-    ["       Continuing with available subsystems", ""];
+const SERIAL_KERNEL_INIT_SUCCESS_LINES: &[&str] =
+    &["[OK] All kernel subsystems initialized successfully", ""];
 
 entry_point!(kernel_main);
 
@@ -100,7 +99,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         Ok(()) => {
             // Initialization successful
             if serial::is_available() {
-                serial::log_lines(SERIAL_KERNEL_INIT_SUCCESS_LINES);
+                serial::log_lines(SERIAL_KERNEL_INIT_SUCCESS_LINES.iter().copied());
             }
         }
         Err(e) => {
@@ -124,7 +123,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
             // For non-critical failures, log and continue
             if serial::is_available() {
                 serial_println!("[WARN] Non-critical initialization failure: {}", e);
-                serial::log_lines(SERIAL_NON_CRITICAL_CONTINUATION_LINES);
+                serial::log_lines(SERIAL_NON_CRITICAL_CONTINUATION_LINES.iter().copied());
             }
         }
     }
@@ -140,7 +139,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Phase 4: Final system check
     perform_system_check();
 
-    // Phase 5: Enter low-power idle loop
+    // Phase 5: Display system health report
+    diagnostics::print_health_report();
+
+    // Phase 6: Enter low-power idle loop
     // This never returns
     init::halt_forever()
 }
@@ -233,16 +235,35 @@ fn perform_system_check() {
 /// after displaying the panic information.
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    // Attempt to display panic info to both outputs
-    // We're very defensive here to prevent panic-in-panic
+    use crate::diagnostics::DIAGNOSTICS;
+    
+    // Record panic in diagnostics
+    let panic_num = DIAGNOSTICS.record_panic();
 
-    // Serial output first (more detailed)
-    display::display_panic_info_serial(info);
+    if panic_num > 0 {
+        DIAGNOSTICS.mark_nested_panic();
+        
+        if serial::is_available() {
+            serial_println!("[CRITICAL] Nested panic detected! Halting immediately.");
+        }
 
-    // VGA output second (user-visible)
-    display::display_panic_info_vga(info);
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
 
-    // Log system state at panic time (if serial available)
+    let mut output_success = false;
+
+    if serial::is_available() {
+        display::display_panic_info_serial(info);
+        output_success = true;
+    }
+
+    if vga_buffer::is_accessible() {
+        display::display_panic_info_vga(info);
+        output_success = true;
+    }
+
     if serial::is_available() {
         serial_println!();
         serial_println!("[STATE] System state at panic:");
@@ -252,7 +273,6 @@ fn panic(info: &PanicInfo) -> ! {
         serial_println!();
     }
 
-    // Additional VGA message for user
     if vga_buffer::is_accessible() {
         vga_buffer::print_colored(
             "\nThe system has encountered a critical error and must halt.\n",
@@ -265,8 +285,32 @@ fn panic(info: &PanicInfo) -> ! {
         vga_buffer::print_colored("System halted.\n\n", vga_buffer::ColorCode::normal());
     }
 
-    // Halt forever - never return from panic
+    if !output_success {
+        emergency_panic_output(info);
+    }
+
     init::halt_forever()
+}
+
+fn emergency_panic_output(info: &PanicInfo) {
+    use x86_64::instructions::port::Port;
+
+    let mut port = Port::<u8>::new(0xE9);
+    let msg = b"!!! KERNEL PANIC - OUTPUT FAILED !!!\n";
+
+    unsafe {
+        for &byte in msg {
+            port.write(byte);
+        }
+    }
+
+    if let Some(location) = info.location() {
+        unsafe {
+            for byte in location.file().bytes().take(50) {
+                port.write(byte);
+            }
+        }
+    }
 }
 
 // Optional: Add a global allocator error handler if allocation were enabled

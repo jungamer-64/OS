@@ -10,12 +10,15 @@ pub const VGA_WIDTH: usize = 80;
 pub const VGA_HEIGHT: usize = 25;
 
 /// Bytes per character (1 byte ASCII + 1 byte color attribute)
+#[allow(dead_code)]
 pub const BYTES_PER_CHAR: usize = 2;
 
-/// Bytes per row
+/// Bytes per row (80 characters * 2 bytes each)
+#[allow(dead_code)]
 pub const BYTES_PER_ROW: usize = VGA_WIDTH * BYTES_PER_CHAR;
 
 /// Total buffer size in bytes
+#[allow(dead_code)]
 pub const BUFFER_SIZE: usize = VGA_HEIGHT * BYTES_PER_ROW;
 
 /// ASCII character range for printable characters

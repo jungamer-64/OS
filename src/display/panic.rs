@@ -77,6 +77,7 @@ impl Write for TruncatingBuffer {
     }
 }
 
+#[allow(dead_code)]
 fn truncate_borrowed_message(message: &str) -> (&str, bool) {
     if message.len() <= MAX_MESSAGE_LENGTH {
         return (message, false);
@@ -96,6 +97,22 @@ fn truncate_borrowed_message(message: &str) -> (&str, bool) {
 
 fn log_truncation_notice() {
     serial_println!("  [message truncated to {} chars]", MAX_MESSAGE_LENGTH);
+}
+
+/// Format panic message into a buffer with truncation support.
+///
+/// Returns the formatted message and whether truncation occurred.
+fn extract_panic_message(info: &PanicInfo) -> (TruncatingBuffer, bool) {
+    let mut buffer = TruncatingBuffer::new();
+
+    if let Some(msg_str) = info.message().as_str() {
+        let _ = buffer.write_str(msg_str);
+    } else {
+        let _ = fmt::write(&mut buffer, format_args!("{}", info.message()));
+    }
+
+    let truncated = buffer.was_truncated();
+    (buffer, truncated)
 }
 
 /// Display panic information to serial output
@@ -162,20 +179,10 @@ fn display_panic_message_serial(info: &PanicInfo) {
     // Display message with defensive formatting
     serial_print!("  ");
 
-    // Format the panic message - info.message() already provides formatting support
-    if let Some(msg_str) = info.message().as_str() {
-        let (display, truncated) = truncate_borrowed_message(msg_str);
-        serial_println!("{}", display);
-        if truncated {
-            log_truncation_notice();
-        }
-    } else {
-        let mut buffer = TruncatingBuffer::new();
-        let _ = fmt::write(&mut buffer, format_args!("{}", info.message()));
-        serial_println!("{}", buffer.as_str());
-        if buffer.was_truncated() {
-            log_truncation_notice();
-        }
+    let (buffer, truncated) = extract_panic_message(info);
+    serial_println!("{}", buffer.as_str());
+    if truncated {
+        log_truncation_notice();
     }
 
     serial_println!();
@@ -248,20 +255,26 @@ pub fn display_panic_info_vga(info: &PanicInfo) {
     display_user_instructions_vga();
 }
 
+/// Truncate file path for display if too long.
+///
+/// Returns the last N characters of the path, which typically
+/// contains the most relevant information (filename and parent dirs).
+const MAX_FILE_PATH_LENGTH: usize = 50;
+
+fn truncate_file_path(file: &str) -> &str {
+    if file.len() > MAX_FILE_PATH_LENGTH {
+        &file[file.len() - MAX_FILE_PATH_LENGTH..]
+    } else {
+        file
+    }
+}
+
 /// Display location information on VGA
 fn display_location_vga(location: &core::panic::Location) {
     // File name
     crate::vga_buffer::print_colored("File: ", ColorCode::error());
 
-    // Truncate long file paths for readability
-    let file = location.file();
-    let display_file = if file.len() > 50 {
-        // Show last 50 characters (usually the most relevant part)
-        &file[file.len() - 50..]
-    } else {
-        file
-    };
-
+    let display_file = truncate_file_path(location.file());
     crate::vga_buffer::print_colored(display_file, ColorCode::normal());
     crate::vga_buffer::print_colored("\n", ColorCode::normal());
 

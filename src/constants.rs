@@ -61,6 +61,54 @@ pub const SERIAL_HINTS: &[&str] = &[
 ];
 
 // ============================================================================
+// Initialization Messages
+// ============================================================================
+
+/// Serial banner lines emitted after a successful initialization.
+pub const SERIAL_INIT_SUCCESS_LINES: &[&str] = &[
+    "========================================",
+    "=== Rust OS Kernel Started ===",
+    "========================================",
+    "",
+    "[OK] Serial port initialized successfully",
+    "     - Baud rate: 38400",
+    "     - Configuration: 8N1",
+    "     - FIFO: Enabled and verified",
+    "     - Hardware detection: Passed",
+    "",
+];
+
+/// Serial notice when initialization discovers the port was already configured.
+pub const SERIAL_ALREADY_INITIALIZED_LINES: &[&str] = &[
+    "[INFO] Serial port already initialized",
+    "       Skipping hardware setup",
+];
+
+/// Static listing of safety features for serial output.
+pub const SERIAL_SAFETY_FEATURE_LINES: &[&str] = &[
+    "[SAFETY] Kernel safety features:",
+    "     - Mutex-protected I/O (interrupt-safe)",
+    "     - Boundary checking on all buffer writes",
+    "     - Hardware validation before use",
+    "     - Deadlock prevention via interrupt disabling",
+    "     - Timeout protection on hardware operations",
+    "     - Idempotent initialization",
+    "",
+];
+
+/// Log messages emitted before entering the idle loop.
+pub const SERIAL_IDLE_LOOP_LINES: &[&str] = &[
+    "[INFO] Entering low-power idle loop",
+    "       CPU will execute hlt instruction",
+    "       System ready for interrupts",
+    "",
+];
+
+/// Messages displayed when non-critical initialization fails.
+pub const SERIAL_NON_CRITICAL_CONTINUATION_LINES: &[&str] =
+    &["       Continuing with available subsystems", ""];
+
+// ============================================================================
 // Hardware Constants - Serial Port (UART 16550)
 // ============================================================================
 
@@ -203,7 +251,7 @@ const _: () = assert!(
 );
 
 // ============================================================================
-// Type-Safe Configuration
+/// Type-Safe Configuration
 // ============================================================================
 
 /// Serial port configuration structure
@@ -211,6 +259,7 @@ const _: () = assert!(
 /// Encapsulates all serial port configuration in a type-safe manner.
 /// Can be used to validate configuration before applying to hardware.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct SerialConfig {
     /// Base I/O port address
     pub port: u16,
@@ -226,6 +275,7 @@ pub struct SerialConfig {
 
 /// Parity configuration
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum Parity {
     /// No parity bit
     None,
@@ -237,6 +287,7 @@ pub enum Parity {
 
 /// Stop bits configuration
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum StopBits {
     /// One stop bit
     One,

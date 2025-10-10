@@ -10,6 +10,7 @@
 
 use std::env;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -111,8 +112,11 @@ fn print_build_info() {
     let target = env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
     println!("cargo:rustc-env=BUILD_TARGET={}", target);
 
-    // Build timestamp
-    let timestamp = chrono::Utc::now().to_rfc3339();
+    // Build timestamp (seconds since UNIX_EPOCH)
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string());
     println!("cargo:rustc-env=BUILD_TIMESTAMP={}", timestamp);
 
     // Git commit (if available)
@@ -147,13 +151,13 @@ fn setup_bootloader() {
     println!("cargo:rerun-if-changed=Cargo.toml");
 }
 
-/// Additional dependencies for build script
-///
-/// Add these to Cargo.toml [build-dependencies] if needed:
-/// ```toml
-/// [build-dependencies]
-/// serde_json = "1.0"
-/// chrono = "0.4"
-/// ```
-///
-/// For now, we use a simplified version without these dependencies.
+// Additional dependencies for build script
+//
+// Add these to Cargo.toml [build-dependencies] if needed:
+// ```toml
+// [build-dependencies]
+// serde_json = "1.0"
+// chrono = "0.4"
+// ```
+//
+// For now, we use a simplified version without these dependencies.

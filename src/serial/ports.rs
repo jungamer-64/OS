@@ -5,6 +5,8 @@
 use super::constants::{port_addr, register_offset};
 use super::error::InitError;
 use crate::constants::*;
+use core::arch::x86_64::_rdtsc;
+use core::time::Duration;
 use x86_64::instructions::port::Port;
 
 /// Private operation enum for centralized unsafe access
@@ -28,6 +30,101 @@ pub struct SerialPorts {
     line_status: Port<u8>,
     modem_status: Port<u8>,
     scratch: Port<u8>,
+}
+
+#[derive(Debug)]
+pub struct ValidationReport {
+    scratch_tests: [ScratchTestResult; 4],
+    scratch_count: usize,
+    pub(crate) lsr_valid: bool,
+    pub(crate) fifo_functional: bool,
+    pub(crate) baud_config_valid: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScratchTestResult {
+    pub pattern: u8,
+    pub readback: u8,
+    pub passed: bool,
+}
+
+impl ValidationReport {
+    pub const fn new() -> Self {
+        Self {
+            scratch_tests: [
+                ScratchTestResult {
+                    pattern: 0,
+                    readback: 0,
+                    passed: false,
+                },
+                ScratchTestResult {
+                    pattern: 0,
+                    readback: 0,
+                    passed: false,
+                },
+                ScratchTestResult {
+                    pattern: 0,
+                    readback: 0,
+                    passed: false,
+                },
+                ScratchTestResult {
+                    pattern: 0,
+                    readback: 0,
+                    passed: false,
+                },
+            ],
+            scratch_count: 0,
+            lsr_valid: false,
+            fifo_functional: false,
+            baud_config_valid: false,
+        }
+    }
+
+    fn record_scratch(&mut self, pattern: u8, readback: u8, passed: bool) {
+        if self.scratch_count < self.scratch_tests.len() {
+            self.scratch_tests[self.scratch_count] = ScratchTestResult {
+                pattern,
+                readback,
+                passed,
+            };
+            self.scratch_count += 1;
+        }
+    }
+
+    pub fn scratch_tests(&self) -> &[ScratchTestResult] {
+        &self.scratch_tests[..self.scratch_count]
+    }
+
+    pub fn is_fully_valid(&self) -> bool {
+        self.scratch_tests()
+            .iter()
+            .all(|result| result.passed)
+            && self.lsr_valid
+            && self.fifo_functional
+            && self.baud_config_valid
+    }
+}
+
+#[allow(dead_code)]
+struct TimeoutGuard {
+    start: u64,
+    timeout_cycles: u64,
+}
+
+impl TimeoutGuard {
+    fn new(timeout: Duration) -> Self {
+        let start = unsafe { _rdtsc() };
+        let timeout_cycles = timeout.as_micros() as u64 * 2000;
+        Self {
+            start,
+            timeout_cycles,
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        let current = unsafe { _rdtsc() };
+        current.saturating_sub(self.start) >= self.timeout_cycles
+    }
 }
 
 impl SerialPorts {
@@ -108,6 +205,72 @@ impl SerialPorts {
         match self.perform_op(PortOp::PollAndWrite(byte)) {
             Some(1) => Ok(()),
             _ => Err(InitError::Timeout),
+        }
+    }
+
+    /// Poll with a custom timeout before writing a byte.
+    #[allow(dead_code)]
+    pub fn poll_and_write_with_timeout(
+        &mut self,
+        byte: u8,
+        timeout: Duration,
+    ) -> Result<(), InitError> {
+        let guard = TimeoutGuard::new(timeout);
+
+        loop {
+            if guard.is_expired() {
+                return Err(InitError::Timeout);
+            }
+
+            unsafe {
+                if (self.line_status.read() & LSR_TRANSMIT_EMPTY) != 0 {
+                    self.data.write(byte);
+                    return Ok(());
+                }
+            }
+
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Perform a comprehensive hardware validation sequence.
+    pub fn comprehensive_validation(&mut self) -> Result<ValidationReport, InitError> {
+        let mut report = ValidationReport::new();
+
+        for &pattern in &[0x00, 0x55, 0xAA, 0xFF] {
+            self.write_scratch(pattern)?;
+            super::wait_short();
+            let readback = self.read_scratch()?;
+            report.record_scratch(pattern, readback, pattern == readback);
+        }
+
+        let lsr = self.read_line_status()?;
+        report.lsr_valid = lsr != 0xFF && (lsr & 0x60) != 0;
+
+        report.fifo_functional = self.test_fifo()?;
+        report.baud_config_valid = self.verify_baud_rate()?;
+
+        Ok(report)
+    }
+
+    fn test_fifo(&mut self) -> Result<bool, InitError> {
+        unsafe { self.fifo.write(FIFO_ENABLE_CLEAR); }
+        super::wait_short();
+
+        let iir = unsafe { self.fifo.read() };
+        Ok((iir & 0xC0) == 0xC0)
+    }
+
+    fn verify_baud_rate(&mut self) -> Result<bool, InitError> {
+        unsafe {
+            let original_lcr = self.line_control.read();
+            self.line_control.write(original_lcr | DLAB_ENABLE);
+            let dll = self.data.read();
+            let dlh = self.interrupt_enable.read();
+            self.line_control.write(original_lcr);
+
+            let divisor = ((dlh as u16) << 8) | dll as u16;
+            Ok(divisor == BAUD_RATE_DIVISOR)
         }
     }
 

@@ -23,7 +23,9 @@ mod color;
 mod constants;
 mod writer;
 
-pub use color::{ColorCode, VgaColor};
+pub use color::ColorCode;
+#[allow(unused_imports)]
+pub use color::VgaColor;
 use core::fmt;
 use core::sync::atomic::Ordering;
 use spin::Mutex;

@@ -24,6 +24,8 @@ mod ports;
 pub use error::InitError;
 
 use crate::constants::*;
+use crate::diagnostics::DIAGNOSTICS;
+use crate::serial_println;
 use constants::MAX_INIT_ATTEMPTS;
 use core::fmt::{self, Write};
 use core::iter;
@@ -31,11 +33,24 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use ports::SerialPorts;
 use spin::Mutex;
 
+#[cfg(debug_assertions)]
+use core::arch::x86_64::_rdtsc;
+#[cfg(debug_assertions)]
+use core::sync::atomic::AtomicU64;
+
 /// Serial port state tracking with atomic operations for thread safety
 static SERIAL_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static SERIAL_PORT_AVAILABLE: AtomicBool = AtomicBool::new(false);
 /// Tracks initialization attempts to prevent infinite retry loops
 static INIT_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
+
+#[cfg(debug_assertions)]
+static LOCK_ACQUISITIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(debug_assertions)]
+#[allow(dead_code)]
+static LOCK_HOLDER_ID: AtomicU64 = AtomicU64::new(0);
+#[cfg(debug_assertions)]
+const MAX_LOCK_HOLD_TIME: u64 = 1_000_000;
 
 /// Global serial ports protected by Mutex
 ///
@@ -47,6 +62,53 @@ static INIT_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
 ///
 /// Never acquire VGA_WRITER while holding SERIAL_PORTS.
 static SERIAL_PORTS: Mutex<SerialPorts> = Mutex::new(SerialPorts::new());
+
+#[cfg(debug_assertions)]
+fn with_lock_tracking<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let _ = LOCK_ACQUISITIONS.fetch_add(1, Ordering::SeqCst);
+    let start_time = unsafe { _rdtsc() };
+
+    let result = f();
+
+    let elapsed = unsafe { _rdtsc() }.saturating_sub(start_time);
+    if elapsed > MAX_LOCK_HOLD_TIME && is_available() {
+        serial_println!("[WARN] Lock held for {} cycles", elapsed);
+    }
+
+    result
+}
+
+#[cfg(not(debug_assertions))]
+#[inline]
+fn with_lock_tracking<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    f()
+}
+
+#[cfg(debug_assertions)]
+fn with_serial_ports<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut SerialPorts) -> R,
+{
+    with_lock_tracking(|| {
+        let mut ports = SERIAL_PORTS.lock();
+        f(&mut ports)
+    })
+}
+
+#[cfg(not(debug_assertions))]
+fn with_serial_ports<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut SerialPorts) -> R,
+{
+    let mut ports = SERIAL_PORTS.lock();
+    f(&mut ports)
+}
 
 /// Initialize serial port with robust error handling
 ///
@@ -99,19 +161,23 @@ pub fn init() -> Result<(), InitError> {
 
 /// Configure UART hardware
 fn configure_uart() -> Result<(), InitError> {
-    let mut ports = SERIAL_PORTS.lock();
-    ports.configure()?;
+    with_serial_ports(|ports| {
+        ports.configure()?;
 
-    // Verify configuration took effect by checking LSR
-    let lsr = ports.read_line_status()?;
+        // Verify configuration took effect by checking LSR
+        let lsr = ports.read_line_status()?;
 
-    // Basic sanity check: LSR should have some bits set
-    // (transmit empty bit should be set after configuration)
-    if lsr == 0 || lsr == 0xFF {
-        return Err(InitError::ConfigurationFailed);
-    }
+        if lsr == 0 || lsr == 0xFF {
+            return Err(InitError::ConfigurationFailed);
+        }
 
-    Ok(())
+        let report = ports.comprehensive_validation()?;
+        if !report.is_fully_valid() {
+            return Err(InitError::ConfigurationFailed);
+        }
+
+        Ok(())
+    })
 }
 
 /// Enhanced hardware detection with multiple validation tests
@@ -127,42 +193,42 @@ fn configure_uart() -> Result<(), InitError> {
 /// - `Ok(false)` if hardware is not present
 /// - `Err(InitError)` if detection encountered an error
 fn is_port_present_robust() -> Result<bool, InitError> {
-    let mut ports = SERIAL_PORTS.lock();
+    with_serial_ports(|ports| -> Result<bool, InitError> {
+        // Test 1: Scratch register with primary pattern
+        ports.write_scratch(SCRATCH_TEST_PRIMARY)?;
+        wait_short();
+        if ports.read_scratch()? != SCRATCH_TEST_PRIMARY {
+            return Ok(false);
+        }
 
-    // Test 1: Scratch register with primary pattern
-    ports.write_scratch(SCRATCH_TEST_PRIMARY)?;
-    wait_short();
-    if ports.read_scratch()? != SCRATCH_TEST_PRIMARY {
-        return Ok(false);
-    }
+        // Test 2: Scratch register with secondary pattern
+        ports.write_scratch(SCRATCH_TEST_SECONDARY)?;
+        wait_short();
+        if ports.read_scratch()? != SCRATCH_TEST_SECONDARY {
+            return Ok(false);
+        }
 
-    // Test 2: Scratch register with secondary pattern
-    ports.write_scratch(SCRATCH_TEST_SECONDARY)?;
-    wait_short();
-    if ports.read_scratch()? != SCRATCH_TEST_SECONDARY {
-        return Ok(false);
-    }
+        // Test 3: Scratch register with zero
+        ports.write_scratch(0x00)?;
+        wait_short();
+        if ports.read_scratch()? != 0x00 {
+            return Ok(false);
+        }
 
-    // Test 3: Scratch register with zero
-    ports.write_scratch(0x00)?;
-    wait_short();
-    if ports.read_scratch()? != 0x00 {
-        return Ok(false);
-    }
+        // Test 4: Verify LSR is not all 0xFF (indicates no hardware)
+        let lsr = ports.read_line_status()?;
+        if lsr == 0xFF {
+            return Ok(false);
+        }
 
-    // Test 4: Verify LSR is not all 0xFF (indicates no hardware)
-    let lsr = ports.read_line_status()?;
-    if lsr == 0xFF {
-        return Ok(false);
-    }
+        // Test 5: Verify MSR is not all 0xFF
+        let msr = ports.read_modem_status()?;
+        if msr == 0xFF {
+            return Ok(false);
+        }
 
-    // Test 5: Verify MSR is not all 0xFF
-    let msr = ports.read_modem_status()?;
-    if msr == 0xFF {
-        return Ok(false);
-    }
-
-    Ok(true)
+        Ok(true)
+    })
 }
 
 /// Short delay for hardware response
@@ -170,7 +236,7 @@ fn is_port_present_robust() -> Result<bool, InitError> {
 /// Provides a brief delay to allow hardware to process commands.
 /// Uses spin_loop hint for efficient waiting without busy-polling.
 #[inline(always)]
-fn wait_short() {
+pub(super) fn wait_short() {
     for _ in 0..100 {
         core::hint::spin_loop();
     }
@@ -251,17 +317,40 @@ where
         return Ok(());
     }
 
-    let mut ports = SERIAL_PORTS.lock();
-    let mut first_error: Option<InitError> = None;
-    for byte in bytes {
-        if let Err(err) = ports.poll_and_write(byte) {
-            if first_error.is_none() {
-                first_error = Some(err);
+    with_serial_ports(|ports| {
+        let mut first_error: Option<InitError> = None;
+        let mut success_count = 0u64;
+        let mut timeout_count = 0u64;
+        
+        for byte in bytes {
+            match ports.poll_and_write(byte) {
+                Ok(_) => {
+                    success_count += 1;
+                }
+                Err(InitError::Timeout) => {
+                    timeout_count += 1;
+                    if first_error.is_none() {
+                        first_error = Some(InitError::Timeout);
+                    }
+                }
+                Err(err) => {
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
+                }
             }
         }
-    }
+        
+        // Record diagnostics
+        for _ in 0..success_count {
+            DIAGNOSTICS.record_serial_write();
+        }
+        for _ in 0..timeout_count {
+            DIAGNOSTICS.record_serial_timeout();
+        }
 
-    first_error.map_or(Ok(()), Err)
+        first_error.map_or(Ok(()), Err)
+    })
 }
 
 /// Serial writer implementing `core::fmt::Write`
