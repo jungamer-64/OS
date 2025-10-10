@@ -307,7 +307,7 @@ pub mod ptr_math {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std-tests"))]
 mod tests {
     use super::*;
 

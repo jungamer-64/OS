@@ -426,7 +426,7 @@ impl InitStatus {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std-tests"))]
 mod tests {
     use super::*;
 

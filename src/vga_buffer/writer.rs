@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 /// Total number of character cells in the VGA buffer.
 pub const CELL_COUNT: usize = VGA_WIDTH * VGA_HEIGHT;
 const DIRTY_WORD_BITS: usize = core::mem::size_of::<u64>() * 8;
-const DIRTY_WORD_COUNT: usize = (CELL_COUNT + DIRTY_WORD_BITS - 1) / DIRTY_WORD_BITS;
+const DIRTY_WORD_COUNT: usize = CELL_COUNT.div_ceil(DIRTY_WORD_BITS);
 
 /// Buffer accessibility tracking
 pub(super) static BUFFER_ACCESSIBLE: AtomicBool = AtomicBool::new(false);
@@ -576,7 +576,13 @@ impl DoubleBufferedWriter {
     }
 }
 
-#[cfg(test)]
+impl Default for DoubleBufferedWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(all(test, feature = "std-tests"))]
 mod tests {
     use super::*;
 

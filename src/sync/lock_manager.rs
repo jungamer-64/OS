@@ -188,7 +188,7 @@ pub fn lock_stats() -> LockStats {
     LOCK_MANAGER.stats()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std-tests"))]
 mod tests {
     use super::*;
 

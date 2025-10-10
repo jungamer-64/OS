@@ -465,7 +465,7 @@ pub fn get_global_timeout_stats() -> (u64, u64) {
 }
 
 // Unit tests (compile in test configuration only)
-#[cfg(test)]
+#[cfg(all(test, feature = "std-tests"))]
 mod tests {
     use super::*;
 

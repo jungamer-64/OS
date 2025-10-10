@@ -665,7 +665,7 @@ const fn decode_panic_location(encoded: u64) -> Option<(u32, u32)> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std-tests"))]
 mod tests {
     use super::*;
 

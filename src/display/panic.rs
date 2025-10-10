@@ -84,7 +84,7 @@ impl Write for TruncatingBuffer {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std-tests"))]
 fn truncate_borrowed_message(message: &str) -> (&str, bool) {
     if message.len() <= MAX_MESSAGE_LENGTH {
         return (message, false);
@@ -355,7 +355,7 @@ fn serial_short_separator() {
     serial_print!("{}", PANIC_SHORT_SEP);
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std-tests"))]
 mod tests {
     use super::*;
     use core::iter;

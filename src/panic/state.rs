@@ -61,7 +61,7 @@ pub fn is_panicking() -> bool {
     current_level() != PanicLevel::Normal
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std-tests"))]
 mod tests {
     use super::*;
 

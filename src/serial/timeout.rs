@@ -272,7 +272,7 @@ pub fn record_poll_success() {
     TIMEOUT_STATS.record_success();
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std-tests"))]
 mod tests {
     use super::*;
 

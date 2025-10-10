@@ -44,8 +44,8 @@ fn serial_vga_lock_integration() {
 #[test_case]
 fn continuous_output_stability() {
     for iteration in 0..128u32 {
-        println!("[VGA] iteration {iteration:03}");
-        serial_println!("[SERIAL] iteration {iteration:03}");
+        println!("[VGA] iteration {:03}", iteration);
+        serial_println!("[SERIAL] iteration {:03}", iteration);
     }
 }
 

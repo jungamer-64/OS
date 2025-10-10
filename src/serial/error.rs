@@ -34,7 +34,7 @@ impl core::fmt::Display for InitError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std-tests"))]
 mod tests {
     use super::*;
 

@@ -23,5 +23,5 @@ pub use core::{
 #[allow(unused_imports)]
 pub use panic::{display_panic_info_serial, display_panic_info_vga};
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std-tests"))]
 mod tests;
