@@ -24,7 +24,4 @@ pub use core::{
 pub use panic::{display_panic_info_serial, display_panic_info_vga};
 
 #[cfg(test)]
-extern crate std;
-
-#[cfg(test)]
 mod tests;

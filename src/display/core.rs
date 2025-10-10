@@ -17,9 +17,6 @@ use crate::vga_buffer::ColorCode;
 use crate::{serial_print, serial_println};
 use core::fmt::{self, Write};
 
-#[cfg(test)]
-extern crate std;
-
 /// Text output target abstraction
 ///
 /// Implementors of this trait can receive formatted text output

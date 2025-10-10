@@ -31,24 +31,21 @@ pub enum InitPhase {
 
 impl InitPhase {
     /// Check if this phase can transition to the next phase
-    const fn can_transition_to(&self, next: InitPhase) -> bool {
-        if matches!(next, InitPhase::Failed) {
+    const fn can_transition_to(self, next: Self) -> bool {
+        if matches!(next, Self::Failed) {
             return true;
         }
 
-        match self.next() {
-            Some(expected) if (expected as u8) == (next as u8) => true,
-            _ => false,
-        }
+        matches!(self.next(), Some(expected) if (expected as u8) == (next as u8))
     }
 
     /// Get next phase in sequence（将来の自動リカバリで使用予定）
-    const fn next(&self) -> Option<InitPhase> {
+    const fn next(self) -> Option<Self> {
         match self {
-            InitPhase::NotStarted => Some(InitPhase::VgaInit),
-            InitPhase::VgaInit => Some(InitPhase::SerialInit),
-            InitPhase::SerialInit => Some(InitPhase::Complete),
-            InitPhase::Complete | InitPhase::Failed => None,
+            Self::NotStarted => Some(Self::VgaInit),
+            Self::VgaInit => Some(Self::SerialInit),
+            Self::SerialInit => Some(Self::Complete),
+            Self::Complete | Self::Failed => None,
         }
     }
 }
@@ -72,7 +69,7 @@ static INIT_PHASE: AtomicU8 = AtomicU8::new(InitPhase::NotStarted as u8);
 static INIT_LOCK: AtomicU32 = AtomicU32::new(0);
 
 /// Magic value indicating initialization is in progress
-const INIT_MAGIC: u32 = 0xDEADBEEF;
+const INIT_MAGIC: u32 = 0xDEAD_BEEF;
 
 /// Initialization result type
 type InitResult<T> = Result<T, InitError>;

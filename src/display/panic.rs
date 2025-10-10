@@ -12,9 +12,6 @@ use core::cmp;
 use core::fmt::{self, Write};
 use core::panic::PanicInfo;
 
-#[cfg(test)]
-extern crate std;
-
 /// Separator line for panic messages
 const PANIC_SEPARATOR: &str = "========================================\n";
 const PANIC_SHORT_SEP: &str = "----------------------------------------\n";

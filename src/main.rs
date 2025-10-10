@@ -296,7 +296,7 @@ fn panic(info: &PanicInfo) -> ! {
         PanicLevel::Critical => {
             // Critical failure - emergency halt
             x86_64::instructions::interrupts::disable();
-            
+
             if serial::is_available() {
                 serial_println!("[FATAL] Critical panic failure! Emergency halt.");
             }

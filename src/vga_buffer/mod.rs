@@ -62,9 +62,8 @@ where
 {
     interrupts::without_interrupts(|| {
         // Acquire lock order enforcement first
-        let _lock_guard = acquire_lock(LockId::Vga)
-            .map_err(|_| VgaError::LockOrderViolation)?;
-        
+        let _lock_guard = acquire_lock(LockId::Vga).map_err(|_| VgaError::LockOrderViolation)?;
+
         let mut guard = match VGA_WRITER.try_lock() {
             Some(guard) => guard,
             None => {

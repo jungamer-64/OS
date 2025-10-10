@@ -21,6 +21,7 @@ Phase 7c achieved **complete lock manager integration** with runtime deadlock pr
 **User Request**: "なるべく多くのツール(Codacy, Context7, mcp-gemini-cli, sequeltialthinking, serena等)を利用してください"
 
 **Tools Used** (4/6 requested):
+
 - ✅ **semantic_search**: 20 text excerpts on unsafe/lock/mutex patterns
 - ✅ **get_errors**: 348 total errors (documentation only, 0 production code errors)
 - ✅ **grep_search**: 25 matches (unsafe blocks, expect/unwrap usage)
@@ -49,6 +50,7 @@ pub use lock_manager::{
 **Purpose**: Facade module for synchronization primitives
 
 **Exports**:
+
 - `acquire_lock(LockId) -> Result<LockGuard, LockOrderViolation>`
 - `lock_stats() -> LockStats` (diagnostics)
 - `LockId` enum (Serial=0, Vga=1, Diagnostics=2)
@@ -73,6 +75,7 @@ pub use lock_manager::{
 #### File: src/serial/mod.rs
 
 **Before** (Manual lock ordering via comments):
+
 ```rust
 /// # Locking Order
 ///
@@ -94,6 +97,7 @@ fn acquire_serial_ports_guard() -> (MutexGuard<'static, SerialPorts>, LockTiming
 ```
 
 **After** (Runtime lock ordering enforcement):
+
 ```rust
 use crate::sync::lock_manager::{acquire_lock, LockId};
 
@@ -101,7 +105,7 @@ fn acquire_serial_ports_guard() -> (MutexGuard<'static, SerialPorts>, LockTiming
     // Acquire lock order enforcement first
     let _lock_guard = acquire_lock(LockId::Serial)
         .expect("Serial lock should always be acquirable (highest priority)");
-    
+
     if let Some(guard) = SERIAL_PORTS.try_lock() {
         DIAGNOSTICS.record_lock_acquisition();
         (guard, token)
@@ -112,6 +116,7 @@ fn acquire_serial_ports_guard() -> (MutexGuard<'static, SerialPorts>, LockTiming
 ```
 
 **Benefits**:
+
 - ✅ Runtime deadlock detection (LockOrderViolation error if violated)
 - ✅ Automatic lock release via RAII (Drop impl)
 - ✅ Lock hold duration tracking (RDTSC timestamps in debug mode)
@@ -122,6 +127,7 @@ fn acquire_serial_ports_guard() -> (MutexGuard<'static, SerialPorts>, LockTiming
 #### File: src/vga_buffer/mod.rs
 
 **Before**:
+
 ```rust
 static VGA_WRITER: Mutex<VgaWriter> = Mutex::new(VgaWriter::new());
 
@@ -143,6 +149,7 @@ where
 ```
 
 **After**:
+
 ```rust
 use crate::sync::lock_manager::{acquire_lock, LockId};
 
@@ -154,7 +161,7 @@ where
         // Acquire lock order enforcement first
         let _lock_guard = acquire_lock(LockId::Vga)
             .map_err(|_| VgaError::LockOrderViolation)?;
-        
+
         let mut guard = match VGA_WRITER.try_lock() {
             Some(guard) => guard,
             None => {
@@ -168,6 +175,7 @@ where
 ```
 
 **Error Handling**:
+
 - Lock ordering violation returns `Err(VgaError::LockOrderViolation)`
 - Propagates to caller via `?` operator
 - Caller can handle gracefully (e.g., retry, fallback output)
@@ -234,6 +242,7 @@ where
    - PHASE7A_ERRORS_INTEGRATION.md:273 - Phase 7c planning (this integration)
 
 **Analysis**:
+
 - All unsafe blocks have appropriate SAFETY comments ✅
 - Lock ordering documented in 6+ locations ✅
 - Atomic operations use SeqCst ordering (strongest guarantee) ✅
@@ -252,15 +261,18 @@ where
 **Documentation Errors Breakdown**:
 
 **PHASE6_COMPREHENSIVE_ANALYSIS.md**: 6 errors
+
 - MD036: Emphasis as heading (4)
 - MD056: Table column count mismatch (1)
 - MD040: Fenced code language missing (2)
 
 **PHASE5_FINAL_REPORT.md**: 3 errors
+
 - MD040: Fenced code language missing (2)
 - MD024: Duplicate heading (1)
 
 **PHASE7A_ERRORS_INTEGRATION.md**: 30 errors
+
 - MD033: Inline HTML (1)
 - MD031: Blank lines around fences (2)
 - MD040: Fenced code language missing (2)
@@ -269,10 +281,12 @@ where
 - MD004: Unordered list style (5)
 
 **PHASE7B_PANIC_INTEGRATION.md**: 11 errors
+
 - MD032: Blank lines around lists (5)
 - MD031: Blank lines around fences (6)
 
 **Production Code Analysis**:
+
 ```
 src/display/panic.rs: No errors found ✅
 src/display/core.rs: No errors found ✅
@@ -297,24 +311,30 @@ src/panic/state.rs: No errors found ✅
 #### 1. Unsafe Blocks (20 matches)
 
 **main.rs** (2):
+
 - Line 44: `#![deny(unsafe_op_in_unsafe_fn)]` - Lint enforcement ✅
 - Line 372: Emergency panic output (port 0xE9 write) - **JUSTIFIED**: Last resort output
 - Line 379: Emergency panic output continuation - **JUSTIFIED**: Same context
 
 **qemu.rs** (1):
+
 - Line 20: QEMU exit port write - **JUSTIFIED**: Documented QEMU-specific I/O
 
 **lib.rs** (2):
+
 - Line 6: `#![deny(unsafe_op_in_unsafe_fn)]` - Lint enforcement ✅
 - Line 95: Test framework assembly - **JUSTIFIED**: Test infrastructure only
 
 **diagnostics.rs** (1):
+
 - Line 415: RDTSC timestamp read - **JUSTIFIED**: "SAFETY: RDTSC is safe, read-only, non-privileged instruction"
 
 **sync/lock_manager.rs** (1):
+
 - Line 55: RDTSC timestamp read - **JUSTIFIED**: Same as diagnostics.rs (lock timing)
 
 **panic/handler.rs** (3):
+
 - Lines 162, 200, 266: Emergency output port I/O - **JUSTIFIED**: Panic context, no alternatives
 
 **Analysis**: All unsafe blocks have explicit SAFETY comments explaining justification. No unsafe_op_in_unsafe_fn violations.
@@ -322,19 +342,23 @@ src/panic/state.rs: No errors found ✅
 #### 2. unwrap() Usage (13 matches)
 
 **Test code only** (12):
+
 - memory/safety.rs: 11 matches (lines 316-386) - Test assertions ✅
 - vga_buffer/safe_buffer.rs: 7 matches (lines 297-336) - Test assertions ✅
 - sync/lock_manager.rs: 3 matches (lines 191-209) - Test assertions ✅
 
 **Production code** (0):
+
 - ✅ NO unwrap() in production code paths
 
 #### 3. expect() Usage (3 matches)
 
 **Test code** (2):
+
 - sync/lock_manager.rs lines 191, 194, 200: Test lock acquisition - **ACCEPTABLE**: Test-only code
 
 **Production code** (1):
+
 - serial/timeout.rs line 519: `last_error.expect("last_error should always be Some after retries")` - **JUSTIFIED**: Logic guarantees Some (retry loop always sets last_error)
 
 **Analysis**: expect() usage minimal and justified. serial/timeout.rs could be refactored to use `?` operator but current implementation is safe.
@@ -342,9 +366,11 @@ src/panic/state.rs: No errors found ✅
 #### 4. panic!() Usage (2 matches)
 
 **main.rs** (1):
+
 - Line 104: `panic!("Critical: VGA initialization failed")` - **INTENTIONAL**: Fatal error handling
 
 **sync/lock_manager.rs** (1):
+
 - Line 209: Test assertion `panic!("expected ordering violation")` - **ACCEPTABLE**: Test-only
 
 ### Tool 4: think (Strategic Analysis)
@@ -354,17 +380,20 @@ src/panic/state.rs: No errors found ✅
 **Codacy Limitation**: GitHub repository `jungamer-64/OS` not registered with Codacy (404 Not Found). Unable to leverage automated code quality metrics.
 
 **Codebase Health Summary**:
+
 1. **Unsafe blocks**: All justified with SAFETY comments
 2. **Unwrap/expect**: Test code only (except 1 justified expect)
 3. **Error handling**: Comprehensive Result<T, E> usage
 4. **Lock ordering**: Now enforced at runtime (this Phase 7c integration)
 
 **Integration Priority Assessment**:
+
 - 🔴 HIGH: lock_manager.rs (deadlock prevention) - **COMPLETED** ✅
 - 🟡 MEDIUM: serial/timeout.rs expect → ? operator refactor - **DEFERRED** (low risk)
 - 🟢 LOW: Markdown linting fixes - **DEFERRED** (cosmetic only)
 
 **Refactoring Recommendations**:
+
 1. ✅ **DONE**: Integrate lock_manager.rs for runtime deadlock detection
 2. ⏳ **DEFER**: Refactor serial/timeout.rs:519 expect() to `?` (safe as-is)
 3. ⏳ **DEFER**: Fix 348 Markdown linting errors (content quality high)
@@ -379,16 +408,19 @@ cargo build --release
 ```
 
 **Context**:
+
 - Phase 7a (errors integration): 0.63s initial, 0.03s incremental
 - Phase 7b (panic integration): 1.17s initial, 0.46s incremental
 - Phase 7c (lock_manager integration): 0.71s initial
 
 **Analysis**:
+
 - **0.71s is acceptable** for lock_manager integration
 - Incremental builds expected to return to ~0.03-0.05s range
 - Module structure changes invalidate cache temporarily (expected pattern)
 
 **Verification** (next incremental build):
+
 ```bash
 touch src/main.rs
 cargo build --release
@@ -400,6 +432,7 @@ cargo build --release
 **Count**: 16 warnings (all cosmetic, no functional issues)
 
 **Categories**:
+
 - `used_underscore_items`: 2 (serial macros using `_print`)
 - `wildcard_imports`: 1 (constants::* import)
 - `doc_markdown`: 5 (missing backticks in docs)
@@ -417,6 +450,7 @@ cargo build --release
 ### Before Integration (Phase 7a)
 
 **Lock Ordering**: Manual documentation only
+
 ```rust
 /// # Locking Order
 ///
@@ -426,6 +460,7 @@ cargo build --release
 ```
 
 **Risk**:
+
 - ❌ No runtime enforcement
 - ❌ Developer must remember order manually
 - ❌ Violation undetected until deadlock occurs
@@ -433,6 +468,7 @@ cargo build --release
 ### After Integration (Phase 7c)
 
 **Lock Ordering**: Runtime enforcement with LockGuard RAII
+
 ```rust
 let _lock_guard = acquire_lock(LockId::Serial)?;
 // Compiler prevents forgetting to release (Drop impl)
@@ -440,6 +476,7 @@ let _lock_guard = acquire_lock(LockId::Serial)?;
 ```
 
 **Benefits**:
+
 - ✅ Automatic lock release (RAII pattern)
 - ✅ Runtime deadlock detection (OrderingViolation error)
 - ✅ Diagnostic statistics (lock_stats())
@@ -448,6 +485,7 @@ let _lock_guard = acquire_lock(LockId::Serial)?;
 ### Lock Ordering Rules
 
 **Defined Priority** (src/sync/lock_manager.rs:16):
+
 ```rust
 pub enum LockId {
     Serial = 0,      // Must be acquired first
@@ -457,6 +495,7 @@ pub enum LockId {
 ```
 
 **Enforcement Logic** (src/sync/lock_manager.rs:110):
+
 ```rust
 let higher_priority_mask = (1u8 << (id as u8)) - 1;
 if (current_locks & higher_priority_mask) != 0 {
@@ -470,12 +509,14 @@ if (current_locks & higher_priority_mask) != 0 {
 **Example Scenarios**:
 
 ✅ **Valid**: Serial → VGA → Diagnostics
+
 ```rust
 let _serial = acquire_lock(LockId::Serial)?;  // OK (highest priority)
 let _vga = acquire_lock(LockId::Vga)?;        // OK (Serial already held)
 ```
 
 ❌ **Invalid**: VGA → Serial (reverse order)
+
 ```rust
 let _vga = acquire_lock(LockId::Vga)?;        // OK (VGA first)
 let _serial = acquire_lock(LockId::Serial)?;  // ERROR: OrderingViolation
@@ -484,6 +525,7 @@ let _serial = acquire_lock(LockId::Serial)?;  // ERROR: OrderingViolation
 ### Diagnostic Statistics
 
 **API** (src/sync/lock_manager.rs:160):
+
 ```rust
 pub struct LockStats {
     pub acquisitions: u64,      // Total lock acquisitions
@@ -496,6 +538,7 @@ pub fn lock_stats() -> LockStats;
 ```
 
 **Usage**:
+
 ```rust
 let stats = lock_stats();
 println!("Lock acquisitions: {}", stats.acquisitions);
@@ -507,12 +550,13 @@ println!("Deadlock attempts prevented: {}", stats.deadlock_attempts);
 ### Unit Tests (Existing)
 
 **src/sync/lock_manager.rs** (lines 186-210):
+
 ```rust
 #[test]
 fn test_lock_ordering() {
     // Should acquire Serial first
     let _serial = acquire_lock(LockId::Serial).expect("should acquire serial");
-    
+
     // Should acquire VGA after Serial
     let _vga = acquire_lock(LockId::Vga).expect("should acquire vga");
 }
@@ -521,7 +565,7 @@ fn test_lock_ordering() {
 fn test_reverse_order_violation() {
     // Acquire VGA first
     let _vga = acquire_lock(LockId::Vga).expect("should acquire vga");
-    
+
     // Should fail to acquire Serial (lower priority)
     let result = acquire_lock(LockId::Serial);
     assert!(result.is_err());
@@ -533,6 +577,7 @@ fn test_reverse_order_violation() {
 ### Integration Tests (Recommended)
 
 **Test 1: Serial/VGA interleaved output**
+
 ```rust
 #[test_case]
 fn test_serial_vga_concurrent_output() {
@@ -544,6 +589,7 @@ fn test_serial_vga_concurrent_output() {
 ```
 
 **Test 2: Lock contention under load**
+
 ```rust
 #[test_case]
 fn test_lock_contention() {
@@ -556,6 +602,7 @@ fn test_lock_contention() {
 ```
 
 **Test 3: Error recovery from lock violation**
+
 ```rust
 #[test_case]
 fn test_lock_violation_recovery() {
@@ -592,6 +639,7 @@ println!("Lock stats: {:?}", lock_stats());
 ### Deadlock Prevention
 
 **Before (Phase 7a)**:
+
 ```
 Manual lock ordering → Developer discipline required
 No runtime checks → Deadlocks possible
@@ -599,6 +647,7 @@ Documentation only → Easy to forget
 ```
 
 **After (Phase 7c)**:
+
 ```
 Automatic enforcement → LockGuard RAII pattern
 Runtime validation → OrderingViolation error
@@ -610,12 +659,14 @@ Type system enforced → Compiler prevents forgetting
 ### Lock Diagnostics
 
 **Before**:
+
 ```
 DIAGNOSTICS.record_lock_acquisition()  // Counter only
 DIAGNOSTICS.record_lock_contention()   // Counter only
 ```
 
 **After**:
+
 ```
 lock_stats() → LockStats {
     acquisitions: 1234,
@@ -630,6 +681,7 @@ lock_stats() → LockStats {
 ### Code Maintainability
 
 **Before**:
+
 ```rust
 // Must remember: Serial → VGA → Diagnostics
 // No compile-time or runtime enforcement
@@ -642,6 +694,7 @@ with_writer(|writer| {
 ```
 
 **After**:
+
 ```rust
 let _serial = acquire_lock(LockId::Serial)?;  // Enforced
 let _vga = acquire_lock(LockId::Vga)?;        // Validated
@@ -681,6 +734,7 @@ let _vga = acquire_lock(LockId::Vga)?;        // Validated
 **Phase 7c**: lock_manager integration (8 lines + modifications)
 
 **Each phase**:
+
 - Small, testable changes
 - Independent build verification
 - Clear rollback points
@@ -688,6 +742,7 @@ let _vga = acquire_lock(LockId::Vga)?;        // Validated
 ### 5. Codebase Already High Quality
 
 **Findings**:
+
 - 0 production code errors
 - All unsafe blocks justified with SAFETY comments
 - unwrap/expect limited to test code (1 exception, justified)
@@ -743,6 +798,7 @@ let _vga = acquire_lock(LockId::Vga)?;        // Validated
 ### Immediate Actions
 
 1. **Verify Incremental Build Time**
+
    ```bash
    touch src/main.rs
    cargo build --release
@@ -750,6 +806,7 @@ let _vga = acquire_lock(LockId::Vga)?;        // Validated
    ```
 
 2. **QEMU Testing**
+
    ```bash
    cargo run
    # Verify boot behavior unchanged
@@ -758,6 +815,7 @@ let _vga = acquire_lock(LockId::Vga)?;        // Validated
    ```
 
 3. **Lock Statistics Monitoring**
+
    ```rust
    // Add to main.rs after boot
    let stats = lock_stats();
@@ -768,16 +826,19 @@ let _vga = acquire_lock(LockId::Vga)?;        // Validated
 ### Phase 8 Planning (Potential Next Phase)
 
 **Option A: Performance Optimization**
+
 - Profile lock contention hotspots
 - Optimize high-frequency paths
 - Benchmark before/after
 
 **Option B: Additional Safety Features**
+
 - Integrate memory/safety.rs SafeBuffer<T>
 - Add bounds checking to critical paths
 - Enhance panic handler with memory diagnostics
 
 **Option C: Documentation Improvements**
+
 - Fix 348 Markdown linting errors
 - Generate API documentation (rustdoc)
 - Create architecture diagrams

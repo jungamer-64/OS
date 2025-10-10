@@ -36,7 +36,7 @@ static PANIC_LEVEL: AtomicU8 = AtomicU8::new(PanicLevel::Normal as u8);
 /// - `Nested`/`Critical` → `Critical`: Multiple nested panics
 pub fn enter_panic() -> PanicLevel {
     let prev = PANIC_LEVEL.swap(PanicLevel::Primary as u8, Ordering::SeqCst);
-    
+
     match prev {
         0 => PanicLevel::Primary,
         1 => PanicLevel::Nested,
@@ -47,7 +47,7 @@ pub fn enter_panic() -> PanicLevel {
 /// Get current panic level without modifying state
 pub fn current_level() -> PanicLevel {
     let level = PANIC_LEVEL.load(Ordering::Acquire);
-    
+
     match level {
         0 => PanicLevel::Normal,
         1 => PanicLevel::Primary,
@@ -78,6 +78,9 @@ mod tests {
         // Note: This test may fail if other tests run first
         // In a real test environment, you'd reset the state
         let level = current_level();
-        assert!(matches!(level, PanicLevel::Normal | PanicLevel::Primary | PanicLevel::Nested | PanicLevel::Critical));
+        assert!(matches!(
+            level,
+            PanicLevel::Normal | PanicLevel::Primary | PanicLevel::Nested | PanicLevel::Critical
+        ));
     }
 }

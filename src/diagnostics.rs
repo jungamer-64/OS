@@ -96,7 +96,8 @@ impl SystemDiagnostics {
     /// Following Microsoft Docs: "Don't trust the environment your code runs in"
     #[inline]
     pub fn record_data_integrity_violation(&self) {
-        self.data_integrity_violations.fetch_add(1, Ordering::Relaxed);
+        self.data_integrity_violations
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Get health check failure count
@@ -106,7 +107,7 @@ impl SystemDiagnostics {
         self.health_check_failures.load(Ordering::Relaxed)
     }
 
-    /// Get data integrity violation count  
+    /// Get data integrity violation count
     #[inline]
     #[must_use]
     pub fn data_integrity_violations(&self) -> u64 {
@@ -435,6 +436,12 @@ pub enum Severity {
     Medium,
     High,
     Critical,
+}
+
+impl Default for SystemDiagnostics {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// グローバル診断インスタンス

@@ -19,6 +19,7 @@ Phase 8 completed the **final integration and validation** of all previous phase
 ### Tool Utilization Summary (Phases 1-8)
 
 **Total Tools Used**: 7/11 requested
+
 - ✅ **semantic_search**: 40+ excerpts across Phases 6-7c
 - ✅ **get_errors**: Comprehensive error analysis (348 doc errors, 0 prod errors)
 - ✅ **grep_search**: unsafe/expect/TODO pattern detection
@@ -32,28 +33,35 @@ Phase 8 completed the **final integration and validation** of all previous phase
 ## Phase-by-Phase Achievement Summary
 
 ### Phase 1-4: Foundation (Pre-Documentation)
+
 *Details in previous reports*
 
 ### Phase 5: Microsoft Docs Integration & Best Practices
+
 **Date**: 2024-2025
 **Key Changes**:
+
 - Debug assertions for unsafe blocks
 - SAFETY comments documentation
 - Lock timing diagnostics (RDTSC)
 - Emergency panic output enhancements
 
 ### Phase 6: Comprehensive Codebase Analysis
+
 **Date**: 2025-01-10
 **Tools**: semantic_search, get_errors, grep_search, file_search (8 tools)
 **Findings**:
+
 - 12 new files discovered (95,000+ lines)
 - 6 high-quality unintegrated files identified
 - 260 clippy warnings (0 errors)
 - All unsafe blocks validated
 
 ### Phase 7a: Errors Module Integration
+
 **Date**: 2025-01-10
 **Integration**:
+
 - src/errors/unified.rs (8,322 lines)
 - src/errors/mod.rs (18 lines)
 - Unified error types: KernelError, UnifiedVgaError, UnifiedSerialError
@@ -62,8 +70,10 @@ Phase 8 completed the **final integration and validation** of all previous phase
 **Build Impact**: 0.63s initial → 0.03s incremental
 
 ### Phase 7b: Panic Handler Integration
+
 **Date**: 2025-01-10
 **Integration**:
+
 - src/panic/state.rs (116 lines)
 - src/panic/mod.rs (8 lines)
 - 4-level PanicLevel enum (Normal/Primary/Nested/Critical)
@@ -74,8 +84,10 @@ Phase 8 completed the **final integration and validation** of all previous phase
 **Build Impact**: 1.17s initial → 0.46s incremental
 
 ### Phase 7c: Lock Manager Integration
+
 **Date**: 2025-01-11
 **Integration**:
+
 - src/sync/mod.rs (8 lines)
 - LockGuard RAII enforcement in serial/vga_buffer
 - VgaError::LockOrderViolation variant
@@ -88,8 +100,10 @@ Phase 8 completed the **final integration and validation** of all previous phase
 **Improvement**: -95% deadlock risk, +100% lock diagnostics visibility
 
 ### Phase 8: Final Integration & Validation
+
 **Date**: 2025-01-11
 **Activities**:
+
 - Microsoft Docs analysis (10 articles)
 - Rust code sample review (20 examples)
 - serial/timeout.rs refactoring (expect → match)
@@ -102,52 +116,52 @@ Phase 8 completed the **final integration and validation** of all previous phase
 
 ### Documentation Sources Reviewed (10 articles)
 
-1. **Azure SDK for Rust crates** (https://learn.microsoft.com/en-us/azure/developer/rust/sdk/overview)
+1. **Azure SDK for Rust crates** (<https://learn.microsoft.com/en-us/azure/developer/rust/sdk/overview>)
    - Key Concepts: Type safety, thread safety, memory safety, async support
    - Relevant: Consistent error handling with azure_core::Error
    - Application: Informed unified error handling design (Phase 7a)
 
-2. **Azure for Rust developers** (https://learn.microsoft.com/en-us/azure/developer/rust/what-is-azure-for-rust-developers)
+2. **Azure for Rust developers** (<https://learn.microsoft.com/en-us/azure/developer/rust/what-is-azure-for-rust-developers>)
    - Key Points: Performance with safety, low resource usage, cross-platform
    - Relevant: Zero-cost abstractions, efficient memory management
    - Application: Validated no_std design choices
 
-3. **Windows Rust development** (https://learn.microsoft.com/en-us/windows/dev-environment/rust/overview)
+3. **Windows Rust development** (<https://learn.microsoft.com/en-us/windows/dev-environment/rust/overview>)
    - Key Points: Systems programming, guaranteed memory safety, no GC
    - Relevant: Deterministic finalization, compilation model
    - Application: Confirmed bare-metal OS design philosophy
 
-4. **Unsafe code best practices** (https://learn.microsoft.com/en-us/dotnet/standard/unsafe-code/best-practices)
+4. **Unsafe code best practices** (<https://learn.microsoft.com/en-us/dotnet/standard/unsafe-code/best-practices>)
    - Section 11: Unaligned memory access
    - Recommendations: Use explicit unaligned Read/Write APIs, consult memory model
    - Application: Validated VGA buffer alignment assumptions
 
-5. **Concurrency Runtime Best Practices** (https://learn.microsoft.com/en-us/cpp/parallel/concrt/general-best-practices-in-the-concurrency-runtime)
+5. **Concurrency Runtime Best Practices** (<https://learn.microsoft.com/en-us/cpp/parallel/concrt/general-best-practices-in-the-concurrency-runtime>)
    - Key Practices: Use cooperative synchronization, RAII for lifetime management
    - Relevant: Concurrent memory management, lock ordering
    - Application: Confirmed LockGuard RAII pattern (Phase 7c)
 
-6. **Thread Safety vs Memory Safety** (https://learn.microsoft.com/en-us/dotnet/standard/unsafe-code/best-practices#23-thread-safety)
+6. **Thread Safety vs Memory Safety** (<https://learn.microsoft.com/en-us/dotnet/standard/unsafe-code/best-practices#23-thread-safety>)
    - Key Points: Orthogonal concepts, data races vs memory safety
    - Relevant: Managed threading best practices, .NET memory model
    - Application: Informed atomic operation choices (SeqCst ordering)
 
-7. **Rust for Windows** (https://learn.microsoft.com/en-us/windows/dev-environment/rust/rust-for-windows)
+7. **Rust for Windows** (<https://learn.microsoft.com/en-us/windows/dev-environment/rust/rust-for-windows>)
    - Key APIs: CreateEventW, WaitForSingleObject, Direct3D
    - Relevant: Timeless function patterns, error handling
    - Application: Validated port I/O patterns in emergency panic output
 
-8. **Lockless Programming** (https://learn.microsoft.com/en-us/windows/win32/dxtecharts/lockless-programming)
+8. **Lockless Programming** (<https://learn.microsoft.com/en-us/windows/win32/dxtecharts/lockless-programming>)
    - Performance: MemoryBarrier 20-90 cycles, InterlockedIncrement 36-90 cycles
    - Key Points: Share data less frequently, avoid cost altogether
    - Application: Justified atomic operations in lock_manager.rs
 
-9. **Lockless Programming References** (https://learn.microsoft.com/en-us/windows/win32/dxtecharts/lockless-programming#references)
+9. **Lockless Programming References** (<https://learn.microsoft.com/en-us/windows/win32/dxtecharts/lockless-programming#references>)
    - References: Memory ordering in microprocessors, low-lock techniques
    - Relevant: PowerPC storage model, memory reclamation
    - Application: Background for x86_64 memory model assumptions
 
-10. **General Concurrency Best Practices** (https://learn.microsoft.com/en-us/cpp/parallel/concrt/general-best-practices-in-the-concurrency-runtime#use-cooperative-synchronization-constructs-when-possible)
+10. **General Concurrency Best Practices** (<https://learn.microsoft.com/en-us/cpp/parallel/concrt/general-best-practices-in-the-concurrency-runtime#use-cooperative-synchronization-constructs-when-possible>)
     - Key Practices: Use cooperative sync, avoid global scope objects, use RAII
     - Relevant: Task scheduler, memory management functions
     - Application: Validated spin::Mutex usage over OS mutexes
@@ -155,6 +169,7 @@ Phase 8 completed the **final integration and validation** of all previous phase
 ### Code Sample Analysis (20 Rust examples)
 
 **Sample 1: Lockless Programming - Atomic Operations**
+
 ```cpp
 // This write is not atomic because it is not natively aligned.
 DWORD* pData = (DWORD*)(pChar + 1);
@@ -166,14 +181,16 @@ DWORD* pData = (DWORD*)(pChar + 1);
 // This write is atomic.
 g_alignedGlobal = 0;
 ```
+
 **Lesson**: Alignment matters for atomicity. Applied to VGA buffer (naturally aligned u16).
 
 **Sample 2: Rust Azure SDK Error Handling**
+
 ```rust
 match client.get_secret("secret-0", "", None).await {
     Ok(secret) => println!("Secret value: {}", secret...),
     Err(e) => match e.kind() {
-        ErrorKind::HttpResponse { status, error_code, .. } 
+        ErrorKind::HttpResponse { status, error_code, .. }
             if *status == StatusCode::NotFound => {
             // Specific error handling
         },
@@ -181,9 +198,11 @@ match client.get_secret("secret-0", "", None).await {
     },
 }
 ```
+
 **Lesson**: Nested match for granular error handling. Applied to VgaError::LockOrderViolation.
 
 **Sample 3: Memory Barriers for Lock-Free**
+
 ```cpp
 // Read that acquires the data.
 if( g_flag ) {
@@ -194,9 +213,11 @@ if( g_flag ) {
     g_flag = false;  // Write that releases
 }
 ```
+
 **Lesson**: Acquire/release semantics. Used SeqCst (strictest) in PANIC_STATE/held_locks.
 
 **Sample 4: Lock-Free Stack with SpinWait**
+
 ```csharp
 public void Push(T item) {
     var spin = new SpinWait();
@@ -206,9 +227,11 @@ public void Push(T item) {
     }
 }
 ```
+
 **Lesson**: spin::Mutex internally does similar spinning. Validated our spin::Mutex usage.
 
 **Sample 5: Rust Error Result with ?**
+
 ```rust
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -216,9 +239,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
 **Lesson**: Result<T, E> propagation with ?. Applied to serial/timeout.rs refactoring.
 
 **Key Takeaways from Code Samples**:
+
 1. **Atomic alignment critical**: VGA u16 writes are naturally aligned ✅
 2. **SeqCst strongest guarantee**: Used for panic state, lock manager ✅
 3. **Match over expect()**: Applied to serial/timeout.rs (Phase 8) ✅
@@ -238,6 +263,7 @@ RetryResult::Failed {
 ```
 
 **Issues**:
+
 - Uses expect() (panic on None)
 - SAFETY comment misleading (logic guarantee, not unsafe code)
 - No graceful fallback if logic assumption wrong
@@ -263,6 +289,7 @@ match last_error {
 ```
 
 **Improvements**:
+
 - ✅ No expect() panic risk
 - ✅ Explicit None case (defensive programming)
 - ✅ Fallback to TimeoutError::Timeout (reasonable default)
@@ -311,6 +338,7 @@ $ qemu-system-x86_64 -drive format=raw,file=target/x86_64-blog_os/debug/bootimag
 ```
 
 **Testing Checklist**:
+
 - [ ] Boot messages appear on serial console
 - [ ] VGA initialization successful (if QEMU has display)
 - [ ] No panic during boot
@@ -331,6 +359,7 @@ $ qemu-system-x86_64 -drive format=raw,file=target/x86_64-blog_os/debug/bootimag
 | Phase 8 | N/A | 0.50s | Maintained Phase 7c level |
 
 **Analysis**:
+
 - Initial builds reflect cache invalidation (expected after module structure changes)
 - Incremental builds stabilized at 0.03-0.50s (excellent for iterative development)
 - Full rebuild: 7.76s (Phase 7a measurement, acceptable for bare-metal OS)
@@ -443,6 +472,7 @@ $ qemu-system-x86_64 -drive format=raw,file=target/x86_64-blog_os/debug/bootimag
 ### 1. Phased Integration Critical for Success
 
 **Evidence**:
+
 - Phase 7a: errors (8,322 lines) → Success
 - Phase 7b: panic (124 lines) → Success (after hybrid adaptation)
 - Phase 7c: lock_manager (8 lines + mods) → Success
@@ -460,6 +490,7 @@ $ qemu-system-x86_64 -drive format=raw,file=target/x86_64-blog_os/debug/bootimag
 
 **Finding**: Azure SDK, Windows API, Concurrency Runtime docs directly applicable
 **Examples**:
+
 - Lock-free programming patterns → atomic operation choices
 - RAII lifetime management → LockGuard design
 - Error handling best practices → unified error types
@@ -493,6 +524,7 @@ $ qemu-system-x86_64 -drive format=raw,file=target/x86_64-blog_os/debug/bootimag
 **Tools**: grep_search, semantic_search, manual review
 
 **Process**:
+
 1. grep_search to find all unsafe blocks
 2. semantic_search for patterns
 3. Manual review of each SAFETY comment
@@ -503,6 +535,7 @@ $ qemu-system-x86_64 -drive format=raw,file=target/x86_64-blog_os/debug/bootimag
 ### 8. Runtime Enforcement > Documentation
 
 **Lock Ordering Evolution**:
+
 - Phase 1-6: Manual documentation ("CRITICAL: acquire Serial before VGA")
 - Phase 7c: Runtime enforcement (LockGuard with ordering validation)
 

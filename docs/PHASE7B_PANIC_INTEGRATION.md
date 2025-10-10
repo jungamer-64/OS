@@ -20,11 +20,13 @@ Phase 7b achieved **partial integration** of panic handler enhancements with a *
 **Original Plan**: Integrate complete `panic/handler.rs` (374 lines)
 
 **Problem Discovered**: `core::panic::catch_unwind` requires std runtime
+
 - panic/handler.rs uses catch_unwind at lines 133-145 for output protection
 - no_std panic handlers run in panic context where unwinding is unavailable
 - Direct integration would fail compilation
 
 **Adapted Solution**: Extract state machine only
+
 - Retained: 4-level PanicLevel enum, atomic state tracking
 - Removed: catch_unwind dependencies, try_serial_output/try_vga_output
 - Preserved: Existing main.rs output cascade (proven working)
@@ -53,7 +55,7 @@ static PANIC_LEVEL: AtomicU8 = AtomicU8::new(PanicLevel::Normal as u8);
 
 pub fn enter_panic() -> PanicLevel {
     let prev = PANIC_LEVEL.swap(PanicLevel::Primary as u8, Ordering::SeqCst);
-    
+
     match prev {
         0 => PanicLevel::Primary,
         1 => PanicLevel::Nested,
@@ -63,6 +65,7 @@ pub fn enter_panic() -> PanicLevel {
 ```
 
 **Features**:
+
 - Atomic state transitions with `SeqCst` ordering
 - 4 granular levels vs previous 2-state counter
 - Lock-free implementation suitable for panic context
@@ -97,6 +100,7 @@ pub mod vga_buffer;
 #### src/main.rs::panic()
 
 **Before** (Counter-based, 2 states):
+
 ```rust
 let panic_num = DIAGNOSTICS.record_panic();
 
@@ -108,6 +112,7 @@ if panic_num > 0 {
 ```
 
 **After** (State machine, 4 levels):
+
 ```rust
 let panic_level = enter_panic();
 DIAGNOSTICS.record_panic();
@@ -133,6 +138,7 @@ match panic_level {
 ```
 
 **Benefits**:
+
 - Granular control: Distinguish between nested (2nd) and critical (3rd+) panics
 - Atomic state: Race-free transitions even in SMP scenarios (future-proof)
 - Emergency mode: Critical panics disable interrupts immediately
@@ -148,16 +154,19 @@ cargo build --release
 ```
 
 **Context**:
+
 - Phase 7a (errors integration): 0.63s initial, 0.03s incremental
 - Phase 7b (panic integration): 1.17s initial
 - Expected: Incremental builds will return to ~0.03s
 
 **Analysis**:
+
 - 1.17s reflects cache invalidation from lib.rs module structure change
 - Incremental compilation cache rebuilt due to new `pub mod panic;`
 - No permanent performance impact expected (same pattern as Phase 7a)
 
 **Verification** (next incremental build):
+
 ```bash
 touch src/main.rs
 cargo build --release
@@ -189,6 +198,7 @@ cargo build --release
 **Decision**: Defer to manual editing or future automated pass
 
 **Recommendation**:
+
 ```bash
 # Manual approach (per file)
 # 1. Add blank lines before/after ``` code blocks
@@ -206,6 +216,7 @@ markdownlint-cli2 --fix "docs/PHASE*.md"
 ### Why panic/handler.rs Cannot Be Used As-Is
 
 **Code in panic/handler.rs (lines 133-145)**:
+
 ```rust
 fn try_serial_output(info: &PanicInfo) -> bool {
     let result = core::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
@@ -216,6 +227,7 @@ fn try_serial_output(info: &PanicInfo) -> bool {
 ```
 
 **Problem**:
+
 - `catch_unwind` requires std::panic runtime support
 - no_std panic handlers run **inside panic context**
 - Unwinding infrastructure is not initialized/available
@@ -242,16 +254,19 @@ fn try_serial_output(info: &PanicInfo) -> bool {
 ### Hybrid Approach Rationale
 
 **Kept from panic/handler.rs**:
+
 - PanicLevel 4-state enum
 - Atomic state transitions (PANIC_STATE AtomicU8)
 - enter_panic() logic
 
 **Kept from main.rs**:
+
 - Existing output cascade (serial → VGA → emergency)
 - DIAGNOSTICS integration
 - display_panic_info_serial/vga calls (no catch_unwind)
 
 **Result**:
+
 - Best of both worlds: Sophisticated state machine + proven output
 - No std dependencies: Fully no_std compatible
 - Minimal risk: Existing output code already tested
@@ -261,6 +276,7 @@ fn try_serial_output(info: &PanicInfo) -> bool {
 ### Nested Panic Detection
 
 **Before (Phase 7a)**:
+
 ```
 DIAGNOSTICS.record_panic() → counter
   counter = 0: First panic
@@ -268,6 +284,7 @@ DIAGNOSTICS.record_panic() → counter
 ```
 
 **After (Phase 7b)**:
+
 ```
 enter_panic() → atomic state transition
   Normal → Primary: First panic
@@ -280,6 +297,7 @@ enter_panic() → atomic state transition
 ### Output Handling
 
 **Before** (and After, unchanged):
+
 ```rust
 if serial::is_available() {
     display_panic_info_serial(info);
@@ -303,7 +321,7 @@ if !output_success {
 fn test_panic_level_transitions() {
     assert_eq!(enter_panic(), PanicLevel::Primary);
     assert_eq!(current_level(), PanicLevel::Primary);
-    
+
     assert_eq!(enter_panic(), PanicLevel::Nested);
     assert_eq!(current_level(), PanicLevel::Nested);
 }
@@ -385,6 +403,7 @@ cargo run
 **Finding**: High-quality std code (panic/handler.rs) may be incompatible with no_std
 
 **Reality**:
+
 - catch_unwind requires panic unwinding runtime
 - no_std panic handlers run in restricted context
 - API availability must be verified before integration
@@ -409,6 +428,7 @@ cargo run
 ### 4. Build Time Patterns
 
 **Observation**:
+
 - Phase 7a: 0.63s initial, 0.03s incremental
 - Phase 7b: 1.17s initial, (expected) 0.03s incremental
 
@@ -421,6 +441,7 @@ cargo run
 ### Immediate Actions
 
 1. **Verify Incremental Build Time**
+
    ```bash
    touch src/main.rs
    cargo build --release
@@ -428,6 +449,7 @@ cargo run
    ```
 
 2. **QEMU Testing**
+
    ```bash
    cargo run
    # Verify boot behavior unchanged
@@ -444,11 +466,13 @@ cargo run
 **Target**: src/sync/lock_manager.rs (deadlock prevention)
 
 **Challenges**:
+
 - Complex lock acquisition tracking
 - Integration with existing serial/VGA mutexes
 - Performance impact on critical paths
 
 **Approach**:
+
 - Analyze existing lock usage patterns
 - Design non-intrusive integration
 - Benchmark before/after performance

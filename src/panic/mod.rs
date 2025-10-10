@@ -7,4 +7,4 @@
 pub mod state;
 
 // Re-export commonly used types
-pub use state::{PanicLevel, enter_panic, current_level, is_panicking};
+pub use state::{current_level, enter_panic, is_panicking, PanicLevel};

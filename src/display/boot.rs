@@ -77,7 +77,7 @@ fn display_serial_status<O: Output>(out: &mut O) {
         ("[INFO] COM1 not present", ColorCode::normal())
     };
 
-    broadcast_args_with(out, format_args!("Serial: {}\n", status_msg), status_color);
+    broadcast_args_with(out, format_args!("Serial: {status_msg}\n"), status_color);
 }
 
 /// Display boot mode information and requirements
@@ -162,7 +162,7 @@ fn display_system_info_table<O: Output>(out: &mut O) {
 fn display_system_info_with<O: Output>(out: &mut O, label: &str, value: &str) {
     broadcast_args_with(
         out,
-        format_args!("  {:12}: {}\n", label, value),
+        format_args!("  {label:12}: {value}\n"),
         ColorCode::normal(),
     );
 }
@@ -204,7 +204,7 @@ pub fn display_feature_list_with<O: Output>(out: &mut O) {
 fn emit_feature_with<O: Output>(out: &mut O, num: usize, feature: &str) {
     broadcast_args_with(
         out,
-        format_args!("  {:2}. {}\n", num, feature),
+        format_args!("  {num:2}. {feature}\n"),
         ColorCode::normal(),
     );
 }
@@ -234,7 +234,7 @@ pub fn display_usage_note_with<O: Output>(out: &mut O) {
     broadcast_args_with(out, format_args!("[Usage Hints]\n"), ColorCode::info());
 
     for hint in SERIAL_HINTS {
-        broadcast_args_with(out, format_args!("  • {}\n", hint), ColorCode::normal());
+        broadcast_args_with(out, format_args!("  • {hint}\n"), ColorCode::normal());
     }
 
     broadcast_args_with(out, format_args!("\n"), ColorCode::normal());
@@ -265,7 +265,7 @@ fn display_system_status<O: Output>(out: &mut O) {
     for (subsystem, status, color) in &[vga_status, serial_status, init_status] {
         broadcast_args_with(
             out,
-            format_args!("  {:10}: {}\n", subsystem, status),
+            format_args!("  {subsystem:10}: {status}\n"),
             *color,
         );
     }

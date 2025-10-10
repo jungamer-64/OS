@@ -72,7 +72,7 @@ fn acquire_serial_ports_guard() -> (MutexGuard<'static, SerialPorts>, LockTiming
     // Acquire lock order enforcement first
     let _lock_guard = acquire_lock(LockId::Serial)
         .expect("Serial lock should always be acquirable (highest priority)");
-    
+
     if let Some(guard) = SERIAL_PORTS.try_lock() {
         DIAGNOSTICS.record_lock_acquisition();
         let token = DIAGNOSTICS.begin_lock_timing();
