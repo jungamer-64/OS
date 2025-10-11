@@ -15,7 +15,7 @@ use crate::constants::{
 use crate::diagnostics::DIAGNOSTICS;
 use crate::serial::{self, InitError as SerialInitError};
 use crate::serial_println;
-use crate::vga_buffer::{ColorCode, VgaError};
+use crate::vga_buffer::ColorCode;
 use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
 /// Initialization phases with explicit state machine
@@ -53,11 +53,11 @@ impl InitPhase {
 impl From<u8> for InitPhase {
     fn from(value: u8) -> Self {
         match value {
-            1 => InitPhase::VgaInit,
-            2 => InitPhase::SerialInit,
-            3 => InitPhase::Complete,
-            255 => InitPhase::Failed,
-            _ => InitPhase::NotStarted,
+            1 => Self::VgaInit,
+            2 => Self::SerialInit,
+            3 => Self::Complete,
+            255 => Self::Failed,
+            _ => Self::NotStarted,
         }
     }
 }
@@ -94,7 +94,7 @@ pub enum InitError {
 impl InitError {
     /// Check if error is critical (prevents kernel operation)
     const fn is_critical(&self) -> bool {
-        matches!(self, InitError::VgaFailed(_))
+        matches!(self, Self::VgaFailed(_))
     }
 }
 
@@ -124,6 +124,11 @@ fn transition_phase(expected: InitPhase, next: InitPhase) -> InitResult<()> {
 }
 
 /// Initialize VGA buffer with validation
+///
+/// # Errors
+///
+/// Returns `InitError::VgaFailed` if VGA initialization fails or buffer is not accessible.
+/// Returns `InitError::InvalidStateTransition` if called in an invalid state.
 pub fn initialize_vga() -> InitResult<()> {
     let current = current_phase();
 
@@ -142,11 +147,11 @@ pub fn initialize_vga() -> InitResult<()> {
         }
     }
 
-    // Perform VGA initialization
-    if let Err(err) = crate::vga_buffer::init() {
+    // Perform VGA initialization (let-else pattern for early return)
+    let Ok(()) = crate::vga_buffer::init() else {
         transition_phase(InitPhase::VgaInit, InitPhase::Failed).ok();
-        return Err(vga_init_failure(err));
-    }
+        return Err(InitError::VgaFailed("VGA buffer init failed"));
+    };
 
     // Validate initialization
     if !crate::vga_buffer::is_accessible() {
@@ -154,25 +159,27 @@ pub fn initialize_vga() -> InitResult<()> {
         return Err(InitError::VgaFailed("VGA buffer not accessible"));
     }
 
-    // Clear screen and set default colors
-    if let Err(err) = crate::vga_buffer::clear() {
+    // Clear screen and set default colors (let-else pattern)
+    let Ok(()) = crate::vga_buffer::clear() else {
         transition_phase(InitPhase::VgaInit, InitPhase::Failed).ok();
-        return Err(vga_init_failure(err));
-    }
+        return Err(InitError::VgaFailed("VGA clear failed"));
+    };
 
-    if let Err(err) = crate::vga_buffer::set_color(ColorCode::normal()) {
+    let Ok(()) = crate::vga_buffer::set_color(ColorCode::normal()) else {
         transition_phase(InitPhase::VgaInit, InitPhase::Failed).ok();
-        return Err(vga_init_failure(err));
-    }
+        return Err(InitError::VgaFailed("VGA set_color failed"));
+    };
 
     Ok(())
 }
 
-fn vga_init_failure(err: VgaError) -> InitError {
-    InitError::VgaFailed(err.as_str())
-}
-
 /// Initialize serial port with graceful degradation
+///
+/// # Errors
+///
+/// Returns `InitError::SerialFailed` if serial port initialization fails.
+/// Returns `InitError::InvalidStateTransition` if VGA is not initialized first.
+/// Note: Serial failure is non-critical and the kernel can continue with VGA-only output.
 pub fn initialize_serial() -> InitResult<()> {
     let current = current_phase();
 
@@ -275,6 +282,14 @@ pub fn report_safety_features() {
 }
 
 /// Complete initialization sequence
+///
+/// # Errors
+///
+/// Returns various `InitError` types depending on the failure:
+/// - `AlreadyInitialized` if initialization was already completed
+/// - `InProgress` if another initialization is currently running
+/// - `ConcurrentInitialization` if multiple simultaneous attempts detected
+/// - Propagates errors from VGA or serial initialization
 pub fn initialize_all() -> InitResult<()> {
     // Acquire initialization lock
     match INIT_LOCK.compare_exchange(0, INIT_MAGIC, Ordering::AcqRel, Ordering::Acquire) {
@@ -283,7 +298,7 @@ pub fn initialize_all() -> InitResult<()> {
             let result = perform_initialization();
 
             match result {
-                Ok(_) => {
+                Ok(()) => {
                     // Keep lock held (initialization complete)
                     Ok(())
                 }
@@ -365,6 +380,7 @@ pub fn halt_forever() -> ! {
 
 /// Check if initialization is complete
 #[inline]
+#[must_use = "initialization status should be checked before operations"]
 pub fn is_initialized() -> bool {
     current_phase() == InitPhase::Complete
 }
@@ -414,7 +430,8 @@ pub struct InitStatus {
 }
 
 impl InitStatus {
-    /// Check if system is operational
+    /// Check if system is operational (at least one output available)
+    #[must_use]
     pub const fn is_operational(&self) -> bool {
         self.vga_available && matches!(self.phase, InitPhase::Complete)
     }

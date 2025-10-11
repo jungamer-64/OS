@@ -127,6 +127,10 @@ impl<T> SafeBuffer<T> {
     }
 
     /// Read value at index with bounds checking
+    ///
+    /// # Errors
+    ///
+    /// Returns `BufferError::OutOfBounds` if index >= length.
     pub fn read(&self, index: usize) -> Result<T, BufferError>
     where
         T: Copy,
@@ -145,6 +149,10 @@ impl<T> SafeBuffer<T> {
     }
 
     /// Write value at index with bounds checking
+    ///
+    /// # Errors
+    ///
+    /// Returns `BufferError::OutOfBounds` if index >= length.
     pub fn write(&mut self, index: usize, value: T) -> Result<(), BufferError> {
         if index >= self.len {
             return Err(BufferError::OutOfBounds {
@@ -162,6 +170,10 @@ impl<T> SafeBuffer<T> {
     }
 
     /// Fill buffer with value
+    ///
+    /// # Errors
+    ///
+    /// Returns `BufferError::OutOfBounds` if buffer write fails.
     pub fn fill(&mut self, value: T) -> Result<(), BufferError>
     where
         T: Copy,
@@ -172,7 +184,12 @@ impl<T> SafeBuffer<T> {
         Ok(())
     }
 
-    /// Copy data from slice with bounds checking
+    /// Copy data from slice with length validation
+    ///
+    /// # Errors
+    ///
+    /// Returns `BufferError::InvalidLength` if slice length exceeds buffer capacity.
+    /// Returns `BufferError::OutOfBounds` if buffer write fails.
     pub fn copy_from_slice(&mut self, src: &[T]) -> Result<(), BufferError>
     where
         T: Copy,

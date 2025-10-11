@@ -27,7 +27,7 @@ use core::panic::PanicInfo;
 use x86_64::instructions::hlt;
 
 /// Halt loop used by tests after executing all test cases.
-#[inline(always)]
+#[inline]
 pub fn hlt_loop() -> ! {
     loop {
         // SAFETY: `hlt` is safe in ring 0 and we never leave the loop.

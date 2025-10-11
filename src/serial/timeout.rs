@@ -386,6 +386,20 @@ mod tests {
     }
 }
 
+/// Default maximum number of retry attempts for standard operations
+const DEFAULT_MAX_RETRIES: u32 = 3;
+/// Quick retry maximum attempts for time-sensitive operations
+const QUICK_MAX_RETRIES: u32 = 5;
+/// Persistent retry maximum attempts for critical operations
+const PERSISTENT_MAX_RETRIES: u32 = 10;
+
+/// Default delay between retries (in spin loop iterations)
+const DEFAULT_RETRY_DELAY: u32 = 1000;
+/// Quick retry delay for minimal latency
+const QUICK_RETRY_DELAY: u32 = 100;
+/// Persistent retry delay for critical operations
+const PERSISTENT_RETRY_DELAY: u32 = 5000;
+
 /// Retry configuration for operations that may fail transiently
 #[derive(Debug, Clone, Copy)]
 pub struct RetryConfig {
@@ -401,27 +415,27 @@ impl RetryConfig {
     /// Default retry configuration
     pub const fn default_retry() -> Self {
         Self {
-            max_retries: 3,
+            max_retries: DEFAULT_MAX_RETRIES,
             timeout: TimeoutConfig::default_timeout(),
-            retry_delay: 1000,
+            retry_delay: DEFAULT_RETRY_DELAY,
         }
     }
 
     /// Quick retry with minimal delay
     pub const fn quick_retry() -> Self {
         Self {
-            max_retries: 5,
+            max_retries: QUICK_MAX_RETRIES,
             timeout: TimeoutConfig::short_timeout(),
-            retry_delay: 100,
+            retry_delay: QUICK_RETRY_DELAY,
         }
     }
 
     /// Persistent retry for critical operations
     pub const fn persistent_retry() -> Self {
         Self {
-            max_retries: 10,
+            max_retries: PERSISTENT_MAX_RETRIES,
             timeout: TimeoutConfig::long_timeout(),
-            retry_delay: 5000,
+            retry_delay: PERSISTENT_RETRY_DELAY,
         }
     }
 }

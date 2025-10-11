@@ -305,7 +305,6 @@ fn panic(info: &PanicInfo) -> ! {
                 x86_64::instructions::hlt();
             }
         }
-        PanicLevel::Normal => unreachable!("enter_panic() never returns Normal"),
     }
 
     let mut output_success = false;

@@ -268,7 +268,7 @@ fn is_port_present_robust() -> Result<bool, InitError> {
 ///
 /// Provides a brief delay to allow hardware to process commands.
 /// Uses spin_loop hint for efficient waiting without busy-polling.
-#[inline(always)]
+#[inline]
 pub(super) fn wait_short() {
     for _ in 0..100 {
         core::hint::spin_loop();
@@ -313,6 +313,7 @@ pub fn is_initialized() -> bool {
 ///
 /// `true` if serial hardware is present and functional, `false` otherwise
 #[inline]
+#[must_use = "serial availability should be checked to avoid I/O failures"]
 pub fn is_available() -> bool {
     SERIAL_PORT_AVAILABLE.load(Ordering::Acquire)
 }

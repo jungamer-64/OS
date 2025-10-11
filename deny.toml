@@ -1,0 +1,49 @@
+# cargo-deny configuration file
+# https://embarkstudios.github.io/cargo-deny/
+
+# License configuration
+[licenses]
+# Allow common permissive open-source licenses
+allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause"]
+
+# Deny copyleft licenses (incompatible with proprietary use)
+deny = ["GPL-3.0", "AGPL-3.0"]
+
+# Confidence threshold for license detection
+confidence-threshold = 0.8
+
+# Bans configuration
+[bans]
+# Warn about multiple versions of the same crate
+multiple-versions = "warn"
+
+# Allow wildcard dependencies (e.g., "0.*" in dev-dependencies)
+wildcards = "allow"
+
+# Skip checking development dependencies for duplicates
+skip = []
+
+# Sources configuration
+[sources]
+# Deny packages from unknown registries
+unknown-registry = "deny"
+
+# Warn about packages from unknown Git sources
+unknown-git = "warn"
+
+# Allow packages from crates.io
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# Allow specific Git sources if needed
+# allow-git = []
+
+# Advisories configuration (for cargo-audit integration)
+[advisories]
+# Path to advisory database (default: fetched from RustSec)
+# db-path = "~/.cargo/advisory-db"
+
+# Vulnerabilities to ignore (if accepted risk)
+ignore = []
+
+# Severity of unmaintained packages
+severity-threshold = "unmaintained"

@@ -11,7 +11,10 @@
 use super::constants::{port_addr, register_offset};
 use super::error::InitError;
 use super::timeout::{self, AdaptiveTimeout, TimeoutConfig, TimeoutResult};
-use crate::constants::*;
+use crate::constants::{
+    BAUD_RATE_DIVISOR, CONFIG_8N1, DLAB_ENABLE, FIFO_ENABLE_CLEAR, LSR_TRANSMIT_EMPTY,
+    MODEM_CTRL_ENABLE_IRQ_RTS_DSR,
+};
 use x86_64::instructions::port::Port;
 
 /// Hardware operation state tracking
@@ -98,7 +101,7 @@ impl ValidationReport {
         }
     }
 
-    fn record_scratch(&mut self, pattern: u8, readback: u8, passed: bool) {
+    const fn record_scratch(&mut self, pattern: u8, readback: u8, passed: bool) {
         if self.scratch_count < self.scratch_tests.len() {
             self.scratch_tests[self.scratch_count] = ScratchTestResult {
                 pattern,
@@ -156,7 +159,7 @@ impl SerialPorts {
         let result = self.configure_internal();
 
         match result {
-            Ok(_) => {
+            Ok(()) => {
                 self.state = HardwareState::Ready;
                 Ok(())
             }
@@ -175,7 +178,7 @@ impl SerialPorts {
         // 3. Configure line parameters
         // 4. Enable and clear FIFO
         // 5. Set modem control
-        self.perform_op(PortOp::Configure)?;
+        self.perform_op(&PortOp::Configure)?;
 
         // Verify configuration
         super::wait_short();
@@ -190,12 +193,12 @@ impl SerialPorts {
 
     /// Write to scratch register with validation
     pub fn write_scratch(&mut self, value: u8) -> PortResult<()> {
-        self.perform_op(PortOp::ScratchWrite(value)).map(|_| ())
+        self.perform_op(&PortOp::ScratchWrite(value)).map(|_| ())
     }
 
     /// Read from scratch register with validation
     pub fn read_scratch(&mut self) -> PortResult<u8> {
-        match self.perform_op(PortOp::ScratchRead) {
+        match self.perform_op(&PortOp::ScratchRead) {
             Ok(val) => Ok(val),
             Err(e) => Err(e),
         }
@@ -203,12 +206,12 @@ impl SerialPorts {
 
     /// Read Line Status Register
     pub fn read_line_status(&mut self) -> PortResult<u8> {
-        self.perform_op(PortOp::LineStatusRead)
+        self.perform_op(&PortOp::LineStatusRead)
     }
 
     /// Read Modem Status Register
     pub fn read_modem_status(&mut self) -> PortResult<u8> {
-        self.perform_op(PortOp::ModemStatusRead)
+        self.perform_op(&PortOp::ModemStatusRead)
     }
 
     /// Poll LSR and write byte when ready (using adaptive timeout)
@@ -218,7 +221,7 @@ impl SerialPorts {
 
         // Update adaptive timeout based on result
         match result {
-            Ok(_) => self.adaptive_timeout.record_success(),
+            Ok(()) => self.adaptive_timeout.record_success(),
             Err(InitError::Timeout) => self.adaptive_timeout.record_failure(),
             _ => {}
         }
@@ -264,16 +267,16 @@ impl SerialPorts {
         report.lsr_valid = lsr != 0xFF && (lsr & 0x60) != 0;
 
         // Test FIFO functionality
-        report.fifo_functional = self.test_fifo()?;
+        report.fifo_functional = self.test_fifo();
 
         // Verify baud rate configuration
-        report.baud_config_valid = self.verify_baud_rate()?;
+        report.baud_config_valid = self.verify_baud_rate();
 
         Ok(report)
     }
 
     /// Test FIFO functionality
-    fn test_fifo(&mut self) -> PortResult<bool> {
+    fn test_fifo(&mut self) -> bool {
         // SAFETY: Writing to FIFO control register to enable FIFO
         unsafe {
             self.fifo.write(FIFO_ENABLE_CLEAR);
@@ -282,11 +285,11 @@ impl SerialPorts {
 
         // SAFETY: Reading IIR to check FIFO status
         let iir = unsafe { self.fifo.read() };
-        Ok((iir & 0xC0) == 0xC0)
+        (iir & 0xC0) == 0xC0
     }
 
     /// Verify baud rate configuration
-    fn verify_baud_rate(&mut self) -> PortResult<bool> {
+    fn verify_baud_rate(&mut self) -> bool {
         // SAFETY: Temporarily enable DLAB to read divisor latch
         unsafe {
             let original_lcr = self.line_control.read();
@@ -297,8 +300,8 @@ impl SerialPorts {
 
             self.line_control.write(original_lcr);
 
-            let divisor = ((dlh as u16) << 8) | dll as u16;
-            Ok(divisor == BAUD_RATE_DIVISOR)
+            let divisor = (u16::from(dlh) << 8) | u16::from(dll);
+            divisor == BAUD_RATE_DIVISOR
         }
     }
 
@@ -308,10 +311,11 @@ impl SerialPorts {
     ///
     /// All port I/O is performed within this function under the following guarantees:
     /// - Port addresses are validated compile-time constants
-    /// - Exclusive access via SERIAL_PORTS mutex
+    /// - Exclusive access via `SERIAL_PORTS` mutex
     /// - Operations follow UART 16550 specification
     /// - No memory safety violations possible with port I/O
-    fn perform_op(&mut self, op: PortOp) -> PortResult<u8> {
+    #[allow(clippy::unnecessary_wraps)]
+    fn perform_op(&mut self, op: &PortOp) -> PortResult<u8> {
         // SAFETY: See function documentation
         unsafe {
             match op {
@@ -337,7 +341,7 @@ impl SerialPorts {
                     Ok(1)
                 }
                 PortOp::ScratchWrite(v) => {
-                    self.scratch.write(v);
+                    self.scratch.write(*v);
                     Ok(1)
                 }
                 PortOp::ScratchRead => Ok(self.scratch.read()),
@@ -348,12 +352,12 @@ impl SerialPorts {
     }
 
     /// Get adaptive timeout statistics
-    pub fn timeout_stats(&self) -> (u32, u32, u32) {
+    pub const fn timeout_stats(&self) -> (u32, u32, u32) {
         self.adaptive_timeout.stats()
     }
 
     /// Reset adaptive timeout statistics
-    pub fn reset_timeout_stats(&mut self) {
+    pub const fn reset_timeout_stats(&mut self) {
         self.adaptive_timeout.reset();
     }
 }

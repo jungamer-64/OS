@@ -37,14 +37,15 @@ pub enum VgaError {
 
 impl VgaError {
     /// Convert the error into a human-readable static message.
+    #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
-            VgaError::BufferNotAccessible => "buffer not accessible",
-            VgaError::InvalidPosition => "invalid position",
-            VgaError::WriteFailure => "write failure",
-            VgaError::NotInitialized => "writer not initialized",
-            VgaError::NotLocked => "writer not locked",
-            VgaError::LockOrderViolation => "lock order violation",
+            Self::BufferNotAccessible => "buffer not accessible",
+            Self::InvalidPosition => "invalid position",
+            Self::WriteFailure => "write failure",
+            Self::NotInitialized => "writer not initialized",
+            Self::NotLocked => "writer not locked",
+            Self::LockOrderViolation => "lock order violation",
         }
     }
 }
@@ -67,20 +68,24 @@ impl ScreenBuffer {
     }
 
     /// Number of accessible cells.
-    #[inline(always)]
-    fn len(&self) -> usize {
+    #[inline]
+    const fn len() -> usize {
         CELL_COUNT
     }
 
-    #[inline(always)]
-    fn is_valid_index(&self, index: usize) -> bool {
-        index < self.len()
+    #[inline]
+    const fn is_valid_index(index: usize) -> bool {
+        index < Self::len()
     }
 
-    /// Write a value to a cell if it is within bounds.
-    #[inline(always)]
+    /// Write a value to a specific cell within bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VgaError::InvalidPosition` if index is out of bounds.
+    #[inline]
     fn write(&self, index: usize, value: u16) -> Result<(), VgaError> {
-        if !self.is_valid_index(index) {
+        if !Self::is_valid_index(index) {
             return Err(VgaError::InvalidPosition);
         }
 
@@ -101,9 +106,13 @@ impl ScreenBuffer {
     }
 
     /// Read a value from a cell if it is within bounds.
-    #[inline(always)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `VgaError::InvalidPosition` if index is out of bounds.
+    #[inline]
     fn read(&self, index: usize) -> Result<u16, VgaError> {
-        if !self.is_valid_index(index) {
+        if !Self::is_valid_index(index) {
             return Err(VgaError::InvalidPosition);
         }
 
@@ -114,13 +123,17 @@ impl ScreenBuffer {
     }
 
     /// Copy a range of cells within the buffer with bounds validation.
-    #[inline(always)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `VgaError::InvalidPosition` if source or destination ranges are out of bounds.
+    #[inline]
     fn copy(&self, src: usize, dst: usize, count: usize) -> Result<(), VgaError> {
         if count == 0 {
             return Ok(());
         }
 
-        let len = self.len();
+        let len = Self::len();
         let src_end = src.checked_add(count).ok_or(VgaError::InvalidPosition)?;
         let dst_end = dst.checked_add(count).ok_or(VgaError::InvalidPosition)?;
 
@@ -149,7 +162,7 @@ impl ScreenBuffer {
         let start = row
             .checked_mul(VGA_WIDTH)
             .ok_or(VgaError::InvalidPosition)?;
-        debug_assert!(start + VGA_WIDTH <= self.len());
+        debug_assert!(start + VGA_WIDTH <= Self::len());
 
         unsafe {
             // SAFETY: Row bounds validated above and pointer fixed to VGA memory.
@@ -181,7 +194,7 @@ impl Position {
 
     /// Calculate linear cell index in the VGA buffer with bounds checking.
     /// Returns `None` if the position is out of bounds.
-    fn cell_index(&self) -> Option<usize> {
+    const fn cell_index(&self) -> Option<usize> {
         if self.row >= VGA_HEIGHT || self.col >= VGA_WIDTH {
             return None;
         }
@@ -189,7 +202,7 @@ impl Position {
     }
 
     /// Move to next column, returns false if at row end
-    fn advance_col(&mut self) -> bool {
+    const fn advance_col(&mut self) -> bool {
         if self.col + 1 < VGA_WIDTH {
             self.col += 1;
             true
@@ -199,28 +212,29 @@ impl Position {
     }
 
     /// Move to new line
-    fn new_line(&mut self) {
+    const fn new_line(&mut self) {
         self.col = 0;
         self.row += 1;
     }
 
     /// Check if at bottom of screen
-    fn is_at_screen_bottom(&self) -> bool {
+    const fn is_at_screen_bottom(&self) -> bool {
         self.row >= VGA_HEIGHT
     }
 
     /// Validate position is within bounds
-    fn is_valid(&self) -> bool {
+    const fn is_valid(&self) -> bool {
         self.row < VGA_HEIGHT && self.col < VGA_WIDTH
     }
 }
 
 /// Runtime guard that tracks exclusive access beyond Rust's borrow checker.
-pub(crate) struct RuntimeLockGuard {
+pub struct RuntimeLockGuard {
     writer: *mut VgaWriter,
 }
 
 impl RuntimeLockGuard {
+    #[allow(clippy::ref_as_ptr)]
     fn new(writer: &mut VgaWriter) -> Self {
         writer.runtime_locked = true;
         Self {
@@ -252,13 +266,14 @@ unsafe impl Sync for VgaWriter {}
 
 impl VgaWriter {
     /// Create a new VGA writer
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             position: Position::new(),
             color_code: ColorCode::normal(),
-            buffer: ScreenBuffer::new(),
             initialized: false,
             runtime_locked: false,
+            buffer: ScreenBuffer::new(),
         }
     }
 
@@ -267,6 +282,11 @@ impl VgaWriter {
         RuntimeLockGuard::new(self)
     }
 
+    /// Ensure the writer has acquired the runtime lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VgaError::NotLocked` if runtime lock not acquired.
     fn ensure_runtime_lock(&self) -> Result<(), VgaError> {
         if !self.runtime_locked {
             DIAGNOSTICS.record_vga_write(false);
@@ -275,13 +295,20 @@ impl VgaWriter {
         Ok(())
     }
 
+    /// Ensure the writer is ready for operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VgaError::NotLocked` if runtime lock not acquired.
+    /// Returns `VgaError::NotInitialized` if writer not initialized.
+    /// Returns `VgaError::BufferNotAccessible` if VGA buffer is inaccessible.
     fn ensure_ready(&self) -> Result<(), VgaError> {
         self.ensure_runtime_lock()?;
         if !self.initialized {
             DIAGNOSTICS.record_vga_write(false);
             return Err(VgaError::NotInitialized);
         }
-        if !self.is_accessible() {
+        if !Self::is_accessible() {
             DIAGNOSTICS.record_vga_write(false);
             return Err(VgaError::BufferNotAccessible);
         }
@@ -310,7 +337,7 @@ impl VgaWriter {
     }
 
     /// Verify buffer is accessible (cached result)
-    fn is_accessible(&self) -> bool {
+    fn is_accessible() -> bool {
         BUFFER_ACCESSIBLE.load(Ordering::Acquire)
     }
 
@@ -351,7 +378,7 @@ impl VgaWriter {
     }
 
     /// Clear a specific row with blank characters
-    fn clear_row(&mut self, row: usize) -> Result<(), VgaError> {
+    fn clear_row(&self, row: usize) -> Result<(), VgaError> {
         self.ensure_ready()?;
         let blank = Self::encode_char(b' ', self.color_code);
         let result = self.buffer.fill_row(row, blank);
@@ -416,45 +443,45 @@ impl VgaWriter {
         self.write_byte_internal(byte)
     }
 
+    #[inline]
+    #[allow(clippy::branches_sharing_code)]
     fn write_byte_internal(&mut self, byte: u8) -> Result<(), VgaError> {
         self.ensure_ready()?;
 
-        match byte {
-            b'\n' => {
+        if byte == b'\n' {
+            if let Err(err) = self.new_line() {
+                DIAGNOSTICS.record_vga_write(false);
+                return Err(err);
+            }
+            DIAGNOSTICS.record_vga_write(true);
+            Ok(())
+        } else {
+            if !self.position.is_valid() {
+                DIAGNOSTICS.record_vga_write(false);
+                return Err(VgaError::InvalidPosition);
+            }
+
+            let index = self
+                .position
+                .cell_index()
+                .ok_or(VgaError::InvalidPosition)?;
+            let encoded = Self::encode_char(byte, self.color_code);
+
+            self.buffer.write(index, encoded)?;
+
+            if !self.position.advance_col() {
                 if let Err(err) = self.new_line() {
                     DIAGNOSTICS.record_vga_write(false);
                     return Err(err);
                 }
-                DIAGNOSTICS.record_vga_write(true);
-                Ok(())
             }
-            _ => {
-                if !self.position.is_valid() {
-                    DIAGNOSTICS.record_vga_write(false);
-                    return Err(VgaError::InvalidPosition);
-                }
 
-                let index = self
-                    .position
-                    .cell_index()
-                    .ok_or(VgaError::InvalidPosition)?;
-                let encoded = Self::encode_char(byte, self.color_code);
-
-                self.buffer.write(index, encoded)?;
-
-                if !self.position.advance_col() {
-                    if let Err(err) = self.new_line() {
-                        DIAGNOSTICS.record_vga_write(false);
-                        return Err(err);
-                    }
-                }
-
-                DIAGNOSTICS.record_vga_write(true);
-                Ok(())
-            }
+            DIAGNOSTICS.record_vga_write(true);
+            Ok(())
         }
     }
 
+    #[inline]
     fn write_ascii(&mut self, s: &str) -> Result<(), VgaError> {
         for byte in s.bytes() {
             let display_byte = if Self::is_printable(byte) {
@@ -498,8 +525,8 @@ pub struct DoubleBufferedWriter {
 }
 
 impl DoubleBufferedWriter {
-    /// Create a new double-buffered writer with a clean back buffer.
-    #[allow(dead_code)]
+    /// Create a new empty double buffer
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             front: ScreenBuffer::new(),
@@ -509,6 +536,11 @@ impl DoubleBufferedWriter {
     }
 
     /// Stage a cell write in the back buffer.
+    /// Write a cell to the back buffer
+    ///
+    /// # Errors
+    ///
+    /// Returns `VgaError::InvalidPosition` if index is out of bounds
     #[allow(dead_code)]
     pub fn write_cell(&mut self, index: usize, value: u16) -> Result<(), VgaError> {
         if index >= CELL_COUNT {
@@ -522,6 +554,11 @@ impl DoubleBufferedWriter {
 
     /// Present all pending changes to the front buffer and clear dirty state.
     #[allow(dead_code)]
+    /// Swap dirty buffers to screen
+    ///
+    /// # Errors
+    ///
+    /// Returns `VgaError` if buffer operations fail
     pub fn swap_buffers(&mut self) -> Result<usize, VgaError> {
         if !BUFFER_ACCESSIBLE.load(Ordering::Acquire) {
             return Err(VgaError::BufferNotAccessible);
@@ -569,7 +606,7 @@ impl DoubleBufferedWriter {
         self.mark_all_dirty();
     }
 
-    fn mark_dirty(dirty: &mut [u64; DIRTY_WORD_COUNT], index: usize) {
+    const fn mark_dirty(dirty: &mut [u64; DIRTY_WORD_COUNT], index: usize) {
         let chunk = index / DIRTY_WORD_BITS;
         let bit = index % DIRTY_WORD_BITS;
         dirty[chunk] |= 1u64 << bit;

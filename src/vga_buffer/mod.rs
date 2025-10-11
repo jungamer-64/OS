@@ -117,6 +117,7 @@ pub fn init() -> Result<(), VgaError> {
 }
 
 /// Check if VGA buffer is accessible
+#[must_use = "VGA accessibility should be checked before operations"]
 pub fn is_accessible() -> bool {
     BUFFER_ACCESSIBLE.load(Ordering::Acquire)
 }

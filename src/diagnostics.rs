@@ -396,7 +396,7 @@ pub struct HealthIssues {
 }
 
 impl HealthIssues {
-    #[must_use]
+    #[must_use = "health status should be checked to prevent silent failures"]
     pub const fn is_healthy(&self) -> bool {
         !self.high_vga_error_rate
             && !self.high_serial_timeout_rate

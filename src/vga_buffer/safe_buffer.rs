@@ -208,6 +208,7 @@ impl SafeBuffer {
     }
 
     /// Copy within buffer with validated range
+    #[inline]
     pub fn copy_range(&self, src: ValidRange, dst: ValidIndex) -> Result<(), VgaError> {
         // Validate destination range
         let dst_end = dst
@@ -231,6 +232,7 @@ impl SafeBuffer {
     }
 
     /// Fill a validated range with a value
+    #[inline]
     pub fn fill_range(&self, range: ValidRange, value: u16) -> Result<(), VgaError> {
         for i in 0..range.len() {
             let index =
@@ -243,6 +245,7 @@ impl SafeBuffer {
     /// Write a slice to buffer starting at index
     ///
     /// Returns number of cells written
+    #[inline]
     pub fn write_slice(&self, start: ValidIndex, data: &[u16]) -> Result<usize, VgaError> {
         let end = start
             .get()
@@ -262,6 +265,7 @@ impl SafeBuffer {
     }
 
     /// Read a slice from buffer
+    #[inline]
     pub fn read_slice(&self, start: ValidIndex, buf: &mut [u16]) -> Result<usize, VgaError> {
         let end = start
             .get()

@@ -22,12 +22,12 @@ pub enum InitError {
 impl core::fmt::Display for InitError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            InitError::AlreadyInitialized => write!(f, "Serial port already initialized"),
-            InitError::PortNotPresent => write!(f, "Serial port hardware not present"),
-            InitError::Timeout => write!(f, "Serial port initialization timeout"),
-            InitError::ConfigurationFailed => write!(f, "Serial port configuration failed"),
-            InitError::HardwareAccessFailed => write!(f, "Serial port hardware access failed"),
-            InitError::TooManyAttempts => {
+            Self::AlreadyInitialized => write!(f, "Serial port already initialized"),
+            Self::PortNotPresent => write!(f, "Serial port hardware not present"),
+            Self::Timeout => write!(f, "Serial port initialization timeout"),
+            Self::ConfigurationFailed => write!(f, "Serial port configuration failed"),
+            Self::HardwareAccessFailed => write!(f, "Serial port hardware access failed"),
+            Self::TooManyAttempts => {
                 write!(f, "Too many serial port initialization attempts")
             }
         }
