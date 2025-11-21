@@ -2,8 +2,6 @@
 
 //! Constants and register definitions for serial port operations
 
-use crate::constants::SERIAL_IO_PORT;
-
 /// Register offsets from base port
 pub mod register_offset {
     pub const DATA: u16 = 0;
@@ -18,8 +16,3 @@ pub mod register_offset {
 
 /// Maximum initialization attempts before giving up
 pub const MAX_INIT_ATTEMPTS: u8 = 3;
-
-/// Build serial port addresses from base and offset
-pub const fn port_addr(offset: u16) -> u16 {
-    SERIAL_IO_PORT + offset
-}

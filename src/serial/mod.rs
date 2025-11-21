@@ -17,7 +17,7 @@
 //! - Concurrent access via Mutex protection
 //! - Interrupt-safe operation
 
-mod backend;
+pub mod backend;
 mod constants;
 mod error;
 mod ports;
@@ -33,7 +33,12 @@ use crate::constants::*;
 use crate::diagnostics::{LockTimingToken, DIAGNOSTICS};
 use crate::serial_println;
 use crate::sync::lock_manager::{acquire_lock, LockId};
-use backend::PortIoBackend;
+pub use backend::{DefaultBackend, Register as SerialRegister, SerialHardware};
+
+#[cfg(target_arch = "x86_64")]
+pub use backend::PortIoBackend;
+#[cfg(not(target_arch = "x86_64"))]
+pub use backend::StubSerialBackend;
 use constants::MAX_INIT_ATTEMPTS;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -69,7 +74,7 @@ const MAX_LOCK_HOLD_TIME: u64 = 1_000_000;
 ///
 /// Never acquire VGA_WRITER while holding SERIAL_PORTS.
 static SERIAL_PORTS: Mutex<DefaultSerialPorts> =
-    Mutex::new(SerialPorts::new(PortIoBackend::new()));
+    Mutex::new(SerialPorts::new(DefaultBackend::new()));
 
 fn acquire_serial_ports_guard() -> (MutexGuard<'static, DefaultSerialPorts>, LockTimingToken) {
     // Acquire lock order enforcement first

@@ -8,7 +8,7 @@
 //! - Validated state transitions
 //! - Hardware validation with detailed reporting
 
-use super::backend::{PortIoBackend, Register, SerialHardware};
+use super::backend::{DefaultBackend, Register, SerialHardware};
 use super::error::InitError;
 use super::timeout::{self, AdaptiveTimeout, TimeoutConfig, TimeoutResult};
 use crate::constants::{
@@ -46,7 +46,7 @@ pub struct SerialPorts<H: SerialHardware> {
 }
 
 /// Default serial port implementation backed by x86 port I/O.
-pub type DefaultSerialPorts = SerialPorts<PortIoBackend>;
+pub type DefaultSerialPorts = SerialPorts<DefaultBackend>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ValidationReport {
