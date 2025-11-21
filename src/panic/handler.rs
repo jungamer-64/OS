@@ -1,374 +1,294 @@
 // src/panic/handler.rs
 
-//! Robust panic handler with nested panic protection
+//! Central panic handling utilities.
 //!
-//! This module provides a multi-layered panic handling system that:
-//! - Detects and prevents nested panics
-//! - Provides fallback output mechanisms
-//! - Collects maximum diagnostic information
-//! - Ensures system halts safely in all cases
+//! The new handler coordinates panic state tracking, diagnostic collection,
+//! and multi-channel output with the following guarantees:
+//! - Nested panic detection backed by [`panic::state`]
+//! - Best-effort serial + VGA output with automatic fallback to the QEMU
+//!   debug port (0xE9)
+//! - Consistent diagnostic logging so that the kernel panic story can be
+//!   reconstructed after reboot
+//!
+//! The functions in this module are intentionally `no_std` friendly and avoid
+//! allocations, locks, or other operations that could panic again while the
+//! system is already unhealthy.
 
+use crate::{
+    diagnostics::DIAGNOSTICS,
+    display,
+    init,
+    panic::state::{enter_panic, PanicLevel},
+    serial,
+    vga_buffer,
+};
 use core::panic::PanicInfo;
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use x86_64::instructions::{interrupts, port::Port};
 
-/// Panic state tracking
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-enum PanicState {
-    /// First panic being handled
-    InPanic = 1,
-    /// Nested panic detected
-    NestedPanic = 2,
-    /// Critical failure, emergency halt
-    CriticalFailure = 3,
+const DEBUG_PORT: u16 = 0xE9;
+const DEBUG_PORT_MAX_PATH: usize = 80;
+
+/// Tracks whether we managed to emit panic information anywhere.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PanicOutputStatus {
+    /// Serial output succeeded
+    pub serial: bool,
+    /// VGA output succeeded
+    pub vga: bool,
+    /// Emergency debug port output was attempted
+    pub emergency: bool,
 }
 
-/// Global panic state (0 = no panic, matches no variant)
-static PANIC_STATE: AtomicU8 = AtomicU8::new(0);
-
-/// Whether panic output has been attempted
-static OUTPUT_ATTEMPTED: AtomicBool = AtomicBool::new(false);
-
-/// Panic entry guard - ensures proper state transition
-struct PanicGuard {
-    state: PanicState,
-}
-
-impl PanicGuard {
-    /// Enter panic handling
-    fn enter() -> Self {
-        let prev_state = PANIC_STATE.swap(PanicState::InPanic as u8, Ordering::SeqCst);
-
-        let state = match prev_state {
-            0 => PanicState::InPanic,
-            1 => PanicState::NestedPanic,
-            _ => PanicState::CriticalFailure,
-        };
-
-        Self { state }
-    }
-
-    /// Get current panic state
-    fn state(&self) -> PanicState {
-        self.state
-    }
-
-    /// Check if this is a nested panic
-    fn is_nested(&self) -> bool {
-        matches!(
-            self.state,
-            PanicState::NestedPanic | PanicState::CriticalFailure
-        )
+impl PanicOutputStatus {
+    #[inline]
+    pub const fn any_success(&self) -> bool {
+        self.serial || self.vga || self.emergency
     }
 }
 
-/// Panic handler implementation
+struct PanicTelemetry {
+    level: PanicLevel,
+    init_status: &'static str,
+    serial_available: bool,
+    vga_accessible: bool,
+}
+
+impl PanicTelemetry {
+    fn capture(level: PanicLevel) -> Self {
+        Self {
+            level,
+            init_status: init::status_string(),
+            serial_available: serial::is_available(),
+            vga_accessible: vga_buffer::is_accessible(),
+        }
+    }
+}
+
+/// Entry point invoked by the crate-level `#[panic_handler]`.
 pub fn handle_panic(info: &PanicInfo) -> ! {
-    let guard = PanicGuard::enter();
+    // Interrupts can trigger nested panics, so shut them off immediately.
+    interrupts::disable();
 
-    match guard.state() {
-        PanicState::InPanic => {
-            // First panic - try full diagnostic output
-            handle_primary_panic(info);
-        }
-        PanicState::NestedPanic => {
-            // Nested panic - minimal output only
-            handle_nested_panic(info);
-        }
-        PanicState::CriticalFailure => {
-            // Critical failure - emergency halt
-            emergency_halt(info);
-        }
+    let level = enter_panic();
+    let telemetry = PanicTelemetry::capture(level);
+
+    DIAGNOSTICS.record_panic();
+
+    match level {
+        PanicLevel::Primary => handle_primary_panic(info, &telemetry),
+        PanicLevel::Nested => handle_nested_panic(info, &telemetry),
+        PanicLevel::Critical => handle_critical_failure(info, &telemetry),
+    }
+}
+
+fn handle_primary_panic(info: &PanicInfo, telemetry: &PanicTelemetry) -> ! {
+    let mut outputs = PanicOutputStatus::default();
+
+    outputs.serial = try_serial_output(info, telemetry);
+    outputs.vga = try_vga_output(info, telemetry);
+
+    if !outputs.any_success() {
+        outputs.emergency = emergency_panic_output(info);
     }
 
-    // Should never reach here, but ensure halt
-    halt_forever()
+    finalize(outputs, telemetry)
 }
 
-/// Handle the primary (first) panic
-fn handle_primary_panic(info: &PanicInfo) {
-    // Disable interrupts to prevent reentrancy
-    x86_64::instructions::interrupts::disable();
+fn handle_nested_panic(info: &PanicInfo, telemetry: &PanicTelemetry) -> ! {
+    DIAGNOSTICS.mark_nested_panic();
 
-    // Try serial output first (most reliable)
-    let serial_ok = try_serial_output(info);
-
-    // Try VGA output
-    let vga_ok = try_vga_output(info);
-
-    // If both failed, try emergency output
-    if !serial_ok && !vga_ok {
-        emergency_output(info);
+    if telemetry.serial_available {
+        serial_println!(
+            "[CRITICAL] Nested panic detected! Using emergency output only."
+        );
     }
 
-    OUTPUT_ATTEMPTED.store(true, Ordering::Release);
+    let mut outputs = PanicOutputStatus::default();
+    outputs.emergency = emergency_output_minimal(info);
+
+    finalize(outputs, telemetry)
 }
 
-/// Handle nested panic (panic during panic handling)
-fn handle_nested_panic(info: &PanicInfo) {
-    x86_64::instructions::interrupts::disable();
+fn handle_critical_failure(info: &PanicInfo, telemetry: &PanicTelemetry) -> ! {
+    DIAGNOSTICS.mark_nested_panic();
 
-    // Only try emergency output for nested panics
-    emergency_output_minimal(info);
-}
+    if telemetry.serial_available {
+        serial_println!(
+            "[FATAL] Multiple nested panics detected. Forcing emergency halt."
+        );
+    }
 
-/// Emergency halt for critical failures
-fn emergency_halt(_info: &PanicInfo) {
-    x86_64::instructions::interrupts::disable();
-
-    // Can't safely output anything at this point
-    // Just log to debug port if available
     debug_port_emergency_message();
 
-    halt_forever()
+    let mut outputs = PanicOutputStatus::default();
+    outputs.emergency = emergency_output_minimal(info);
+
+    finalize(outputs, telemetry)
 }
 
-/// Try to output panic info to serial port
-fn try_serial_output(info: &PanicInfo) -> bool {
-    // Check if serial is available without taking locks
-    if !is_serial_available_lockfree() {
+fn try_serial_output(info: &PanicInfo, telemetry: &PanicTelemetry) -> bool {
+    if !telemetry.serial_available {
         return false;
     }
 
-    // Try to output panic info
-    // This is wrapped in a simple check to prevent nested panics
-    let result = core::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
-        output_to_serial(info);
-    }));
-
-    result.is_ok()
+    display::display_panic_info_serial(info);
+    true
 }
 
-/// Try to output panic info to VGA
-fn try_vga_output(info: &PanicInfo) -> bool {
-    if !is_vga_available_lockfree() {
+fn try_vga_output(info: &PanicInfo, telemetry: &PanicTelemetry) -> bool {
+    if !telemetry.vga_accessible {
         return false;
     }
 
-    let result = core::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
-        output_to_vga(info);
-    }));
-
-    result.is_ok()
+    display::display_panic_info_vga(info);
+    true
 }
 
-/// Emergency output using port 0xE9 (QEMU debug port)
-fn emergency_output(info: &PanicInfo) {
-    use x86_64::instructions::port::Port;
+fn finalize(outputs: PanicOutputStatus, telemetry: &PanicTelemetry) -> ! {
+    log_system_state(telemetry);
+    log_output_summary(&outputs, telemetry);
 
-    unsafe {
-        let mut port = Port::<u8>::new(0xE9);
+    init::halt_forever()
+}
 
-        // Output message
-        let msg = b"!!! KERNEL PANIC !!!\n";
-        for &byte in msg {
-            port.write(byte);
-        }
-
-        // Try to output location if available
-        if let Some(location) = info.location() {
-            let file_msg = b"File: ";
-            for &byte in file_msg {
-                port.write(byte);
-            }
-
-            // Output file name (truncated)
-            for &byte in location.file().as_bytes().iter().take(50) {
-                port.write(byte);
-            }
-
-            port.write(b'\n');
-        }
-
-        let halt_msg = b"System halted.\n";
-        for &byte in halt_msg {
-            port.write(byte);
-        }
+fn log_system_state(telemetry: &PanicTelemetry) {
+    if !telemetry.serial_available {
+        return;
     }
+
+    serial_println!();
+    serial_println!("[STATE] System state at panic:");
+    serial_println!("     - Level: {:?}", telemetry.level);
+    serial_println!("     - Initialization phase: {}", telemetry.init_status);
+    serial_println!("     - VGA accessible: {}", telemetry.vga_accessible);
+    serial_println!("     - Serial available: {}", telemetry.serial_available);
+    serial_println!();
 }
 
-/// Minimal emergency output for nested panics
-///
-/// Following Microsoft Docs best practices: provide detailed context
-/// for debugging even in minimal output scenarios
-fn emergency_output_minimal(info: &PanicInfo) {
-    use x86_64::instructions::port::Port;
-
-    unsafe {
-        let mut port = Port::<u8>::new(0xE9);
-
-        // Header with context
-        let header = b"\n!!! NESTED PANIC DETECTED !!!\n";
-        for &byte in header {
-            port.write(byte);
-        }
-
-        // Location information if available
-        if let Some(location) = info.location() {
-            let loc_msg = b"Location: ";
-            for &byte in loc_msg {
-                port.write(byte);
-            }
-
-            // File name
-            let file = location.file().as_bytes();
-            for &byte in file.iter().take(60) {
-                port.write(byte);
-            }
-
-            port.write(b':');
-
-            // Line number (simple decimal output)
-            let line = location.line();
-            write_decimal_to_port(&mut port, line);
-
-            port.write(b'\n');
-        }
-
-        let halt_msg = b"System halting to prevent corruption.\n";
-        for &byte in halt_msg {
-            port.write(byte);
-        }
+fn log_output_summary(outputs: &PanicOutputStatus, telemetry: &PanicTelemetry) {
+    if !telemetry.serial_available {
+        return;
     }
+
+    serial_println!(
+        "[PANIC] Output summary -> serial: {}, vga: {}, emergency_port: {}",
+        outputs.serial,
+        outputs.vga,
+        outputs.emergency
+    );
 }
 
-/// Helper to write decimal number to serial port
-fn write_decimal_to_port(port: &mut x86_64::instructions::port::Port<u8>, mut num: u32) {
+fn emergency_panic_output(info: &PanicInfo) -> bool {
+    let mut port = Port::<u8>::new(DEBUG_PORT);
+
+    write_bytes(&mut port, b"!!! KERNEL PANIC - OUTPUT FAILED !!!\n");
+
+    if let Some(location) = info.location() {
+        write_bytes(&mut port, b"File: ");
+        for &byte in location.file().as_bytes().iter().take(DEBUG_PORT_MAX_PATH) {
+            write_byte(&mut port, byte);
+        }
+        write_byte(&mut port, b'\n');
+
+        write_bytes(&mut port, b"Line: ");
+        write_decimal_to_port(&mut port, location.line());
+        write_byte(&mut port, b'\n');
+    }
+
+    true
+}
+
+fn emergency_output_minimal(info: &PanicInfo) -> bool {
+    let mut port = Port::<u8>::new(DEBUG_PORT);
+
+    write_bytes(&mut port, b"\n!!! NESTED PANIC DETECTED !!!\n");
+
+    if let Some(location) = info.location() {
+        write_bytes(&mut port, b"Location: ");
+        for &byte in location.file().as_bytes().iter().take(DEBUG_PORT_MAX_PATH) {
+            write_byte(&mut port, byte);
+        }
+        write_byte(&mut port, b':');
+        write_decimal_to_port(&mut port, location.line());
+        write_byte(&mut port, b'\n');
+    }
+
+    write_bytes(
+        &mut port,
+        b"System halting to prevent corruption.\n",
+    );
+
+    true
+}
+
+fn debug_port_emergency_message() {
+    let mut port = Port::<u8>::new(DEBUG_PORT);
+
+    write_bytes(&mut port, b"\n!!! CRITICAL PANIC FAILURE !!!\n");
+    write_bytes(
+        &mut port,
+        b"Context: Multiple panic attempts detected\n",
+    );
+    write_bytes(
+        &mut port,
+        b"Action: Emergency system halt to prevent data corruption\n",
+    );
+    write_bytes(
+        &mut port,
+        b"Recommendation: Review panic logs for race conditions\n",
+    );
+}
+
+fn write_decimal_to_port(port: &mut Port<u8>, mut num: u32) {
     if num == 0 {
-        port.write(b'0');
+        write_byte(port, b'0');
         return;
     }
 
     let mut digits = [0u8; 10];
-    let mut count = 0;
+    let mut idx = 0;
 
-    while num > 0 {
-        digits[count] = b'0' + (num % 10) as u8;
+    while num > 0 && idx < digits.len() {
+        digits[idx] = b'0' + (num % 10) as u8;
         num /= 10;
-        count += 1;
+        idx += 1;
     }
 
-    for i in (0..count).rev() {
-        port.write(digits[i]);
+    while idx > 0 {
+        idx -= 1;
+        write_byte(port, digits[idx]);
     }
 }
 
-/// Output to debug port for critical failures
-///
-/// Enhanced with context following Microsoft Docs error handling guidance:
-/// "Provide detailed error messages for debugging"
-fn debug_port_emergency_message() {
-    use x86_64::instructions::port::Port;
-
+#[inline]
+fn write_byte(port: &mut Port<u8>, byte: u8) {
+    // SAFETY: Writing to the debug port is safe within the panic handler as it
+    // does not rely on any shared resources or locks.
     unsafe {
-        let mut port = Port::<u8>::new(0xE9);
-
-        let header = b"\n!!! CRITICAL PANIC FAILURE !!!\n";
-        for &byte in header {
-            port.write(byte);
-        }
-
-        let context = b"Context: Multiple panic attempts detected\n";
-        for &byte in context {
-            port.write(byte);
-        }
-
-        let action = b"Action: Emergency system halt to prevent data corruption\n";
-        for &byte in action {
-            port.write(byte);
-        }
-
-        let recommendation =
-            b"Recommendation: Review panic handler logs and check for race conditions\n";
-        for &byte in recommendation {
-            port.write(byte);
-        }
+        port.write(byte);
     }
 }
 
-/// Check if serial is available without taking locks
-fn is_serial_available_lockfree() -> bool {
-    // This would check atomic flags instead of taking locks
-    // Implementation depends on your serial driver
-    false // Conservative default
-}
-
-/// Check if VGA is available without taking locks
-fn is_vga_available_lockfree() -> bool {
-    // This would check atomic flags
-    false // Conservative default
-}
-
-/// Output panic info to serial (actual implementation)
-fn output_to_serial(_info: &PanicInfo) {
-    // Implementation would go here
-    // This should be as simple as possible to avoid nested panics
-}
-
-/// Output panic info to VGA (actual implementation)
-fn output_to_vga(_info: &PanicInfo) {
-    // Implementation would go here
-    // Keep it simple to avoid nested panics
-}
-
-/// Halt the CPU forever
-fn halt_forever() -> ! {
-    loop {
-        x86_64::instructions::interrupts::disable();
-        x86_64::instructions::hlt();
-    }
-}
-
-/// Panic statistics for diagnostics
-pub struct PanicStats {
-    pub state: PanicState,
-    pub output_attempted: bool,
-}
-
-impl PanicStats {
-    pub fn current() -> Self {
-        let state_val = PANIC_STATE.load(Ordering::Acquire);
-        let state = match state_val {
-            1 => PanicState::InPanic,
-            2 => PanicState::NestedPanic,
-            3 => PanicState::CriticalFailure,
-            // 0 or any other value means no panic
-            _ => PanicState::InPanic, // Safe default for diagnostic purposes
-        };
-
-        Self {
-            state,
-            output_attempted: OUTPUT_ATTEMPTED.load(Ordering::Acquire),
-        }
-    }
-
-    pub fn is_panicking(&self) -> bool {
-        // If we're reading PanicStats, we're likely in panic handler
-        // so assume panicking=true
-        true
+fn write_bytes(port: &mut Port<u8>, bytes: &[u8]) {
+    for &byte in bytes {
+        write_byte(port, byte);
     }
 }
 
 #[cfg(all(test, feature = "std-tests"))]
 mod tests {
-    use super::*;
+    use super::PanicOutputStatus;
 
     #[test]
-    fn test_panic_state_transitions() {
-        assert_eq!(PanicState::InPanic as u8, 1);
-        assert_eq!(PanicState::NestedPanic as u8, 2);
-        assert_eq!(PanicState::CriticalFailure as u8, 3);
-        // Note: 0 represents no panic state (no enum variant)
-    }
+    fn output_status_success_detection() {
+        let mut status = PanicOutputStatus::default();
+        assert!(!status.any_success());
 
-    #[test]
-    fn test_panic_guard_detects_nesting() {
-        // First panic
-        let guard1 = PanicGuard::enter();
-        assert!(!guard1.is_nested());
+        status.serial = true;
+        assert!(status.any_success());
 
-        // Would be nested (can't actually test without unsafe)
-        // Just verify state values are correct
-        assert_eq!(guard1.state(), PanicState::InPanic);
+        status.serial = false;
+        status.vga = true;
+        assert!(status.any_success());
     }
 }

@@ -32,7 +32,9 @@
 //!
 //! Nested panics are especially dangerous and will trigger emergency shutdown.
 
+pub mod handler;
 pub mod state;
 
 // Re-export commonly used types
+pub use handler::{handle_panic, PanicOutputStatus};
 pub use state::{current_level, enter_panic, is_panicking, PanicLevel};
