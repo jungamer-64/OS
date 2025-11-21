@@ -1,3 +1,4 @@
+// src/lib.rs
 #![no_std]
 #![cfg_attr(test, no_main)]
 #![cfg_attr(test, feature(custom_test_frameworks))]
@@ -14,6 +15,7 @@ pub mod diagnostics;
 pub mod display;
 pub mod errors;
 pub mod init;
+pub mod memory;
 pub mod panic;
 pub mod qemu;
 pub mod serial;

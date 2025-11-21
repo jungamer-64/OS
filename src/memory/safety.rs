@@ -8,6 +8,7 @@
 //! - Overflow detection
 //! - Safe pointer arithmetic
 
+use super::access::{MemoryAccess, MemoryAccessExt};
 use core::mem;
 use core::ptr::NonNull;
 
@@ -22,6 +23,7 @@ impl MemoryRegion {
     /// Create a new memory region with validation
     ///
     /// Returns None if the region would overflow or is invalid
+    #[must_use]
     pub const fn new(start: usize, size: usize) -> Option<Self> {
         if size == 0 {
             return None;
@@ -34,6 +36,7 @@ impl MemoryRegion {
     }
 
     /// Create from start and end addresses
+    #[must_use]
     pub const fn from_range(start: usize, end: usize) -> Option<Self> {
         if end <= start {
             return None;
@@ -44,36 +47,44 @@ impl MemoryRegion {
     }
 
     /// Get start address
+    #[must_use]
     pub const fn start(&self) -> usize {
         self.start
     }
 
     /// Get size in bytes
+    #[must_use]
     pub const fn size(&self) -> usize {
         self.size
     }
 
     /// Get end address (exclusive)
+    #[must_use]
     pub const fn end(&self) -> usize {
         self.start + self.size
     }
 
     /// Check if address is within region
+    #[must_use]
     pub const fn contains(&self, addr: usize) -> bool {
         addr >= self.start && addr < self.end()
     }
 
     /// Check if another region overlaps with this one
+    #[must_use]
     pub const fn overlaps(&self, other: &Self) -> bool {
         self.start < other.end() && other.start < self.end()
     }
 
     /// Check if region is properly aligned
+    #[must_use]
+    #[allow(clippy::manual_is_multiple_of)]
     pub const fn is_aligned(&self, alignment: usize) -> bool {
         self.start % alignment == 0 && self.size % alignment == 0
     }
 
     /// Get subregion with bounds checking
+    #[must_use]
     pub const fn subregion(&self, offset: usize, size: usize) -> Option<Self> {
         if offset >= self.size {
             return None;
@@ -104,6 +115,7 @@ impl<T> SafeBuffer<T> {
     /// - ptr must point to valid memory for at least `len` elements
     /// - Memory must remain valid for the lifetime of this buffer
     /// - No other mutable references to this memory must exist
+    #[must_use]
     pub unsafe fn new(ptr: NonNull<T>, len: usize) -> Option<Self> {
         let size = len.checked_mul(mem::size_of::<T>())?;
         let region = MemoryRegion::new(ptr.as_ptr() as usize, size)?;
@@ -112,16 +124,19 @@ impl<T> SafeBuffer<T> {
     }
 
     /// Get buffer length
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.len
     }
 
     /// Check if buffer is empty
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Get memory region
+    #[must_use]
     pub const fn region(&self) -> &MemoryRegion {
         &self.region
     }
@@ -178,37 +193,56 @@ impl<T> SafeBuffer<T> {
     where
         T: Copy,
     {
-        for i in 0..self.len {
-            self.write(i, value)?;
-        }
-        Ok(())
+        self.fill_all(value)
     }
 
     /// Copy data from slice with length validation
     ///
     /// # Errors
     ///
-    /// Returns `BufferError::InvalidLength` if slice length exceeds buffer capacity.
-    /// Returns `BufferError::OutOfBounds` if buffer write fails.
+    /// Returns [`BufferError::InsufficientSpace`] if the slice length exceeds the buffer capacity.
+    /// Returns [`BufferError::OutOfBounds`] if buffer write fails.
     pub fn copy_from_slice(&mut self, src: &[T]) -> Result<(), BufferError>
     where
         T: Copy,
     {
-        if src.len() > self.len {
-            return Err(BufferError::InsufficientSpace {
-                required: src.len(),
-                available: self.len,
-            });
-        }
+        self.write_slice(0, src)
+    }
 
-        unsafe {
-            core::ptr::copy_nonoverlapping(src.as_ptr(), self.ptr.as_ptr(), src.len());
-        }
+    /// Copy from another memory accessor into this buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BufferError::InsufficientSpace`] if `len` exceeds either
+    /// accessor or forwards any error emitted while reading/writing.
+    pub fn copy_from_memory<A>(&mut self, src: &A, len: usize) -> Result<(), BufferError>
+    where
+        T: Copy,
+        A: MemoryAccess<T>,
+    {
+        self.copy_from_access(src, len)
+    }
 
-        Ok(())
+    /// Copy the contents of this buffer into another memory accessor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BufferError::InsufficientSpace`] if the destination cannot
+    /// store `len` elements or propagates underlying read/write errors.
+    pub fn copy_into_memory<A>(&self, dest: &mut A, len: usize) -> Result<(), BufferError>
+    where
+        T: Copy,
+        A: MemoryAccess<T>,
+    {
+        self.copy_into_access(dest, len)
     }
 
     /// Get subslice with bounds checking
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BufferError::OutOfBounds`] if the requested range exceeds the
+    /// buffer or [`BufferError::Overflow`] when `start + len` wraps.
     pub fn subslice(&self, start: usize, len: usize) -> Result<&[T], BufferError> {
         if start >= self.len {
             return Err(BufferError::OutOfBounds {
@@ -249,25 +283,23 @@ pub enum BufferError {
 impl core::fmt::Display for BufferError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            BufferError::OutOfBounds { index, len } => {
-                write!(f, "index {} out of bounds (len: {})", index, len)
+            Self::OutOfBounds { index, len } => {
+                write!(f, "index {index} out of bounds (len: {len})")
             }
-            BufferError::InsufficientSpace {
+            Self::InsufficientSpace {
                 required,
                 available,
             } => {
                 write!(
                     f,
-                    "insufficient space (required: {}, available: {})",
-                    required, available
+                    "insufficient space (required: {required}, available: {available})"
                 )
             }
-            BufferError::Overflow => write!(f, "arithmetic overflow"),
-            BufferError::Misaligned { addr, required } => {
+            Self::Overflow => write!(f, "arithmetic overflow"),
+            Self::Misaligned { addr, required } => {
                 write!(
                     f,
-                    "misaligned address {:#x} (required alignment: {})",
-                    addr, required
+                    "misaligned address {addr:#x} (required alignment: {required})"
                 )
             }
         }
@@ -279,6 +311,11 @@ pub mod ptr_math {
     use super::BufferError;
 
     /// Add offset to pointer with overflow checking
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BufferError::Overflow`] when address arithmetic would wrap or
+    /// when the resulting pointer cannot be represented.
     pub fn checked_add<T>(ptr: *const T, offset: usize) -> Result<*const T, BufferError> {
         let ptr_val = ptr as usize;
         let offset_bytes = offset
@@ -293,6 +330,13 @@ pub mod ptr_math {
     }
 
     /// Calculate distance between pointers
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BufferError::Overflow`] if `end` precedes `start`, if
+    /// arithmetic overflows, or [`BufferError::Misaligned`] when the pointers
+    /// are not element-aligned.
+    #[allow(clippy::manual_is_multiple_of)]
     pub fn ptr_distance<T>(start: *const T, end: *const T) -> Result<usize, BufferError> {
         let start_val = start as usize;
         let end_val = end as usize;
@@ -319,6 +363,7 @@ pub mod ptr_math {
     }
 
     /// Check if pointer is aligned
+    #[allow(clippy::manual_is_multiple_of)]
     pub fn is_aligned<T>(ptr: *const T, alignment: usize) -> bool {
         (ptr as usize) % alignment == 0
     }
