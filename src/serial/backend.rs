@@ -70,6 +70,13 @@ impl PortIoBackend {
 }
 
 #[cfg(target_arch = "x86_64")]
+impl Default for PortIoBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 impl SerialHardware for PortIoBackend {
     #[inline]
     fn write(&mut self, register: Register, value: u8) {

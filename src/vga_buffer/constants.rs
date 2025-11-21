@@ -9,6 +9,10 @@ pub const VGA_BUFFER_ADDR: usize = 0xb8000;
 pub const VGA_WIDTH: usize = 80;
 pub const VGA_HEIGHT: usize = 25;
 
+/// Total number of character cells in the VGA buffer
+#[allow(dead_code)]
+pub const CELL_COUNT: usize = VGA_WIDTH * VGA_HEIGHT;
+
 /// Bytes per character (1 byte ASCII + 1 byte color attribute)
 #[allow(dead_code)]
 pub const BYTES_PER_CHAR: usize = 2;

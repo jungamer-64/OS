@@ -19,18 +19,20 @@
 //! - Race conditions via Mutex protection
 //! - Deadlocks via interrupt-disabled critical sections
 
+mod backend;
 mod color;
 mod constants;
 mod writer;
 
 use crate::diagnostics::DIAGNOSTICS;
 use crate::sync::lock_manager::{acquire_lock, LockId};
+pub use backend::{DefaultVgaBuffer, VgaBufferAccess};
 pub use color::ColorCode;
-pub use constants::{VGA_HEIGHT, VGA_WIDTH};
+pub use constants::{CELL_COUNT, VGA_HEIGHT, VGA_WIDTH};
 use core::fmt;
 use core::sync::atomic::Ordering;
 use spin::Mutex;
-pub use writer::{DoubleBufferedWriter, VgaError, CELL_COUNT};
+pub use writer::{DoubleBufferedWriter, VgaError};
 use writer::{VgaWriter, BUFFER_ACCESSIBLE};
 use x86_64::instructions::interrupts;
 
