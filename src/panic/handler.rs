@@ -20,6 +20,7 @@ use crate::{
     init,
     panic::state::{enter_panic, PanicLevel},
     serial,
+    serial_println,
     vga_buffer,
 };
 use core::panic::PanicInfo;
@@ -41,6 +42,7 @@ pub struct PanicOutputStatus {
 
 impl PanicOutputStatus {
     #[inline]
+    #[must_use]
     pub const fn any_success(&self) -> bool {
         self.serial || self.vga || self.emergency
     }
@@ -82,14 +84,19 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
 }
 
 fn handle_primary_panic(info: &PanicInfo, telemetry: &PanicTelemetry) -> ! {
-    let mut outputs = PanicOutputStatus::default();
+    let serial = try_serial_output(info, telemetry);
+    let vga = try_vga_output(info, telemetry);
+    let emergency = if !serial && !vga {
+        emergency_panic_output(info)
+    } else {
+        false
+    };
 
-    outputs.serial = try_serial_output(info, telemetry);
-    outputs.vga = try_vga_output(info, telemetry);
-
-    if !outputs.any_success() {
-        outputs.emergency = emergency_panic_output(info);
-    }
+    let outputs = PanicOutputStatus {
+        serial,
+        vga,
+        emergency,
+    };
 
     finalize(outputs, telemetry)
 }
@@ -103,8 +110,11 @@ fn handle_nested_panic(info: &PanicInfo, telemetry: &PanicTelemetry) -> ! {
         );
     }
 
-    let mut outputs = PanicOutputStatus::default();
-    outputs.emergency = emergency_output_minimal(info);
+    let outputs = PanicOutputStatus {
+        serial: false,
+        vga: false,
+        emergency: emergency_output_minimal(info),
+    };
 
     finalize(outputs, telemetry)
 }
@@ -120,8 +130,11 @@ fn handle_critical_failure(info: &PanicInfo, telemetry: &PanicTelemetry) -> ! {
 
     debug_port_emergency_message();
 
-    let mut outputs = PanicOutputStatus::default();
-    outputs.emergency = emergency_output_minimal(info);
+    let outputs = PanicOutputStatus {
+        serial: false,
+        vga: false,
+        emergency: emergency_output_minimal(info),
+    };
 
     finalize(outputs, telemetry)
 }
@@ -146,7 +159,7 @@ fn try_vga_output(info: &PanicInfo, telemetry: &PanicTelemetry) -> bool {
 
 fn finalize(outputs: PanicOutputStatus, telemetry: &PanicTelemetry) -> ! {
     log_system_state(telemetry);
-    log_output_summary(&outputs, telemetry);
+    log_output_summary(outputs, telemetry);
 
     init::halt_forever()
 }
@@ -165,7 +178,7 @@ fn log_system_state(telemetry: &PanicTelemetry) {
     serial_println!();
 }
 
-fn log_output_summary(outputs: &PanicOutputStatus, telemetry: &PanicTelemetry) {
+fn log_output_summary(outputs: PanicOutputStatus, telemetry: &PanicTelemetry) {
     if !telemetry.serial_available {
         return;
     }

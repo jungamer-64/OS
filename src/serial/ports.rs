@@ -8,14 +8,13 @@
 //! - Validated state transitions
 //! - Hardware validation with detailed reporting
 
-use super::constants::{port_addr, register_offset};
+use super::backend::{PortIoBackend, Register, SerialHardware};
 use super::error::InitError;
 use super::timeout::{self, AdaptiveTimeout, TimeoutConfig, TimeoutResult};
 use crate::constants::{
     BAUD_RATE_DIVISOR, CONFIG_8N1, DLAB_ENABLE, FIFO_ENABLE_CLEAR, LSR_TRANSMIT_EMPTY,
     MODEM_CTRL_ENABLE_IRQ_RTS_DSR,
 };
-use x86_64::instructions::port::Port;
 
 /// Hardware operation state tracking
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,19 +38,15 @@ pub(super) enum PortOp {
 type PortResult<T> = Result<T, InitError>;
 
 /// Serial ports with validated safe access patterns
-pub struct SerialPorts {
-    data: Port<u8>,
-    interrupt_enable: Port<u8>,
-    fifo: Port<u8>,
-    line_control: Port<u8>,
-    modem_control: Port<u8>,
-    line_status: Port<u8>,
-    modem_status: Port<u8>,
-    scratch: Port<u8>,
+pub struct SerialPorts<H: SerialHardware> {
+    hardware: H,
     state: HardwareState,
     /// Adaptive timeout for write operations
     adaptive_timeout: AdaptiveTimeout,
 }
+
+/// Default serial port implementation backed by x86 port I/O.
+pub type DefaultSerialPorts = SerialPorts<PortIoBackend>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ValidationReport {
@@ -124,20 +119,23 @@ impl ValidationReport {
     }
 }
 
-impl SerialPorts {
-    pub const fn new() -> Self {
+impl<H: SerialHardware> SerialPorts<H> {
+    pub const fn new(hardware: H) -> Self {
         Self {
-            data: Port::new(port_addr(register_offset::DATA)),
-            interrupt_enable: Port::new(port_addr(register_offset::INTERRUPT_ENABLE)),
-            fifo: Port::new(port_addr(register_offset::FIFO_CONTROL)),
-            line_control: Port::new(port_addr(register_offset::LINE_CONTROL)),
-            modem_control: Port::new(port_addr(register_offset::MODEM_CONTROL)),
-            line_status: Port::new(port_addr(register_offset::LINE_STATUS)),
-            modem_status: Port::new(port_addr(register_offset::MODEM_STATUS)),
-            scratch: Port::new(port_addr(register_offset::SCRATCH)),
+            hardware,
             state: HardwareState::Uninitialized,
             adaptive_timeout: AdaptiveTimeout::new(TimeoutConfig::default_timeout()),
         }
+    }
+
+    #[inline]
+    fn hw_write(&mut self, register: Register, value: u8) {
+        SerialHardware::write(&mut self.hardware, register, value);
+    }
+
+    #[inline]
+    fn hw_read(&mut self, register: Register) -> u8 {
+        SerialHardware::read(&mut self.hardware, register)
     }
 
     /// Configure UART registers with state validation
@@ -232,17 +230,13 @@ impl SerialPorts {
     /// Poll LSR and write byte with specified timeout
     fn poll_and_write_with_timeout(&mut self, byte: u8, config: TimeoutConfig) -> PortResult<()> {
         let result = timeout::poll_with_timeout(config, || {
-            // SAFETY: Reading line status register
-            let lsr = unsafe { self.line_status.read() };
+            let lsr = self.hw_read(Register::LineStatus);
             (lsr & LSR_TRANSMIT_EMPTY) != 0
         });
 
         match result {
             TimeoutResult::Ok(()) => {
-                // SAFETY: Writing to data port when transmit buffer is empty
-                unsafe {
-                    self.data.write(byte);
-                }
+                self.hw_write(Register::Data, byte);
                 timeout::record_poll_success();
                 Ok(())
             }
@@ -277,32 +271,25 @@ impl SerialPorts {
 
     /// Test FIFO functionality
     fn test_fifo(&mut self) -> bool {
-        // SAFETY: Writing to FIFO control register to enable FIFO
-        unsafe {
-            self.fifo.write(FIFO_ENABLE_CLEAR);
-        }
+        self.hw_write(Register::FifoControl, FIFO_ENABLE_CLEAR);
         super::wait_short();
 
-        // SAFETY: Reading IIR to check FIFO status
-        let iir = unsafe { self.fifo.read() };
+        let iir = self.hw_read(Register::FifoControl);
         (iir & 0xC0) == 0xC0
     }
 
     /// Verify baud rate configuration
     fn verify_baud_rate(&mut self) -> bool {
-        // SAFETY: Temporarily enable DLAB to read divisor latch
-        unsafe {
-            let original_lcr = self.line_control.read();
-            self.line_control.write(original_lcr | DLAB_ENABLE);
+        let original_lcr = self.hw_read(Register::LineControl);
+        self.hw_write(Register::LineControl, original_lcr | DLAB_ENABLE);
 
-            let dll = self.data.read();
-            let dlh = self.interrupt_enable.read();
+        let dll = self.hw_read(Register::Data);
+        let dlh = self.hw_read(Register::InterruptEnable);
 
-            self.line_control.write(original_lcr);
+        self.hw_write(Register::LineControl, original_lcr);
 
-            let divisor = (u16::from(dlh) << 8) | u16::from(dll);
-            divisor == BAUD_RATE_DIVISOR
-        }
+        let divisor = (u16::from(dlh) << 8) | u16::from(dll);
+        divisor == BAUD_RATE_DIVISOR
     }
 
     /// Perform port operation with centralized unsafe access
@@ -316,38 +303,37 @@ impl SerialPorts {
     /// - No memory safety violations possible with port I/O
     #[allow(clippy::unnecessary_wraps)]
     fn perform_op(&mut self, op: &PortOp) -> PortResult<u8> {
-        // SAFETY: See function documentation
-        unsafe {
-            match op {
-                PortOp::Configure => {
-                    // Step 1: Disable all interrupts
-                    self.interrupt_enable.write(0x00);
+        match op {
+            PortOp::Configure => {
+                // Step 1: Disable all interrupts
+                self.hw_write(Register::InterruptEnable, 0x00);
 
-                    // Step 2: Enable DLAB to set baud rate
-                    self.line_control.write(DLAB_ENABLE);
-                    self.data.write((BAUD_RATE_DIVISOR & 0xFF) as u8);
-                    self.interrupt_enable
-                        .write(((BAUD_RATE_DIVISOR >> 8) & 0xFF) as u8);
+                // Step 2: Enable DLAB to set baud rate
+                self.hw_write(Register::LineControl, DLAB_ENABLE);
+                self.hw_write(Register::Data, (BAUD_RATE_DIVISOR & 0xFF) as u8);
+                self.hw_write(
+                    Register::InterruptEnable,
+                    ((BAUD_RATE_DIVISOR >> 8) & 0xFF) as u8,
+                );
 
-                    // Step 3: Set 8N1 and clear DLAB
-                    self.line_control.write(CONFIG_8N1);
+                // Step 3: Set 8N1 and clear DLAB
+                self.hw_write(Register::LineControl, CONFIG_8N1);
 
-                    // Step 4: Enable and clear FIFO
-                    self.fifo.write(FIFO_ENABLE_CLEAR);
+                // Step 4: Enable and clear FIFO
+                self.hw_write(Register::FifoControl, FIFO_ENABLE_CLEAR);
 
-                    // Step 5: Set modem control (DTR, RTS, OUT2)
-                    self.modem_control.write(MODEM_CTRL_ENABLE_IRQ_RTS_DSR);
+                // Step 5: Set modem control (DTR, RTS, OUT2)
+                self.hw_write(Register::ModemControl, MODEM_CTRL_ENABLE_IRQ_RTS_DSR);
 
-                    Ok(1)
-                }
-                PortOp::ScratchWrite(v) => {
-                    self.scratch.write(*v);
-                    Ok(1)
-                }
-                PortOp::ScratchRead => Ok(self.scratch.read()),
-                PortOp::LineStatusRead => Ok(self.line_status.read()),
-                PortOp::ModemStatusRead => Ok(self.modem_status.read()),
+                Ok(1)
             }
+            PortOp::ScratchWrite(v) => {
+                self.hw_write(Register::Scratch, *v);
+                Ok(1)
+            }
+            PortOp::ScratchRead => Ok(self.hw_read(Register::Scratch)),
+            PortOp::LineStatusRead => Ok(self.hw_read(Register::LineStatus)),
+            PortOp::ModemStatusRead => Ok(self.hw_read(Register::ModemStatus)),
         }
     }
 

@@ -17,6 +17,7 @@
 //! - Concurrent access via Mutex protection
 //! - Interrupt-safe operation
 
+mod backend;
 mod constants;
 mod error;
 mod ports;
@@ -32,10 +33,11 @@ use crate::constants::*;
 use crate::diagnostics::{LockTimingToken, DIAGNOSTICS};
 use crate::serial_println;
 use crate::sync::lock_manager::{acquire_lock, LockId};
+use backend::PortIoBackend;
 use constants::MAX_INIT_ATTEMPTS;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use ports::SerialPorts;
+use ports::{DefaultSerialPorts, SerialPorts};
 use spin::{Mutex, MutexGuard};
 
 #[cfg(debug_assertions)]
@@ -66,9 +68,10 @@ const MAX_LOCK_HOLD_TIME: u64 = 1_000_000;
 /// 2. VGA_WRITER (in vga_buffer.rs)
 ///
 /// Never acquire VGA_WRITER while holding SERIAL_PORTS.
-static SERIAL_PORTS: Mutex<SerialPorts> = Mutex::new(SerialPorts::new());
+static SERIAL_PORTS: Mutex<DefaultSerialPorts> =
+    Mutex::new(SerialPorts::new(PortIoBackend::new()));
 
-fn acquire_serial_ports_guard() -> (MutexGuard<'static, SerialPorts>, LockTimingToken) {
+fn acquire_serial_ports_guard() -> (MutexGuard<'static, DefaultSerialPorts>, LockTimingToken) {
     // Acquire lock order enforcement first
     let _lock_guard = acquire_lock(LockId::Serial)
         .expect("Serial lock should always be acquirable (highest priority)");
@@ -88,7 +91,7 @@ fn acquire_serial_ports_guard() -> (MutexGuard<'static, SerialPorts>, LockTiming
 
 fn execute_with_serial_ports<F, R>(f: F) -> R
 where
-    F: FnOnce(&mut SerialPorts) -> R,
+    F: FnOnce(&mut DefaultSerialPorts) -> R,
 {
     let (mut guard, token) = acquire_serial_ports_guard();
 
@@ -123,7 +126,7 @@ where
 
 fn with_serial_ports<F, R>(f: F) -> R
 where
-    F: FnOnce(&mut SerialPorts) -> R,
+    F: FnOnce(&mut DefaultSerialPorts) -> R,
 {
     execute_with_serial_ports(f)
 }
