@@ -5,6 +5,7 @@
 //! Provides formatted output of panic information to both serial and VGA
 //! outputs. Designed to be extremely defensive to prevent panic-during-panic.
 
+use super::backend::{default_display_backend, DisplayHardware};
 use crate::diagnostics::DIAGNOSTICS;
 use crate::vga_buffer::ColorCode;
 use crate::{serial_print, serial_println};
@@ -20,10 +21,10 @@ const PANIC_SHORT_SEP: &str = "----------------------------------------\n";
 const MAX_MESSAGE_LENGTH: usize = 500;
 
 #[inline]
-fn print_vga(text: &str, color: ColorCode) {
-    if let Err(err) = crate::vga_buffer::print_colored(text, color) {
+fn print_display<O: DisplayHardware>(out: &mut O, text: &str, color: ColorCode) {
+    if let Err(err) = out.write_colored(text, color) {
         if crate::serial::is_available() {
-            serial_println!("[WARN] VGA panic output failed: {}", err.as_str());
+            serial_println!("[WARN] Display panic output failed: {}", err);
         }
     }
 }
@@ -234,34 +235,36 @@ fn display_panic_location_serial(info: &PanicInfo) {
 ///
 /// * `info` - Panic information from the panic handler
 pub fn display_panic_info_vga(info: &PanicInfo) {
-    // Defensive check: don't try to use VGA if not accessible
-    if !crate::vga_buffer::is_accessible() {
+    let mut display = default_display_backend();
+
+    // Defensive check: don't try to use the display if not accessible
+    if !display.is_available() {
         return;
     }
 
     // Clear screen header for visibility
-    print_vga("\n", ColorCode::normal());
+    print_display(&mut display, "\n", ColorCode::normal());
 
     // Main panic header with high-visibility colors
-    print_vga("!!! KERNEL PANIC !!!\n", ColorCode::panic());
+    print_display(&mut display, "!!! KERNEL PANIC !!!\n", ColorCode::panic());
 
-    print_vga("\n", ColorCode::normal());
+    print_display(&mut display, "\n", ColorCode::normal());
 
     // Display location info if available
     if let Some(location) = info.location() {
         DIAGNOSTICS.record_panic_location(location.line(), location.column());
-        display_location_vga(location);
+        display_location_vga(&mut display, location);
     } else {
-        print_vga("Location: Unknown\n", ColorCode::error());
+        print_display(&mut display, "Location: Unknown\n", ColorCode::error());
     }
 
-    print_vga("\n", ColorCode::normal());
+    print_display(&mut display, "\n", ColorCode::normal());
 
     // Display brief message summary
-    display_message_summary_vga(info);
+    display_message_summary_vga(&mut display, info);
 
     // Instructions for user
-    display_user_instructions_vga();
+    display_user_instructions_vga(&mut display);
 }
 
 /// Truncate file path for display if too long.
@@ -279,24 +282,24 @@ fn truncate_file_path(file: &str) -> &str {
 }
 
 /// Display location information on VGA
-fn display_location_vga(location: &core::panic::Location) {
+fn display_location_vga<O: DisplayHardware>(out: &mut O, location: &core::panic::Location) {
     // File name
-    print_vga("File: ", ColorCode::error());
+    print_display(out, "File: ", ColorCode::error());
 
     let display_file = truncate_file_path(location.file());
-    print_vga(display_file, ColorCode::normal());
-    print_vga("\n", ColorCode::normal());
+    print_display(out, display_file, ColorCode::normal());
+    print_display(out, "\n", ColorCode::normal());
 
     // Line and column numbers
     // In no_std without alloc, we can't easily format numbers
     // Serial output will show the actual numbers
-    print_vga("Line: <see serial>\n", ColorCode::error());
-    print_vga("Column: <see serial>\n", ColorCode::error());
+    print_display(out, "Line: <see serial>\n", ColorCode::error());
+    print_display(out, "Column: <see serial>\n", ColorCode::error());
 }
 
 /// Display message summary on VGA
-fn display_message_summary_vga(info: &PanicInfo) {
-    print_vga("Message: ", ColorCode::error());
+fn display_message_summary_vga<O: DisplayHardware>(out: &mut O, info: &PanicInfo) {
+    print_display(out, "Message: ", ColorCode::error());
 
     // Try to extract string message if simple, otherwise show generic message
     if let Some(msg_str) = info.message().as_str() {
@@ -306,43 +309,47 @@ fn display_message_summary_vga(info: &PanicInfo) {
         } else {
             msg_str
         };
-        print_vga(display_msg, ColorCode::normal());
+        print_display(out, display_msg, ColorCode::normal());
     } else {
-        print_vga("<see serial output>", ColorCode::normal());
+        print_display(out, "<see serial output>", ColorCode::normal());
     }
-    print_vga("\n", ColorCode::normal());
+    print_display(out, "\n", ColorCode::normal());
 }
 
 /// Display user instructions on VGA
-fn display_user_instructions_vga() {
-    print_vga("\n", ColorCode::normal());
+fn display_user_instructions_vga<O: DisplayHardware>(out: &mut O) {
+    print_display(out, "\n", ColorCode::normal());
 
-    print_vga(
+    print_display(
+        out,
         "The system has encountered a critical error.\n",
         ColorCode::warning(),
     );
 
     // Check if serial is available for detailed info
     if crate::serial::is_available() {
-        print_vga(
+        print_display(
+            out,
             "See serial output (COM1) for detailed information.\n",
             ColorCode::normal(),
         );
     } else {
-        print_vga(
+        print_display(
+            out,
             "Serial port unavailable - limited debug info.\n",
             ColorCode::warning(),
         );
     }
 
-    print_vga("\n", ColorCode::normal());
+    print_display(out, "\n", ColorCode::normal());
 
-    print_vga(
+    print_display(
+        out,
         "System halted. No further execution possible.\n",
         ColorCode::error(),
     );
 
-    print_vga("Please reboot the system.\n", ColorCode::normal());
+    print_display(out, "Please reboot the system.\n", ColorCode::normal());
 }
 
 /// Print separator line to serial

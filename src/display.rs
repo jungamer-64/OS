@@ -6,9 +6,16 @@
 //! public API stable while the implementation is split across smaller
 //! units.
 
+mod backend;
 mod boot;
 mod core;
 mod panic;
+
+#[allow(unused_imports)]
+pub use backend::{
+    default_display_backend, DefaultDisplayBackend, DisplayError, DisplayHardware, StubDisplay,
+    VgaDisplay,
+};
 
 #[allow(unused_imports)]
 pub use boot::{

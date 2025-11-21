@@ -8,6 +8,7 @@
 //! - Feature list
 //! - Usage instructions
 
+use super::backend::{default_display_backend, DisplayHardware};
 use super::core::{broadcast_args_with, broadcast_with, hardware_output, Output};
 use crate::constants::{FEATURES, SERIAL_HINTS, SYSTEM_INFO};
 use crate::vga_buffer::ColorCode;
@@ -244,7 +245,8 @@ pub fn display_usage_note_with<O: Output>(out: &mut O) {
 ///
 /// Shows the operational status of each subsystem.
 fn display_system_status<O: Output>(out: &mut O) {
-    let vga_status = if crate::vga_buffer::is_accessible() {
+    let display = default_display_backend();
+    let vga_status = if display.is_available() {
         ("VGA", "Operational", ColorCode::success())
     } else {
         ("VGA", "Not accessible", ColorCode::error())

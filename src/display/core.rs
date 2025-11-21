@@ -13,6 +13,7 @@
 //! - Flexible output routing
 //! - Consistent formatting across outputs
 
+use super::backend::{default_display_backend, DefaultDisplayBackend, DisplayHardware};
 use crate::vga_buffer::ColorCode;
 use crate::{serial_print, serial_println};
 use core::fmt::{self, Write};
@@ -31,19 +32,38 @@ pub trait Output {
     fn write(&mut self, text: &str, color: ColorCode);
 }
 
-/// Hardware-backed dual output (VGA + serial)
+/// Hardware-backed dual output (display backend + serial)
 ///
-/// Writes to both VGA buffer and serial port simultaneously.
-/// This ensures output is visible both on screen and in logs.
-pub struct HardwareOutput;
+/// Writes to both the configured display backend (VGA today) and the
+/// serial port simultaneously. This ensures output is visible both on
+/// screen and in logs.
+pub struct HardwareOutput {
+    display: DefaultDisplayBackend,
+}
+
+impl HardwareOutput {
+    /// Construct a new hardware output instance.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            display: default_display_backend(),
+        }
+    }
+}
+
+impl Default for HardwareOutput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Output for HardwareOutput {
     fn write(&mut self, text: &str, color: ColorCode) {
-        // Write to VGA if accessible
-        if crate::vga_buffer::is_accessible() {
-            if let Err(err) = crate::vga_buffer::print_colored(text, color) {
+        // Write to primary display if accessible
+        if self.display.is_available() {
+            if let Err(err) = self.display.write_colored(text, color) {
                 if crate::serial::is_available() {
-                    serial_println!("[WARN] VGA broadcast failed: {}", err.as_str());
+                    serial_println!("[WARN] Display broadcast failed: {}", err);
                 }
             }
         }
@@ -58,7 +78,7 @@ impl Output for HardwareOutput {
 /// Create a hardware output instance
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) const fn hardware_output() -> HardwareOutput {
-    HardwareOutput
+    HardwareOutput::new()
 }
 
 struct OutputWriter<'a, O> {
