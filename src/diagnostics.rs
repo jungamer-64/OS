@@ -447,19 +447,23 @@ impl Default for SystemDiagnostics {
 /// グローバル診断インスタンス
 pub static DIAGNOSTICS: SystemDiagnostics = SystemDiagnostics::new();
 
-/// TSCを読み取る
+/// TSCを読み取る共通ヘルパー
 ///
-/// # Safety
-///
-/// Uses the RDTSC instruction to read the Time Stamp Counter.
-/// This is safe because:
-/// - RDTSC is a non-privileged instruction available in user mode
-/// - Reading TSC does not modify any system state
-/// - Used only for diagnostic timing measurements
+/// x86_64環境では `RDTSC` 命令を使用してプロセッサのタイムスタンプカウンタを取得し、
+/// その他のアーキテクチャでは 0 を返します。
 #[inline]
-fn read_tsc() -> u64 {
-    // SAFETY: RDTSC is a safe read-only instruction
-    unsafe { core::arch::x86_64::_rdtsc() }
+#[must_use]
+pub fn read_tsc() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: RDTSC is a safe, read-only instruction on x86_64.
+        unsafe { core::arch::x86_64::_rdtsc() }
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        0
+    }
 }
 
 /// ヘルスチェックレポートの出力
@@ -467,28 +471,68 @@ fn read_tsc() -> u64 {
 /// システムの診断情報を整形してシリアル出力に表示します。
 /// 大きな関数を避けるため、複数のヘルパー関数に分割されています。
 pub fn print_health_report() {
+    health_trace("enter");
     if !crate::serial::is_available() {
+        health_trace("serial unavailable");
         return;
     }
 
+    health_trace("before health_check");
     let health = DIAGNOSTICS.health_check();
+    health_trace("after health_check");
 
+    health_trace("before header");
     print_report_header(&health);
+    health_trace("after header");
+
+    health_trace("before vga stats");
     print_vga_statistics(&health.snapshot);
+    health_trace("after vga stats");
+
+    health_trace("before serial stats");
     print_serial_statistics(&health.snapshot);
+    health_trace("after serial stats");
+
+    health_trace("before lock stats");
     print_lock_statistics(&health.snapshot);
+    health_trace("after lock stats");
+
+    health_trace("before panic stats");
     print_panic_statistics(&health.snapshot);
+    health_trace("after panic stats");
+
+    health_trace("before uptime");
     print_uptime(&health.snapshot);
+    health_trace("after uptime");
+
+    health_trace("before overall status");
     print_overall_status(&health);
+    health_trace("after overall status");
+
+    health_trace("before issues");
     print_detected_issues(&health.issues);
+    health_trace("after issues");
+
+    health_trace("before footer");
     print_report_footer();
+    health_trace("exit");
 }
+
+#[cfg(debug_assertions)]
+fn health_trace(label: &str) {
+    if crate::serial::is_available() {
+        crate::println!("[TRACE] health report: {}", label);
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn health_trace(_label: &str) {}
 
 /// レポートヘッダーを出力
 fn print_report_header(_health: &HealthStatus) {
-    crate::serial_println!("\n=== System Health Report (Enhanced) ===");
+    crate::println!("\n=== System Health Report (Enhanced) ===");
     let init_status = crate::init::detailed_status();
-    crate::serial_println!(
+    crate::println!(
         "Init Phase: {:?} (operational: {}, output: {}, lock held: {})",
         init_status.phase,
         init_status.is_operational(),
@@ -521,13 +565,13 @@ const fn calculate_percentage(numerator: u64, denominator: u64) -> f32 {
 fn print_vga_statistics(snap: &DiagnosticSnapshot) {
     let error_rate = calculate_percentage(snap.vga_write_failures, snap.vga_writes);
 
-    crate::serial_println!(
+    crate::println!(
         "VGA: {} writes ({} failures, {:.2}% error rate)",
         snap.vga_writes,
         snap.vga_write_failures,
         error_rate
     );
-    crate::serial_println!(
+    crate::println!(
         "     {} scrolls, {} color changes",
         snap.vga_scrolls,
         snap.vga_color_changes
@@ -538,7 +582,7 @@ fn print_vga_statistics(snap: &DiagnosticSnapshot) {
 fn print_serial_statistics(snap: &DiagnosticSnapshot) {
     let timeout_rate = calculate_percentage(snap.serial_timeouts, snap.serial_writes);
 
-    crate::serial_println!(
+    crate::println!(
         "Serial: {} writes, {} bytes ({} timeouts, {:.2}% timeout rate)",
         snap.serial_writes,
         snap.serial_bytes_written,
@@ -547,7 +591,7 @@ fn print_serial_statistics(snap: &DiagnosticSnapshot) {
     );
 
     if snap.serial_reinit_attempts > 0 {
-        crate::serial_println!(
+        crate::println!(
             "       Serial reinit attempts: {}",
             snap.serial_reinit_attempts
         );
@@ -559,13 +603,13 @@ fn print_serial_statistics(snap: &DiagnosticSnapshot) {
 fn print_lock_statistics(snap: &DiagnosticSnapshot) {
     let contention_rate = calculate_percentage(snap.lock_contentions, snap.total_lock_acquisitions);
 
-    crate::serial_println!(
+    crate::println!(
         "Locks: {} acquisitions, {} contentions ({:.2}% contention rate)",
         snap.total_lock_acquisitions,
         snap.lock_contentions,
         contention_rate
     );
-    crate::serial_println!(
+    crate::println!(
         "       Max lock hold: {} cycles ({:.2} ms @ 2GHz)",
         snap.max_lock_hold_cycles,
         snap.max_lock_hold_cycles as f32 / 2_000_000.0
@@ -574,9 +618,9 @@ fn print_lock_statistics(snap: &DiagnosticSnapshot) {
 
 /// パニック統計情報を出力
 fn print_panic_statistics(snap: &DiagnosticSnapshot) {
-    crate::serial_println!("Panic Count: {}", snap.panic_count);
+    crate::println!("Panic Count: {}", snap.panic_count);
     if let Some((line, column)) = decode_panic_location(snap.last_panic_location) {
-        crate::serial_println!(
+        crate::println!(
             "       Last panic location: line {}, column {}",
             line,
             column
@@ -586,13 +630,13 @@ fn print_panic_statistics(snap: &DiagnosticSnapshot) {
 
 /// アップタイム情報を出力
 fn print_uptime(snap: &DiagnosticSnapshot) {
-    crate::serial_println!("Uptime: {} cycles", snap.uptime_cycles);
+    crate::println!("Uptime: {} cycles", snap.uptime_cycles);
 }
 
 /// 総合ステータスを出力
 fn print_overall_status(health: &HealthStatus) {
     let severity = health.issues.severity();
-    crate::serial_println!("\nOverall Status: {:?}", severity);
+    crate::println!("\nOverall Status: {:?}", severity);
 }
 
 /// 検出された問題を出力
@@ -601,49 +645,49 @@ fn print_detected_issues(issues: &HealthIssues) {
         return;
     }
 
-    crate::serial_println!("\nIssues Detected:");
+    crate::println!("\nIssues Detected:");
 
     if issues.high_vga_error_rate {
-        crate::serial_println!(
+        crate::println!(
             "  - High VGA error rate: {:.2}%",
             issues.vga_error_rate * 100.0
         );
     }
 
     if issues.high_serial_timeout_rate {
-        crate::serial_println!(
+        crate::println!(
             "  - High serial timeout rate: {:.2}%",
             issues.serial_timeout_rate * 100.0
         );
     }
 
     if issues.panic_occurred {
-        crate::serial_println!("  - Panic occurred");
+        crate::println!("  - Panic occurred");
     }
 
     if issues.nested_panic {
-        crate::serial_println!("  - Nested panic detected");
+        crate::println!("  - Nested panic detected");
     }
 
     if issues.high_lock_contention {
-        crate::serial_println!(
+        crate::println!(
             "  - High lock contention: {:.2}%",
             issues.lock_contention_rate * 100.0
         );
     }
 
     if issues.long_lock_holds {
-        crate::serial_println!("  - Long lock holds: {:.2} ms max", issues.max_lock_hold_ms);
+        crate::println!("  - Long lock holds: {:.2} ms max", issues.max_lock_hold_ms);
     }
 
     if issues.excessive_scrolling {
-        crate::serial_println!("  - Excessive scrolling detected");
+        crate::println!("  - Excessive scrolling detected");
     }
 }
 
 /// レポートフッターを出力
 fn print_report_footer() {
-    crate::serial_println!("========================================\n");
+    crate::println!("========================================\n");
 }
 
 /// Decode panic location from encoded u64 value

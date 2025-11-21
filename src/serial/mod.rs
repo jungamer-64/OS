@@ -20,7 +20,7 @@
 pub mod backend;
 mod constants;
 mod error;
-mod ports;
+pub mod ports;
 mod timeout;
 
 pub use error::InitError;
@@ -31,7 +31,8 @@ pub use timeout::{
 
 use crate::constants::*;
 use crate::diagnostics::{LockTimingToken, DIAGNOSTICS};
-use crate::serial_println;
+#[cfg(debug_assertions)]
+use crate::diagnostics::read_tsc;
 use crate::sync::lock_manager::{acquire_lock, LockId};
 pub use backend::{DefaultBackend, Register as SerialRegister, SerialHardware};
 
@@ -40,15 +41,14 @@ pub use backend::PortIoBackend;
 #[cfg(not(target_arch = "x86_64"))]
 pub use backend::StubSerialBackend;
 use constants::MAX_INIT_ATTEMPTS;
-use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use ports::{DefaultSerialPorts, SerialPorts};
 use spin::{Mutex, MutexGuard};
 
 #[cfg(debug_assertions)]
-use core::arch::x86_64::_rdtsc;
-#[cfg(debug_assertions)]
 use core::sync::atomic::AtomicU64;
+#[cfg(debug_assertions)]
+use core::sync::atomic::AtomicU32;
 
 /// Serial port state tracking with atomic operations for thread safety
 static SERIAL_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -63,6 +63,10 @@ static LOCK_ACQUISITIONS: AtomicU64 = AtomicU64::new(0);
 static LOCK_HOLDER_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(debug_assertions)]
 const MAX_LOCK_HOLD_TIME: u64 = 1_000_000;
+#[cfg(debug_assertions)]
+static LOCK_WARNINGS_EMITTED: AtomicU32 = AtomicU32::new(0);
+#[cfg(debug_assertions)]
+const MAX_LOCK_WARNING_LOGS: u32 = 16;
 
 /// Global serial ports protected by Mutex
 ///
@@ -101,11 +105,7 @@ where
     let (mut guard, token) = acquire_serial_ports_guard();
 
     #[cfg(debug_assertions)]
-    let start_time = unsafe {
-        // Debug-only TSC read for lock timing diagnostics
-        // SAFETY: RDTSC is safe, read-only, non-privileged instruction
-        _rdtsc()
-    };
+    let start_time = read_tsc();
 
     #[cfg(debug_assertions)]
     let _ = LOCK_ACQUISITIONS.fetch_add(1, Ordering::SeqCst);
@@ -116,20 +116,25 @@ where
 
     #[cfg(debug_assertions)]
     {
-        let elapsed = unsafe {
-            // SAFETY: RDTSC is safe, read-only, non-privileged instruction
-            _rdtsc()
-        }
-        .saturating_sub(start_time);
+        let elapsed = read_tsc().saturating_sub(start_time);
         if elapsed > MAX_LOCK_HOLD_TIME && is_available() {
-            serial_println!("[WARN] Lock held for {} cycles", elapsed);
+            let previous = LOCK_WARNINGS_EMITTED.fetch_add(1, Ordering::Relaxed);
+            if previous < MAX_LOCK_WARNING_LOGS {
+                // serial_println!("[WARN] Lock held for {} cycles", elapsed);
+                if previous + 1 == MAX_LOCK_WARNING_LOGS {
+                    // serial_println!(
+                    //     "[WARN] Serial lock warning limit ({}) reached; suppressing further logs",
+                    //     MAX_LOCK_WARNING_LOGS
+                    // );
+                }
+            }
         }
     }
 
     result
 }
 
-fn with_serial_ports<F, R>(f: F) -> R
+pub(crate) fn with_serial_ports<F, R>(f: F) -> R
 where
     F: FnOnce(&mut DefaultSerialPorts) -> R,
 {
@@ -326,123 +331,6 @@ pub fn is_available() -> bool {
     SERIAL_PORT_AVAILABLE.load(Ordering::Acquire)
 }
 
-/// Write a string to the serial port
-///
-/// Writes each byte of the string to the serial port. If a byte
-/// fails to write due to timeout, subsequent bytes are still attempted.
-/// This ensures partial output is still visible even if hardware becomes
-/// unresponsive.
-pub fn write_str(s: &str) {
-    if s.is_empty() {
-        return;
-    }
-
-    let _ = write_bytes(s.bytes());
-}
-
-/// Write a collection of lines to the serial port, inserting newlines automatically.
-///
-/// Empty strings are interpreted as explicit blank lines. The helper quietly
-/// returns when the serial hardware is not available, mirroring the behaviour of
-/// the existing printing macros.
-pub fn log_lines<'a, I>(lines: I)
-where
-    I: IntoIterator<Item = &'a str>,
-{
-    if !is_available() {
-        return;
-    }
-
-    for line in lines {
-        if line.is_empty() {
-            serial_println!();
-        } else {
-            serial_println!("{}", line);
-        }
-    }
-}
-
-/// Write a sequence of bytes while holding the serial port lock once.
-fn write_bytes<I>(bytes: I) -> Result<(), InitError>
-where
-    I: IntoIterator<Item = u8>,
-{
-    if !is_available() {
-        return Ok(());
-    }
-
-    with_serial_ports(|ports| {
-        let mut first_error: Option<InitError> = None;
-        let mut success_count = 0u64;
-        let mut timeout_count = 0u64;
-        let mut bytes_written = 0u64;
-
-        for byte in bytes {
-            match ports.poll_and_write(byte) {
-                Ok(_) => {
-                    success_count += 1;
-                    bytes_written += 1;
-                }
-                Err(InitError::Timeout) => {
-                    timeout_count += 1;
-                    if first_error.is_none() {
-                        first_error = Some(InitError::Timeout);
-                    }
-                }
-                Err(err) => {
-                    if first_error.is_none() {
-                        first_error = Some(err);
-                    }
-                }
-            }
-        }
-
-        // Record diagnostics
-        DIAGNOSTICS.record_serial_writes(success_count);
-        DIAGNOSTICS.record_serial_timeouts(timeout_count);
-        if bytes_written > 0 {
-            DIAGNOSTICS.record_serial_bytes(bytes_written);
-        }
-
-        first_error.map_or(Ok(()), Err)
-    })
-}
-
-/// Serial writer implementing `core::fmt::Write`
-pub struct SerialWriter;
-
-impl Write for SerialWriter {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        write_str(s);
-        Ok(())
-    }
-}
-
-/// Write formatted data to the serial port
-#[doc(hidden)]
-pub fn _print(args: fmt::Arguments) {
-    let mut writer = SerialWriter;
-    let _ = writer.write_fmt(args);
-}
-
-/// Serial print macro
-#[macro_export]
-macro_rules! serial_print {
-    ($($arg:tt)*) => ({
-        $crate::serial::_print(format_args!($($arg)*));
-    });
-}
-
-/// Serial println macro
-#[macro_export]
-macro_rules! serial_println {
-    () => ($crate::serial_print!("\n"));
-    ($fmt:expr) => ($crate::serial_print!(concat!($fmt, "\n")));
-    ($fmt:expr, $($arg:tt)*) => ($crate::serial_print!(
-        concat!($fmt, "\n"), $($arg)*
-    ));
-}
-
 /// Get serial port timeout statistics
 ///
 /// Get timeout statistics
@@ -484,4 +372,37 @@ mod tests {
         // Note: This test assumes fresh state
         assert!(!is_available() || is_initialized());
     }
+}
+
+/// Log a sequence of lines to the serial port
+pub fn log_lines<I>(lines: I)
+where
+    I: IntoIterator,
+    I::Item: core::fmt::Display,
+{
+    for line in lines {
+        crate::serial_println!("{}", line);
+    }
+}
+
+#[doc(hidden)]
+pub fn print_impl(args: ::core::fmt::Arguments) {
+    use core::fmt::Write;
+    with_serial_ports(|ports| ports.write_fmt(args)).expect("Printing to serial failed");
+}
+
+/// Prints to the host through the serial interface.
+#[macro_export]
+macro_rules! serial_print {
+    ($($arg:tt)*) => {
+        $crate::serial::print_impl(format_args!($($arg)*));
+    };
+}
+
+/// Prints to the host through the serial interface, appending a newline.
+#[macro_export]
+macro_rules! serial_println {
+    () => ($crate::serial_print!("\n"));
+    ($fmt:expr) => ($crate::serial_print!(concat!($fmt, "\n")));
+    ($fmt:expr, $($arg:tt)*) => ($crate::serial_print!(concat!($fmt, "\n"), $($arg)*));
 }

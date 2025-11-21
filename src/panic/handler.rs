@@ -20,8 +20,8 @@ use crate::{
     init,
     panic::state::{enter_panic, PanicLevel},
     serial,
-    serial_println,
     vga_buffer,
+    println,
 };
 use core::panic::PanicInfo;
 use x86_64::instructions::{interrupts, port::Port};
@@ -105,7 +105,7 @@ fn handle_nested_panic(info: &PanicInfo, telemetry: &PanicTelemetry) -> ! {
     DIAGNOSTICS.mark_nested_panic();
 
     if telemetry.serial_available {
-        serial_println!(
+        println!(
             "[CRITICAL] Nested panic detected! Using emergency output only."
         );
     }
@@ -123,7 +123,7 @@ fn handle_critical_failure(info: &PanicInfo, telemetry: &PanicTelemetry) -> ! {
     DIAGNOSTICS.mark_nested_panic();
 
     if telemetry.serial_available {
-        serial_println!(
+        println!(
             "[FATAL] Multiple nested panics detected. Forcing emergency halt."
         );
     }
@@ -169,13 +169,13 @@ fn log_system_state(telemetry: &PanicTelemetry) {
         return;
     }
 
-    serial_println!();
-    serial_println!("[STATE] System state at panic:");
-    serial_println!("     - Level: {:?}", telemetry.level);
-    serial_println!("     - Initialization phase: {}", telemetry.init_status);
-    serial_println!("     - VGA accessible: {}", telemetry.vga_accessible);
-    serial_println!("     - Serial available: {}", telemetry.serial_available);
-    serial_println!();
+    println!();
+    println!("[STATE] System state at panic:");
+    println!("     - Level: {:?}", telemetry.level);
+    println!("     - Initialization phase: {}", telemetry.init_status);
+    println!("     - VGA accessible: {}", telemetry.vga_accessible);
+    println!("     - Serial available: {}", telemetry.serial_available);
+    println!();
 }
 
 fn log_output_summary(outputs: PanicOutputStatus, telemetry: &PanicTelemetry) {
@@ -183,7 +183,7 @@ fn log_output_summary(outputs: PanicOutputStatus, telemetry: &PanicTelemetry) {
         return;
     }
 
-    serial_println!(
+    println!(
         "[PANIC] Output summary -> serial: {}, vga: {}, emergency_port: {}",
         outputs.serial,
         outputs.vga,

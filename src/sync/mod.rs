@@ -30,6 +30,7 @@
 //! will result in a `LockOrderViolation` error.
 
 pub mod lock_manager;
+pub mod interrupt;
 
 // Re-export commonly used types
 pub use lock_manager::{acquire_lock, lock_stats, record_contention, LockId, LockStats};

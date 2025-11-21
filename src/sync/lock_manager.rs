@@ -54,19 +54,12 @@ impl LockGuard {
         Self::read_timestamp().saturating_sub(self.acquired_at)
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(debug_assertions)]
     fn read_timestamp() -> u64 {
-        #[cfg(debug_assertions)]
-        // SAFETY: RDTSC is a non-privileged read-only instruction.
-        // Safe to use for lock timing measurements.
-        unsafe {
-            core::arch::x86_64::_rdtsc()
-        }
-        #[cfg(not(debug_assertions))]
-        0
+        crate::diagnostics::read_tsc()
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(debug_assertions))]
     fn read_timestamp() -> u64 {
         0
     }

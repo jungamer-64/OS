@@ -8,15 +8,12 @@
 //! - Detailed error reporting
 //! - Rollback support for failed initialization
 
-use crate::constants::{
-    SERIAL_ALREADY_INITIALIZED_LINES, SERIAL_IDLE_LOOP_LINES, SERIAL_INIT_SUCCESS_LINES,
-    SERIAL_SAFETY_FEATURE_LINES,
-};
 use crate::diagnostics::DIAGNOSTICS;
-use crate::serial::{self, InitError as SerialInitError};
-use crate::serial_println;
+use crate::println;
+use crate::serial::{InitError as SerialInitError};
 use crate::vga_buffer::ColorCode;
 use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use crate::arch::Cpu;
 
 /// Initialization phases with explicit state machine
 #[repr(u8)]
@@ -203,11 +200,11 @@ pub fn initialize_serial() -> InitResult<()> {
     // Attempt serial initialization
     match crate::serial::init() {
         Ok(()) => {
-            serial::log_lines(SERIAL_INIT_SUCCESS_LINES.iter().copied());
+            // serial::log_lines(SERIAL_INIT_SUCCESS_LINES.iter().copied());
             Ok(())
         }
         Err(SerialInitError::AlreadyInitialized) => {
-            serial::log_lines(SERIAL_ALREADY_INITIALIZED_LINES.iter().copied());
+            // serial::log_lines(SERIAL_ALREADY_INITIALIZED_LINES.iter().copied());
             Ok(())
         }
         Err(SerialInitError::PortNotPresent) => {
@@ -256,12 +253,12 @@ pub fn report_vga_status() {
         return;
     }
 
-    serial_println!("[OK] VGA text mode initialized");
-    serial_println!("     - Resolution: 80x25 characters");
-    serial_println!("     - Colors: 16-color palette");
-    serial_println!("     - Buffer address: 0xB8000");
-    serial_println!("     - Auto-scroll: Enabled");
-    serial_println!(
+    println!("[OK] VGA text mode initialized");
+    println!("     - Resolution: 80x25 characters");
+    println!("     - Colors: 16-color palette");
+    println!("     - Buffer address: 0xB8000");
+    println!("     - Auto-scroll: Enabled");
+    println!(
         "     - Buffer validation: {}",
         if crate::vga_buffer::is_accessible() {
             "Passed"
@@ -269,7 +266,7 @@ pub fn report_vga_status() {
             "Failed"
         }
     );
-    serial_println!();
+    println!();
 }
 
 /// Report safety features to serial
@@ -278,7 +275,7 @@ pub fn report_safety_features() {
         return;
     }
 
-    serial::log_lines(SERIAL_SAFETY_FEATURE_LINES.iter().copied());
+    // serial::log_lines(SERIAL_SAFETY_FEATURE_LINES.iter().copied());
 }
 
 /// Complete initialization sequence
@@ -369,12 +366,12 @@ fn perform_initialization() -> InitResult<()> {
 pub fn halt_forever() -> ! {
     // Log final status
     if crate::serial::is_available() {
-        serial::log_lines(SERIAL_IDLE_LOOP_LINES.iter().copied());
+        // serial::log_lines(SERIAL_IDLE_LOOP_LINES.iter().copied());
     }
 
     loop {
         // SAFETY: We are in kernel mode and hlt is safe to use
-        x86_64::instructions::hlt();
+        crate::arch::X86Cpu::halt();
     }
 }
 

@@ -46,15 +46,14 @@
 // Allow missing docs for entry_point macro
 #![allow(missing_docs)]
 
-use tiny_os::constants::SERIAL_NON_CRITICAL_CONTINUATION_LINES;
 use tiny_os::{diagnostics, display, init, serial, vga_buffer};
-use tiny_os::{print, println, serial_println};
+use tiny_os::{print, println};
+use tiny_os::arch::{Cpu, X86Cpu};
 
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 
-const SERIAL_KERNEL_INIT_SUCCESS_LINES: &[&str] =
-    &["[OK] All kernel subsystems initialized successfully", ""];
+
 
 entry_point!(kernel_main);
 
@@ -90,13 +89,18 @@ entry_point!(kernel_main);
 /// This function never returns (`-> !`). The kernel runs indefinitely
 /// in a low-power idle loop until reset or power-off.
 fn kernel_main(boot_info: &'static BootInfo) -> ! {
+    // Ensure interrupts remain disabled until we set up an IDT. The bootloader leaves
+    // them enabled, which would trigger timer interrupts we cannot handle yet and
+    // cause triple-fault reboots.
+    X86Cpu::disable_interrupts();
+
     // Phase 1: Initialize all subsystems
     // This is the most critical phase - if VGA fails, we can't show errors
     match init::initialize_all() {
         Ok(()) => {
             // Initialization successful
             if serial::is_available() {
-                serial::log_lines(SERIAL_KERNEL_INIT_SUCCESS_LINES.iter().copied());
+                // serial::log_lines(SERIAL_KERNEL_INIT_SUCCESS_LINES.iter().copied());
             }
         }
         Err(e) => {
@@ -117,33 +121,61 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 }
             }
             if serial_available {
-                serial_println!("[CRITICAL] Initialization failed: {:?}", e);
-                serial_println!(
+                println!("[CRITICAL] Initialization failed: {:?}", e);
+                println!(
                     "[WARN] Non-critical failure encountered. Continuing boot sequence."
                 );
-                serial::log_lines(SERIAL_NON_CRITICAL_CONTINUATION_LINES.iter().copied());
+                // serial::log_lines(SERIAL_NON_CRITICAL_CONTINUATION_LINES.iter().copied());
             }
         }
     }
 
+    trace_serial("after init sequence");
+
     // Phase 2: Display boot environment
+    trace_serial("before boot environment");
     display::display_boot_environment(boot_info);
+    trace_serial("after boot environment");
 
     // Phase 3: Display boot information and features
+    trace_serial("before boot info");
     display::display_boot_information();
+    trace_serial("after boot info");
     display::display_feature_list();
+    trace_serial("after feature list");
     display::display_usage_note();
+    trace_serial("after usage note");
 
     // Phase 4: Final system check
+    trace_serial("before system check");
     perform_system_check();
+    trace_serial("after system check");
 
     // Phase 5: Display system health report
+    trace_serial("before health report");
     diagnostics::print_health_report();
+    trace_serial("after health report");
 
-    // Phase 6: Enter low-power idle loop
+    // Phase 6: Show standby shell to prevent rapid log spam
+    trace_serial("before wait shell");
+    display::show_wait_shell();
+    trace_serial("after wait shell");
+
+    // Phase 7: Enter low-power idle loop
     // This never returns
+    trace_serial("entering halt loop");
     init::halt_forever()
 }
+
+#[cfg(debug_assertions)]
+fn trace_serial(message: &str) {
+    if serial::is_available() {
+        println!("[TRACE] {}", message);
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn trace_serial(_message: &str) {}
 
 /// Perform final system checks before entering idle loop
 ///
@@ -158,15 +190,15 @@ fn perform_system_check() {
 
     // Log system status to serial if available
     if serial_ok {
-        serial_println!("[CHECK] Final system check:");
-        serial_println!("     - VGA buffer: {}", ok_failed(vga_ok));
-        serial_println!("     - Serial port: {}", availability_label(serial_ok));
-        serial_println!("     - Initialization phase: {:?}", status.phase);
-        serial_println!(
+        println!("[CHECK] Final system check:");
+        println!("     - VGA buffer: {}", ok_failed(vga_ok));
+        println!("     - Serial port: {}", availability_label(serial_ok));
+        println!("     - Initialization phase: {:?}", status.phase);
+        println!(
             "     - Output capability: {}",
             availability_label(output_ok)
         );
-        serial_println!();
+        println!();
     }
 
     // Display warnings on VGA for any issues
@@ -222,7 +254,7 @@ fn availability_label(ok: bool) -> &'static str {
 
 fn log_vga_failure(context: &str, err: vga_buffer::VgaError) {
     if serial::is_available() {
-        serial_println!(
+        println!(
             "[WARN] VGA output failed during {}: {}",
             context,
             err.as_str()

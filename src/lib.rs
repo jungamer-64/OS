@@ -21,19 +21,19 @@ pub mod qemu;
 pub mod serial;
 pub mod sync;
 pub mod vga_buffer;
+pub mod arch;
 
 pub use qemu::{exit_qemu, QemuExitCode};
 
-use core::any::type_name;
 use core::panic::PanicInfo;
-use x86_64::instructions::hlt;
+use crate::arch::{Cpu, X86Cpu};
 
 /// Halt loop used by tests after executing all test cases.
 #[inline]
 pub fn hlt_loop() -> ! {
     loop {
         // SAFETY: `hlt` is safe in ring 0 and we never leave the loop.
-        hlt();
+        X86Cpu::halt();
     }
 }
 
@@ -48,15 +48,15 @@ where
     T: Fn(),
 {
     fn run(&self) {
-        serial_print!("[TEST] {} ... ", type_name::<T>());
+        crate::print!("[TEST] {} ... ", core::any::type_name::<T>());
         self();
-        serial_println!("ok");
+        crate::println!("ok");
     }
 }
 
 /// Custom test runner invoked by the `bootimage` test harness.
 pub fn test_runner(tests: &[&dyn Testable]) {
-    serial_println!("[TEST RUNNER] running {} tests", tests.len());
+    crate::println!("[TEST RUNNER] running {} tests", tests.len());
     for test in tests {
         test.run();
     }
@@ -73,7 +73,7 @@ fn panic(info: &PanicInfo) -> ! {
 /// Panic handler delegate for tests.
 #[inline(never)]
 pub fn test_panic_handler(info: &PanicInfo) -> ! {
-    serial_println!("[TEST PANIC] {}", info);
+    crate::println!("[TEST PANIC] {}", info);
     exit_qemu(QemuExitCode::Failed);
 }
 
@@ -92,7 +92,7 @@ bootloader::entry_point!(test_kernel_main);
 #[cfg(all(test, feature = "std-tests"))]
 fn test_kernel_main(_boot_info: &'static BootInfo) -> ! {
     if let Err(err) = init::initialize_all() {
-        serial_println!("[TEST INIT] initialization failed: {:?}", err);
+        println!("[TEST INIT] initialization failed: {:?}", err);
     }
 
     unsafe {

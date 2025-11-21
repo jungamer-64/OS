@@ -16,6 +16,21 @@ use crate::constants::{
     MODEM_CTRL_ENABLE_IRQ_RTS_DSR,
 };
 
+use core::fmt;
+
+impl<H: SerialHardware> fmt::Write for SerialPorts<H> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for byte in s.bytes() {
+            // Attempt to write a byte, but ignore errors, similar to
+            // how the existing `serial_println!` macro behaves. In a kernel
+            // environment, there's often no good way to recover from a
+            // failed serial write, so we just continue.
+            let _ = self.poll_and_write(byte);
+        }
+        Ok(())
+    }
+}
+
 /// Hardware operation state tracking
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HardwareState {

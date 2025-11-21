@@ -29,12 +29,11 @@ use crate::sync::lock_manager::{acquire_lock, LockId};
 pub use backend::{DefaultVgaBuffer, VgaBufferAccess};
 pub use color::ColorCode;
 pub use constants::{CELL_COUNT, VGA_HEIGHT, VGA_WIDTH};
-use core::fmt;
 use core::sync::atomic::Ordering;
 use spin::Mutex;
 pub use writer::{DoubleBufferedWriter, VgaError};
+use crate::sync::interrupt::{InterruptController, X64InterruptController};
 use writer::{VgaWriter, BUFFER_ACCESSIBLE};
-use x86_64::instructions::interrupts;
 
 /// Global VGA writer protected by Mutex
 ///
@@ -58,11 +57,11 @@ static VGA_WRITER: Mutex<VgaWriter> = Mutex::new(VgaWriter::new());
 /// - No interrupt can try to acquire VGA_WRITER while we hold it
 /// - No nested lock attempts from the same execution context
 /// - Safe concurrent access from multiple code paths
-fn with_writer<F, R>(f: F) -> Result<R, VgaError>
+pub(crate) fn with_writer<F, R>(f: F) -> Result<R, VgaError>
 where
     F: FnOnce(&mut VgaWriter) -> Result<R, VgaError>,
 {
-    interrupts::without_interrupts(|| {
+    X64InterruptController::without_interrupts(|| {
         // Acquire lock order enforcement first
         let _lock_guard = acquire_lock(LockId::Vga).map_err(|_| VgaError::LockOrderViolation)?;
 
@@ -83,31 +82,6 @@ where
         DIAGNOSTICS.finish_lock_timing(token);
         result
     })
-}
-
-/// Global print! macro
-#[macro_export]
-macro_rules! print {
-    ($($arg:tt)*) => ({
-        $crate::vga_buffer::_print(format_args!($($arg)*))
-    });
-}
-
-/// Global println! macro
-#[macro_export]
-macro_rules! println {
-    () => ($crate::print!("\n"));
-    ($fmt:expr) => ($crate::print!(concat!($fmt, "\n")));
-    ($fmt:expr, $($arg:tt)*) => ($crate::print!(concat!($fmt, "\n"), $($arg)*));
-}
-
-/// Print function called by macros
-#[doc(hidden)]
-pub fn _print(args: fmt::Arguments) {
-    let _ = with_writer(|writer| {
-        use core::fmt::Write;
-        writer.write_fmt(args).map_err(|_| VgaError::WriteFailure)
-    });
 }
 
 /// Initialize VGA buffer and test accessibility

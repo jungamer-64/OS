@@ -9,10 +9,30 @@
 //! - Usage instructions
 
 use super::backend::{default_display_backend, DisplayHardware};
-use super::core::{broadcast_args_with, broadcast_with, hardware_output, Output};
+use super::output::{broadcast_args_with, broadcast_with, hardware_output, Output};
 use crate::constants::{FEATURES, SERIAL_HINTS, SYSTEM_INFO};
 use crate::vga_buffer::ColorCode;
 use bootloader::BootInfo;
+
+#[cfg(debug_assertions)]
+fn usage_note_trace(label: &str) {
+    if crate::serial::is_available() {
+        crate::serial_println!("[TRACE] usage note: {}", label);
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn usage_note_trace(_label: &str) {}
+
+#[cfg(debug_assertions)]
+fn status_trace(label: &str) {
+    if crate::serial::is_available() {
+        crate::serial_println!("[TRACE] status block: {}", label);
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn status_trace(_label: &str) {}
 
 /// Display boot environment information using hardware outputs
 ///
@@ -224,10 +244,12 @@ pub fn display_usage_note() {
 ///
 /// * `out` - The output target
 pub fn display_usage_note_with<O: Output>(out: &mut O) {
+    usage_note_trace("start");
     broadcast_args_with(out, format_args!("[Status]\n"), ColorCode::info());
 
     // System status
     display_system_status(out);
+    usage_note_trace("after status");
 
     broadcast_args_with(out, format_args!("\n"), ColorCode::normal());
 
@@ -239,34 +261,57 @@ pub fn display_usage_note_with<O: Output>(out: &mut O) {
     }
 
     broadcast_args_with(out, format_args!("\n"), ColorCode::normal());
+    usage_note_trace("end");
 }
 
 /// Display current system status
 ///
 /// Shows the operational status of each subsystem.
 fn display_system_status<O: Output>(out: &mut O) {
+    status_trace("enter");
     let display = default_display_backend();
     let vga_status = if display.is_available() {
         ("VGA", "Operational", ColorCode::success())
     } else {
         ("VGA", "Not accessible", ColorCode::error())
     };
+    status_trace("after vga state");
 
     let serial_status = if crate::serial::is_available() {
         ("Serial", "Operational", ColorCode::success())
     } else {
         ("Serial", "Not available", ColorCode::warning())
     };
+    status_trace("after serial state");
 
     let init_status = if crate::init::is_initialized() {
         ("Init", "Complete", ColorCode::success())
     } else {
         ("Init", "In progress", ColorCode::warning())
     };
+    status_trace("after init state");
 
-    for (subsystem, status, color) in &[vga_status, serial_status, init_status] {
-        broadcast_args_with(out, format_args!("  {subsystem:10}: {status}\n"), *color);
-    }
+    let (vga_label, vga_value, vga_color) = vga_status;
+    status_trace("before vga write");
+    broadcast_args_with(out, format_args!("  {vga_label:10}: {vga_value}\n"), vga_color);
+
+    let (serial_label, serial_value, serial_color) = serial_status;
+    status_trace("before serial write");
+    broadcast_args_with(
+        out,
+        format_args!("  {serial_label:10}: {serial_value}\n"),
+        serial_color,
+    );
+
+    let (init_label, init_value, init_color) = init_status;
+    status_trace("before init write");
+    broadcast_args_with(
+        out,
+        format_args!("  {init_label:10}: {init_value}\n"),
+        init_color,
+    );
+
+    status_trace("exit");
 }
 
 // NOTE: Unit tests removed as they require std library features (Vec, String, format!)
