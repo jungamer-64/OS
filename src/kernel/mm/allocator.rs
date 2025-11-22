@@ -260,15 +260,14 @@ impl LinkedListAllocator {
         // 借用エラー回避のため、先にend_addrを計算
         let target_end = target_node.end_addr();
         
-        if let Some(ref mut next) = target_node.next {
-            if target_end.as_usize() == next.start_addr().as_usize() {
+        if let Some(ref mut next) = target_node.next
+            && target_end.as_usize() == next.start_addr().as_usize() {
                 // 次のブロックを吸収
                 target_node.size = target_node.size.checked_add(next.size)
                     .expect("ListNode size overflow during merge");
                 // 次の次のブロックへのポインタを取得して繋ぎ変える
                 target_node.next = next.next.take();
             }
-        }
     }
 
     /// 指定されたサイズとアラインメントに適した領域を見つける

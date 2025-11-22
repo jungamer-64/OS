@@ -98,6 +98,12 @@ pub struct Yield {
     yielded: bool,
 }
 
+impl Default for Yield {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Yield {
     pub fn new() -> Self {
         Self { yielded: false }

@@ -35,6 +35,7 @@ pub struct PageFrameNumber(u64);
 ```
 
 **主なメソッド:**
+
 - `new()` / `new_unchecked()` - 安全/非安全なコンストラクタ
 - `new_aligned()` - アラインメント検証付き作成
 - `as_usize()` / `as_u64()` - 値の取得

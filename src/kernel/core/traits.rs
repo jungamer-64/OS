@@ -129,6 +129,50 @@ pub enum TaskState {
     Terminated,
 }
 
+impl TaskState {
+    /// 状態遷移が有効かどうかをチェック
+    #[inline]
+    #[must_use]
+    #[allow(clippy::match_same_arms)]
+    pub const fn can_transition_to(self, next: Self) -> bool {
+        match (self, next) {
+            // Ready -> Running, Blocked, Terminated
+            (Self::Ready, Self::Running | Self::Blocked | Self::Terminated) => true,
+            // Running -> Ready, Blocked, Terminated
+            (Self::Running, Self::Ready | Self::Blocked | Self::Terminated) => true,
+            // Blocked -> Ready, Terminated
+            (Self::Blocked, Self::Ready | Self::Terminated) => true,
+            // Terminated -> (no transitions allowed)
+            (Self::Terminated, _) => false,
+            // Same state (always allowed)
+            (a, b) if a as u8 == b as u8 => true,
+            // Other transitions are invalid
+            _ => false,
+        }
+    }
+    
+    /// 実行可能な状態かどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_runnable(self) -> bool {
+        matches!(self, Self::Ready | Self::Running)
+    }
+    
+    /// ブロック状態かどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_blocked(self) -> bool {
+        matches!(self, Self::Blocked)
+    }
+    
+    /// 終了状態かどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_terminated(self) -> bool {
+        matches!(self, Self::Terminated)
+    }
+}
+
 /// スケジューラ trait
 /// 
 /// タスクのスケジューリングとコンテキストスイッチを管理。
@@ -144,14 +188,26 @@ pub trait Scheduler {
     fn switch_to(&mut self, id: TaskId) -> KernelResult<()>;
     
     /// タスクを追加
+    ///
+    /// # Errors
+    ///
+    /// タスクの追加に失敗した場合、エラーを返します。
     fn add_task(&mut self, task: Box<dyn Task>) -> KernelResult<TaskId>;
     
     /// タスクを削除
+    ///
+    /// # Errors
+    ///
+    /// タスクの削除に失敗した場合、エラーを返します。
     fn remove_task(&mut self, id: TaskId) -> KernelResult<()>;
     
     /// タスク数を取得
     fn task_count(&self) -> usize;
     
     /// タスクの状態を変更
+    ///
+    /// # Errors
+    ///
+    /// タスクの状態変更に失敗した場合、エラーを返します。
     fn set_task_state(&mut self, id: TaskId, state: TaskState) -> KernelResult<()>;
 }

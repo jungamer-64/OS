@@ -30,9 +30,9 @@ impl Scheduler for RoundRobinScheduler {
         }
 
         // 現在のタスクを末尾に移動（ラウンドロビン）
-        if let Some(current_id) = self.current_task {
-            if let Some(pos) = self.tasks.iter().position(|t| t.id() == current_id) {
-                if let Some(task) = self.tasks.remove(pos) {
+        if let Some(current_id) = self.current_task
+            && let Some(pos) = self.tasks.iter().position(|t| t.id() == current_id)
+                && let Some(task) = self.tasks.remove(pos) {
                     if task.state() == TaskState::Running || task.state() == TaskState::Ready {
                         self.tasks.push_back(task);
                     } else {
@@ -44,8 +44,6 @@ impl Scheduler for RoundRobinScheduler {
                         }
                     }
                 }
-            }
-        }
 
         // 次の実行可能タスクを探す
         for task in self.tasks.iter() {

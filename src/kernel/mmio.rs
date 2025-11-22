@@ -41,7 +41,7 @@ impl<T: Copy> MmioReg<T> {
         }
         
         // アライメントチェック
-        if addr % core::mem::align_of::<T>() != 0 {
+        if !addr.is_multiple_of(core::mem::align_of::<T>()) {
             return Err(MemoryError::MisalignedAccess.into());
         }
         
@@ -72,7 +72,7 @@ impl<T: Copy> MmioReg<T> {
         );
         
         // Safety: 呼び出し元がアドレスの有効性を保証している
-        unsafe { ptr::read_volatile(self.addr as *const T) }
+        unsafe { ptr::read_volatile(core::ptr::with_exposed_provenance(self.addr)) }
     }
     
     /// レジスタに書き込み
@@ -91,7 +91,7 @@ impl<T: Copy> MmioReg<T> {
         );
         
         // Safety: 呼び出し元がアドレスの有効性を保証している
-        unsafe { ptr::write_volatile(self.addr as *mut T, value) }
+        unsafe { ptr::write_volatile(core::ptr::with_exposed_provenance_mut(self.addr), value) }
     }
 }
 

@@ -21,8 +21,8 @@ pub async fn run() {
     loop {
         let scancode = ScancodeStream::new().await;
 
-        if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
-            if let Some(key) = keyboard.process_keyevent(key_event) {
+        if let Ok(Some(key_event)) = keyboard.add_byte(scancode)
+            && let Some(key) = keyboard.process_keyevent(key_event) {
                 match key {
                     DecodedKey::Unicode(character) => {
                         match character {
@@ -51,7 +51,6 @@ pub async fn run() {
                     }
                 }
             }
-        }
     }
 }
 

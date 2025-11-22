@@ -27,16 +27,59 @@ impl DeviceId {
 pub struct TaskId(pub u64);
 
 impl TaskId {
+    /// 予約された無効なID
+    pub const INVALID: Self = Self(0);
+    
+    /// カーネルタスクIDの開始
+    pub const KERNEL_START: u64 = 1;
+    
+    /// ユーザータスクIDの開始
+    pub const USER_START: u64 = 1000;
+    
     /// 新しいタスク ID を作成
     #[inline]
+    #[must_use]
     pub const fn new(id: u64) -> Self {
         Self(id)
     }
     
+    /// 検証付きでタスクIDを作成
+    #[inline]
+    #[must_use]
+    pub const fn new_checked(id: u64) -> Option<Self> {
+        if id == 0 {
+            None
+        } else {
+            Some(Self(id))
+        }
+    }
+    
     /// ID を取得
     #[inline]
+    #[must_use]
     pub const fn get(self) -> u64 {
         self.0
+    }
+    
+    /// 有効なIDかどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        self.0 != 0
+    }
+    
+    /// カーネルタスクIDかどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_kernel(self) -> bool {
+        self.0 >= Self::KERNEL_START && self.0 < Self::USER_START
+    }
+    
+    /// ユーザータスクIDかどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_user(self) -> bool {
+        self.0 >= Self::USER_START
     }
 }
 
@@ -46,16 +89,62 @@ impl TaskId {
 pub struct ProcessId(pub u64);
 
 impl ProcessId {
+    /// 予約された無効なID
+    pub const INVALID: Self = Self(0);
+    
+    /// initプロセスのID
+    pub const INIT: Self = Self(1);
+    
+    /// カーネルプロセスIDの開始
+    pub const KERNEL_START: u64 = 1;
+    
+    /// ユーザープロセスIDの開始
+    pub const USER_START: u64 = 1000;
+    
     /// 新しいプロセス ID を作成
     #[inline]
+    #[must_use]
     pub const fn new(id: u64) -> Self {
         Self(id)
     }
     
+    /// 検証付きでプロセスIDを作成
+    #[inline]
+    #[must_use]
+    pub const fn new_checked(id: u64) -> Option<Self> {
+        if id == 0 {
+            None
+        } else {
+            Some(Self(id))
+        }
+    }
+    
     /// ID を取得
     #[inline]
+    #[must_use]
     pub const fn get(self) -> u64 {
         self.0
+    }
+    
+    /// 有効なIDかどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        self.0 != 0
+    }
+    
+    /// カーネルプロセスIDかどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_kernel(self) -> bool {
+        self.0 >= Self::KERNEL_START && self.0 < Self::USER_START
+    }
+    
+    /// ユーザープロセスIDかどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_user(self) -> bool {
+        self.0 >= Self::USER_START
     }
 }
 
@@ -71,14 +160,22 @@ pub enum Priority {
 }
 
 impl Priority {
+    /// 最低優先度
+    pub const MIN: Self = Self::Idle;
+    
+    /// 最高優先度
+    pub const MAX: Self = Self::Critical;
+    
     /// 優先度の数値を取得
     #[inline]
+    #[must_use]
     pub const fn as_u8(self) -> u8 {
         self as u8
     }
     
     /// 数値から優先度を作成
     #[inline]
+    #[must_use]
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::Idle),
@@ -88,6 +185,38 @@ impl Priority {
             4 => Some(Self::Critical),
             _ => None,
         }
+    }
+    
+    /// 優先度を上げる（境界チェック付き）
+    #[inline]
+    #[must_use]
+    pub const fn increase(self) -> Option<Self> {
+        Self::from_u8(self.as_u8().saturating_add(1))
+    }
+    
+    /// 優先度を下げる（境界チェック付き）
+    #[inline]
+    #[must_use]
+    pub const fn decrease(self) -> Option<Self> {
+        if self.as_u8() > 0 {
+            Self::from_u8(self.as_u8() - 1)
+        } else {
+            None
+        }
+    }
+    
+    /// 指定された優先度より高いかどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_higher_than(self, other: Self) -> bool {
+        self.as_u8() > other.as_u8()
+    }
+    
+    /// 指定された優先度より低いかどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_lower_than(self, other: Self) -> bool {
+        self.as_u8() < other.as_u8()
     }
 }
 
@@ -101,11 +230,11 @@ impl Default for Priority {
 impl fmt::Display for Priority {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Priority::Idle => write!(f, "Idle"),
-            Priority::Low => write!(f, "Low"),
-            Priority::Normal => write!(f, "Normal"),
-            Priority::High => write!(f, "High"),
-            Priority::Critical => write!(f, "Critical"),
+            Self::Idle => write!(f, "Idle"),
+            Self::Low => write!(f, "Low"),
+            Self::Normal => write!(f, "Normal"),
+            Self::High => write!(f, "High"),
+            Self::Critical => write!(f, "Critical"),
         }
     }
 }

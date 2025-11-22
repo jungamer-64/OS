@@ -28,71 +28,71 @@ entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     debug_println!("[KERNEL] Entry point reached");
+    
+    // GDT/IDT初期化
     tiny_os::arch::x86_64::init_gdt();
-    debug_println!("[KERNEL] GDT initialized");
+    debug_println!("[OK] GDT initialized");
     tiny_os::arch::x86_64::init_idt();
-    debug_println!("[KERNEL] IDT initialized");
+    debug_println!("[OK] IDT initialized");
 
+    // Framebuffer初期化とコンソール設定
     if let Some(framebuffer) = boot_info.framebuffer.as_mut() {
         let info = framebuffer.info();
         let buffer = framebuffer.buffer_mut();
         tiny_os::kernel::driver::framebuffer::init_framebuffer(info, buffer);
-        debug_println!("[KERNEL] Framebuffer initialized");
+        
+        if let Some(fb) = tiny_os::kernel::driver::framebuffer::FRAMEBUFFER.get() {
+            let _ = tiny_os::kernel::driver::set_framebuffer_console(fb);
+        }
+        debug_println!("[OK] Console initialized");
     }
     
-    // コンソール抽象化レイヤーを初期化
-    tiny_os::kernel::driver::init_console();
-    debug_println!("[KERNEL] Console abstraction layer initialized");
-
-    debug_println!("[OK] GDT initialized");
-    debug_println!("[OK] IDT initialized");
-    
+    // メモリ管理初期化
     let phys_mem_offset = boot_info.physical_memory_offset.into_option().unwrap_or(0);
     let virt_mem_offset = x86_64::VirtAddr::new(phys_mem_offset);
     
-    // ページング初期化
     let _mapper = unsafe { tiny_os::kernel::mm::paging::init(virt_mem_offset) };
-    
-    // フレームアロケータ初期化
     let _frame_allocator = unsafe {
         tiny_os::kernel::mm::frame::BootInfoFrameAllocator::init(&boot_info.memory_regions)
     };
     debug_println!("[OK] Paging & Frame Allocator initialized");
 
     // ヒープ初期化
-    if let Ok((heap_start_phys, heap_size)) = tiny_os::kernel::mm::init_heap(&boot_info.memory_regions) {
-        let heap_start_virt = tiny_os::kernel::mm::VirtAddr::new(heap_start_phys.as_usize() + phys_mem_offset as usize);
-        // SAFETY: init_heapで取得した有効な領域を仮想アドレスに変換して使用
-        match unsafe { tiny_os::init_heap(heap_start_virt, heap_size) } {
-            Ok(()) => debug_println!("[OK] Heap initialized"),
-            Err(tiny_os::HeapError::AlreadyInitialized) => {
-                debug_println!("[WARN] Heap already initialized");
+    match tiny_os::kernel::mm::init_heap(&boot_info.memory_regions) {
+        Ok((heap_start_phys, heap_size)) => {
+            let heap_start_virt = tiny_os::kernel::mm::VirtAddr::new(
+                heap_start_phys.as_usize() + phys_mem_offset as usize
+            );
+            // SAFETY: init_heapで取得した有効な領域を仮想アドレスに変換して使用
+            match unsafe { tiny_os::init_heap(heap_start_virt, heap_size) } {
+                Ok(()) => debug_println!("[OK] Heap initialized"),
+                Err(tiny_os::HeapError::AlreadyInitialized) => {
+                    debug_println!("[WARN] Heap already initialized");
+                }
             }
         }
-    } else {
-        debug_println!("[FAIL] Heap initialization failed");
+        Err(_) => debug_println!("[FAIL] Heap initialization failed"),
     }
     
-    // これ以降でprintln!を安全に使える
+    // ウェルカムバナー
     println!("========================================");
     println!("  Tiny OS - Ideal Rust Kernel (UEFI)");
     println!("========================================");
 
-
-    debug_println!("Initializing Hardware Timer...");
-    // SAFETY: PICの初期化はカーネル起動時に1回だけ実行される。
-    // 割り込みコントローラへのアクセスは排他制御されている。
+    // ハードウェアタイマー初期化
+    // SAFETY: PICの初期化はカーネル起動時に1回だけ実行される
     unsafe {
         tiny_os::arch::x86_64::pic::PICS.lock().initialize();
     }
-    debug_println!("[OK] Hardware Timer initialized (PIT disabled for debugging)");
+    debug_println!("[OK] Hardware Timer initialized");
 
-    debug_println!("Enabling Interrupts...");
+    // 割り込み有効化
     ArchCpu::enable_interrupts();
     debug_println!("[OK] Interrupts enabled");
     
     println!("[OK] Kernel initialized successfully!");
     
+    // メインループ
     loop {
         ArchCpu::halt();
     }
@@ -100,8 +100,26 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    // パニック時もprintln!を使えるようにする（シリアル出力のため）
-    println!("[KERNEL PANIC] {}", info);
+    use tiny_os::kernel::driver::{enter_panic, NORMAL, FIRST_PANIC};
+    
+    let panic_level = enter_panic();
+    
+    match panic_level {
+        NORMAL => {
+            // 初回パニック: 可能な限り情報を出力
+            // NOTE: format_args! はスタック上で動作するため、
+            // ヒープアロケーションは発生しない（安全）
+            debug_println!("[KERNEL PANIC] {}", info);
+        }
+        FIRST_PANIC => {
+            // 二重パニック: 最小限の情報のみ
+            debug_println!("[DOUBLE PANIC]");
+        }
+        _ => {
+            // 三重パニック以降: 何も出力しない（無限ループ防止）
+        }
+    }
+    
     loop {
         ArchCpu::halt();
     }

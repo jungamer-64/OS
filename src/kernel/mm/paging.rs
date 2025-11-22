@@ -55,7 +55,7 @@ unsafe fn active_level_4_table(physical_memory_offset: VirtAddr)
         "Page table pointer must not be null"
     );
     debug_assert!(
-        page_table_ptr as usize % core::mem::align_of::<PageTable>() == 0,
+        (page_table_ptr as usize).is_multiple_of(core::mem::align_of::<PageTable>()),
         "Page table pointer must be properly aligned"
     );
 

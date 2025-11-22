@@ -88,7 +88,7 @@ impl PhysAddr {
     /// アラインメント要件を満たさない場合、[`MemoryError::MisalignedAccess`] を返します。
     #[inline]
     pub fn new_aligned(addr: usize, align: usize) -> Result<Self, MemoryError> {
-        if addr % align != 0 {
+        if !addr.is_multiple_of(align) {
             return Err(MemoryError::MisalignedAccess);
         }
         Ok(Self(addr))
@@ -115,7 +115,7 @@ impl PhysAddr {
     /// 指定されたアラインメントに揃っているか確認
     #[inline]
     pub const fn is_aligned(&self, align: usize) -> bool {
-        self.0 % align == 0
+        self.0.is_multiple_of(align)
     }
 
     /// 指定されたアラインメントに切り上げ
@@ -155,7 +155,7 @@ impl PhysAddr {
     /// - 排他的アクセスが保証されていること（必要な場合）
     #[inline]
     pub unsafe fn as_mut_ptr<T>(&self) -> *mut T {
-        self.0 as *mut T
+        core::ptr::with_exposed_provenance_mut(self.0)
     }
 
     /// 不変ポインタへ変換（Strict Provenance準拠）
@@ -166,7 +166,7 @@ impl PhysAddr {
     /// - 型Ｔのアラインメント要件を満たしていること
     #[inline]
     pub unsafe fn as_ptr<T>(&self) -> *const T {
-        self.0 as *const T
+        core::ptr::with_exposed_provenance(self.0)
     }
 }
 
@@ -212,7 +212,7 @@ impl VirtAddr {
     /// アラインメント要件を満たさない場合、[`MemoryError::MisalignedAccess`] を返します。
     #[inline]
     pub fn new_aligned(addr: usize, align: usize) -> Result<Self, MemoryError> {
-        if addr % align != 0 {
+        if !addr.is_multiple_of(align) {
             return Err(MemoryError::MisalignedAccess);
         }
         Ok(Self(addr))
@@ -239,7 +239,7 @@ impl VirtAddr {
     /// 指定されたアラインメントに揃っているか確認
     #[inline]
     pub const fn is_aligned(&self, align: usize) -> bool {
-        self.0 % align == 0
+        self.0.is_multiple_of(align)
     }
 
     /// 指定されたアラインメントに切り上げ
@@ -279,7 +279,7 @@ impl VirtAddr {
     /// - 排他的アクセスが保証されていること（必要な場合）
     #[inline]
     pub unsafe fn as_mut_ptr<T>(&self) -> *mut T {
-        self.0 as *mut T
+        core::ptr::with_exposed_provenance_mut(self.0)
     }
 
     /// 不変ポインタへ変換（Strict Provenance準拠）
@@ -290,7 +290,7 @@ impl VirtAddr {
     /// - 型Tのアラインメント要件を満たしていること
     #[inline]
     pub unsafe fn as_ptr<T>(&self) -> *const T {
-        self.0 as *const T
+        core::ptr::with_exposed_provenance(self.0)
     }
 }
 

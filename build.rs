@@ -234,13 +234,11 @@ fn print_build_info() {
     if let Ok(output) = std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()
+        && output.status.success()
+        && let Ok(commit) = String::from_utf8(output.stdout)
     {
-        if output.status.success() {
-            if let Ok(commit) = String::from_utf8(output.stdout) {
-                let commit = commit.trim();
-                println!("cargo:rustc-env=BUILD_COMMIT={commit}");
-            }
-        }
+        let commit = commit.trim();
+        println!("cargo:rustc-env=BUILD_COMMIT={commit}");
     }
 
     // Optimization level reporting

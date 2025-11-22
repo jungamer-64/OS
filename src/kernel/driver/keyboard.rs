@@ -11,6 +11,12 @@ pub struct PS2Keyboard {
     data_port: PortReadOnly<u8>,
 }
 
+impl Default for PS2Keyboard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PS2Keyboard {
     pub const fn new() -> Self {
         Self {
@@ -56,6 +62,12 @@ pub struct ScancodeQueue {
     waker: Option<Waker>,
 }
 
+impl Default for ScancodeQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScancodeQueue {
     pub const fn new() -> Self {
         Self {
@@ -92,6 +104,12 @@ pub static SCANCODE_QUEUE: Mutex<ScancodeQueue> = Mutex::new(ScancodeQueue::new(
 /// 次のスキャンコードを待つ Future
 pub struct ScancodeStream {
     _private: (),
+}
+
+impl Default for ScancodeStream {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ScancodeStream {

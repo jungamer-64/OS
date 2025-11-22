@@ -7,7 +7,10 @@ pub mod keyboard;
 pub mod pit;
 pub mod framebuffer;
 
-pub use console::{ConsoleAdapter, init_console, write_console, write_debug, CONSOLE};
+pub use console::{
+    ConsoleWriter, set_framebuffer_console, set_vga_console, write_console, write_debug,
+    enter_panic, NORMAL, FIRST_PANIC, DOUBLE_PANIC, PanicLevel,
+};
 pub use serial::SerialPort;
 pub use vga::VgaTextMode;
 pub use keyboard::PS2Keyboard;
