@@ -45,7 +45,7 @@ pub async fn run() {
                             }
                         }
                     }
-                    DecodedKey::RawKey(key) => {
+                    DecodedKey::RawKey(_key) => {
                         // 特殊キーの処理 (必要に応じて実装)
                         // println!("RawKey: {:?}", key);
                     }

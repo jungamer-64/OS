@@ -11,6 +11,7 @@ pub struct BitmapFrameAllocator {
     /// 利用可能なフレームの開始アドレス
     start_frame: PhysFrame<Size4KiB>,
     /// 利用可能なフレームの終了アドレス
+    #[allow(dead_code)]
     end_frame: PhysFrame<Size4KiB>,
     /// 次に割り当てるフレームのインデックス
     next: usize,
@@ -23,10 +24,12 @@ impl BitmapFrameAllocator {
     ///
     /// # Safety
     ///
-    /// start_addr と end_addr は有効な物理メモリ範囲を指している必要があります。
+    /// `start_addr` と `end_addr` は有効な物理メモリ範囲を指している必要があります。
+    #[must_use]
     pub unsafe fn new(start_addr: PhysAddr, end_addr: PhysAddr) -> Self {
         let start_frame = PhysFrame::containing_address(start_addr);
         let end_frame = PhysFrame::containing_address(end_addr);
+        #[allow(clippy::cast_possible_truncation)]
         let total_frames = (end_frame - start_frame) as usize;
 
         Self {
@@ -38,17 +41,20 @@ impl BitmapFrameAllocator {
     }
 
     /// 利用可能なフレーム数を取得
-    pub fn free_frames(&self) -> usize {
+    #[must_use]
+    pub const fn free_frames(&self) -> usize {
         self.total_frames.saturating_sub(self.next)
     }
 
     /// 総フレーム数を取得
-    pub fn total_frames(&self) -> usize {
+    #[must_use]
+    pub const fn total_frames(&self) -> usize {
         self.total_frames
     }
 
     /// 使用中のフレーム数を取得
-    pub fn used_frames(&self) -> usize {
+    #[must_use]
+    pub const fn used_frames(&self) -> usize {
         self.next
     }
 }
@@ -75,7 +81,8 @@ impl LockedFrameAllocator {
     ///
     /// # Safety
     ///
-    /// start_addr と end_addr は有効な物理メモリ範囲を指している必要があります。
+    /// `start_addr` と `end_addr` は有効な物理メモリ範囲を指している必要があります。
+    #[must_use]
     pub unsafe fn new(start_addr: PhysAddr, end_addr: PhysAddr) -> Self {
         unsafe {
             Self {

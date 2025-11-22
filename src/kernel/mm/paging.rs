@@ -71,12 +71,17 @@ impl PageTable {
     /// 
     /// # Safety
     /// 
-    /// virt と phys は有効なアドレスである必要があります。
+    /// `virt` と `phys` は有効なアドレスである必要があります。
+    /// 
+    /// # Errors
+    /// 
+    /// マッピングに失敗した場合、エラーを返します。
+    #[allow(clippy::missing_const_for_fn)]
     pub unsafe fn map_page(
         &mut self,
-        virt: VirtAddr,
-        phys: PhysAddr,
-        flags: PageTableFlags,
+        _virt: VirtAddr,
+        _phys: PhysAddr,
+        _flags: PageTableFlags,
     ) -> KernelResult<()> {
         // 実装は省略
         Ok(())
@@ -86,8 +91,13 @@ impl PageTable {
     /// 
     /// # Safety
     /// 
-    /// virt は現在マップされているアドレスである必要があります。
-    pub unsafe fn unmap_page(&mut self, virt: VirtAddr) -> KernelResult<()> {
+    /// `virt` は現在マップされているアドレスである必要があります。
+    /// 
+    /// # Errors
+    /// 
+    /// アンマップに失敗した場合、エラーを返します。
+    #[allow(clippy::missing_const_for_fn)]
+    pub unsafe fn unmap_page(&mut self, _virt: VirtAddr) -> KernelResult<()> {
         // 実装は省略
         Ok(())
     }
@@ -109,7 +119,11 @@ impl<'pt> PageMapping<'pt> {
     /// 
     /// # Safety
     /// 
-    /// virt と phys は有効なアドレスである必要があります。
+    /// `virt` と `phys` は有効なアドレスである必要があります。
+    /// 
+    /// # Errors
+    /// 
+    /// マッピングに失敗した場合、エラーを返します。
     pub unsafe fn new(
         page_table: &'pt mut PageTable,
         virt: VirtAddr,
@@ -128,12 +142,14 @@ impl<'pt> PageMapping<'pt> {
     }
     
     /// 仮想アドレスを取得
-    pub fn virt_addr(&self) -> VirtAddr {
+    #[must_use]
+    pub const fn virt_addr(&self) -> VirtAddr {
         self.virt
     }
     
     /// 物理アドレスを取得
-    pub fn phys_addr(&self) -> PhysAddr {
+    #[must_use]
+    pub const fn phys_addr(&self) -> PhysAddr {
         self.phys
     }
 }
