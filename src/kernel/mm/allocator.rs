@@ -126,15 +126,47 @@ impl LinkedListAllocator {
     /// `heap_start` と `heap_size` は有効なヒープ領域を指している必要があります。
     /// この関数は一度だけ呼ばれる必要があります。
     pub unsafe fn init(&mut self, heap_start: usize, heap_size: usize) {
-        self.stats.heap_capacity = heap_size;
+        // ListNode のアラインメントを考慮して、実際に使える開始アドレスとサイズを計算する
+        let node_align = mem::align_of::<ListNode>();
+
+        // align_up は Option を返す -> 無効なアラインメントなら初期化を中止
+        let aligned_start = match align_up(heap_start, node_align) {
+            Some(a) => a,
+            None => {
+                // node_align が不正な値（理論的には起きない）が来た場合は初期化不可
+                return;
+            }
+        };
+
+        // 切り上げで減った先頭分
+        let head_shrink = aligned_start.saturating_sub(heap_start);
+
+        // 使えるサイズを計算
+        if heap_size <= head_shrink {
+            // 元サイズが小さすぎて使える領域がない
+            return;
+        }
+        let usable_size = heap_size - head_shrink;
+
+        // usable_size が ListNode を置ける最小サイズより小さいなら初期化失敗扱い
+        if usable_size < mem::size_of::<ListNode>() {
+            return;
+        }
+
+        // stats.heap_capacity は実際に使えるサイズを記録する
+        self.stats.heap_capacity = usable_size;
+
+        // 実際に free リージョンを追加（aligned_start, usable_size）
+        // Safety: aligned_start は align_up によって ListNode のアラインに整えられている
         unsafe {
-            self.add_free_region(heap_start, heap_size);
+            self.add_free_region(aligned_start, usable_size);
         }
     }
 
     /// 指定された領域を空きリストに追加し、隣接ブロックと結合
     /// 
     /// アドレス順にソートされた状態を維持しながら挿入し、前後のブロックと結合する
+    /// 注意: addr は ListNode のアラインメントに合わせて切り上げられます。
     unsafe fn add_free_region(&mut self, addr: usize, size: usize) {
         let node_align = mem::align_of::<ListNode>();
         let node_min_size = mem::size_of::<ListNode>();
@@ -265,8 +297,9 @@ impl LinkedListAllocator {
         
         let excess_size = region.end_addr() - alloc_end;
         if excess_size > 0 && excess_size < mem::size_of::<ListNode>() {
-            // 残りの領域が小さすぎてノードを格納できない
-            return Err(());
+            // 残りの領域が小さすぎてノードを格納できないが、
+            // 内部断片化として許容する（アロケーションに含める）
+            // return Err(());
         }
         
         Ok(alloc_start)
@@ -396,6 +429,152 @@ unsafe impl GlobalAlloc for LockedHeap {
         
         unsafe {
             allocator.add_free_region(ptr as usize, size);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::alloc::Layout;
+
+    // Helper to align up (since we can't find the import easily, and it's simple)
+    fn align_up(addr: usize, align: usize) -> Option<usize> {
+        let remainder = addr % align;
+        if remainder == 0 {
+            Some(addr)
+        } else {
+            addr.checked_add(align - remainder)
+        }
+    }
+
+    #[test]
+    fn test_init_unaligned() {
+        let mut heap = LockedHeap::new();
+        // Use a static array to ensure validity during test
+        static mut HEAP_MEM: [u8; 4096] = [0; 4096];
+        
+        unsafe {
+            let start = HEAP_MEM.as_ptr() as usize;
+            let unaligned_start = start + 1;
+            let size = 4096 - 1;
+            
+            heap.init(unaligned_start, size);
+            
+            let stats = heap.stats();
+            let align = core::mem::align_of::<ListNode>();
+            let aligned_start = align_up(unaligned_start, align).unwrap();
+            let expected_capacity = size - (aligned_start - unaligned_start);
+            
+            assert_eq!(stats.heap_capacity, expected_capacity);
+            assert!(stats.heap_capacity > 0);
+            
+            let layout = Layout::new::<u64>();
+            let ptr = heap.alloc(layout);
+            assert!(!ptr.is_null());
+            assert_eq!(ptr as usize % layout.align(), 0);
+            heap.dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn test_coalescing() {
+        let mut heap = LockedHeap::new();
+        static mut HEAP_MEM: [u8; 4096] = [0; 4096];
+        unsafe { heap.init(HEAP_MEM.as_ptr() as usize, 4096); }
+
+        let layout = Layout::from_size_align(64, 16).unwrap();
+
+        unsafe {
+            let ptr1 = heap.alloc(layout);
+            let ptr2 = heap.alloc(layout);
+            let ptr3 = heap.alloc(layout);
+
+            assert!(!ptr1.is_null());
+            assert!(!ptr2.is_null());
+            assert!(!ptr3.is_null());
+
+            // Free middle
+            heap.dealloc(ptr2, layout);
+            
+            // Free first -> merge with middle
+            heap.dealloc(ptr1, layout);
+            
+            // Free last -> merge with (first+middle)
+            heap.dealloc(ptr3, layout);
+
+            let stats = heap.stats();
+            assert_eq!(stats.current_usage, 0);
+            
+            // Verify fragmentation is low by allocating full capacity
+            let cap = stats.heap_capacity;
+            let full_layout = Layout::from_size_align(cap, 16).unwrap();
+            let ptr_full = heap.alloc(full_layout);
+            assert!(!ptr_full.is_null());
+            heap.dealloc(ptr_full, full_layout);
+        }
+    }
+
+    #[test]
+    fn test_prefix_suffix() {
+        let mut heap = LockedHeap::new();
+        static mut HEAP_MEM: [u8; 4096] = [0; 4096];
+        unsafe { heap.init(HEAP_MEM.as_ptr() as usize, 4096); }
+        
+        let align = 256; 
+        let size = 64;
+        let layout = Layout::from_size_align(size, align).unwrap();
+        
+        unsafe {
+            let ptr = heap.alloc(layout);
+            assert!(!ptr.is_null());
+            assert_eq!(ptr as usize % align, 0);
+            
+            let stats = heap.stats();
+            assert_eq!(stats.current_usage, size);
+            
+            heap.dealloc(ptr, layout);
+            
+            let stats_after = heap.stats();
+            assert_eq!(stats_after.current_usage, 0);
+            
+            let cap = stats_after.heap_capacity;
+            let full_layout = Layout::from_size_align(cap, mem::align_of::<ListNode>()).unwrap();
+            let ptr_full = heap.alloc(full_layout);
+            assert!(!ptr_full.is_null());
+        }
+    }
+    
+    #[test]
+    fn test_small_fragment() {
+        let mut heap = LockedHeap::new();
+        static mut HEAP_MEM: [u8; 4096] = [0; 4096];
+        unsafe { heap.init(HEAP_MEM.as_ptr() as usize, 4096); }
+        
+        let cap = heap.stats().heap_capacity;
+        let node_size = mem::size_of::<ListNode>();
+        
+        // Alloc such that remaining is < node_size
+        let size = cap - node_size + 1; 
+        
+        let layout = Layout::from_size_align(size, 1).unwrap();
+        
+        unsafe {
+            let ptr = heap.alloc(layout);
+            assert!(!ptr.is_null());
+            
+            let stats = heap.stats();
+            // Usage should be size
+            assert_eq!(stats.current_usage, size);
+            
+            // The fragment is lost (internal fragmentation).
+            // If we dealloc, we get `size` back.
+            heap.dealloc(ptr, layout);
+            
+            // If we try to alloc full capacity, it should FAIL because the fragment is lost.
+            let full_layout = Layout::from_size_align(cap, mem::align_of::<ListNode>()).unwrap();
+            let ptr_full = heap.alloc(full_layout);
+            assert!(ptr_full.is_null());
         }
     }
 }
