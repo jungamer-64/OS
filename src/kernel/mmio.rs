@@ -60,8 +60,18 @@ impl<T: Copy> MmioReg<T> {
     /// 
     /// # Safety
     /// 
-    /// このレジスタのアドレスが有効であることを保証する必要があります。
+    /// - このレジスタのアドレスが有効なMMIOレジスタを指していることを保証する必要があります
+    /// - 読み取り操作が副作用を引き起こす可能性があることに注意してください
+    /// - アドレスが適切にアライメントされていることを保証する必要があります
     pub unsafe fn read(&self) -> T {
+        // オーバーフローチェック: アドレス + サイズがオーバーフローしないことを確認
+        let size = core::mem::size_of::<T>();
+        debug_assert!(
+            self.addr.checked_add(size).is_some(),
+            "MMIO read would overflow address space"
+        );
+        
+        // Safety: 呼び出し元がアドレスの有効性を保証している
         unsafe { ptr::read_volatile(self.addr as *const T) }
     }
     
@@ -69,8 +79,18 @@ impl<T: Copy> MmioReg<T> {
     /// 
     /// # Safety
     /// 
-    /// このレジスタのアドレスが有効であることを保証する必要があります。
+    /// - このレジスタのアドレスが有効なMMIOレジスタを指していることを保証する必要があります
+    /// - 書き込み操作が副作用を引き起こす可能性があることに注意してください
+    /// - アドレスが適切にアライメントされていることを保証する必要があります
     pub unsafe fn write(&mut self, value: T) {
+        // オーバーフローチェック: アドレス + サイズがオーバーフローしないことを確認
+        let size = core::mem::size_of::<T>();
+        debug_assert!(
+            self.addr.checked_add(size).is_some(),
+            "MMIO write would overflow address space"
+        );
+        
+        // Safety: 呼び出し元がアドレスの有効性を保証している
         unsafe { ptr::write_volatile(self.addr as *mut T, value) }
     }
 }

@@ -56,6 +56,7 @@ pub async fn run() {
 }
 
 fn execute_command(command: &str) {
+    use crate::kernel::driver::framebuffer::Color;
     let trimmed = command.trim();
     match trimmed {
         "help" => {
@@ -64,6 +65,7 @@ fn execute_command(command: &str) {
             println!("  echo  - Echo the input");
             println!("  clear - Clear the screen");
             println!("  rect  - Draw a test rectangle");
+            println!("  circle- Draw a test circle");
             println!("  info  - Show kernel info");
         }
         "clear" => {
@@ -73,11 +75,16 @@ fn execute_command(command: &str) {
         }
         "rect" => {
             if let Some(fb) = crate::kernel::driver::framebuffer::FRAMEBUFFER.get() {
-                use crate::kernel::driver::framebuffer::Color;
                 let mut fb = fb.lock();
-                // Draw a white rectangle at (100, 100) with size 100x100
                 fb.draw_rect(100, 100, 100, 100, Color::WHITE);
                 println!("Drawn rectangle at (100, 100)");
+            }
+        }
+        "circle" => {
+            if let Some(fb) = crate::kernel::driver::framebuffer::FRAMEBUFFER.get() {
+                let mut fb = fb.lock();
+                fb.draw_circle(200, 200, 50, Color::WHITE);
+                println!("Drawn circle at (200, 200)");
             }
         }
         "info" => {

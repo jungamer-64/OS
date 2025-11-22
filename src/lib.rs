@@ -30,9 +30,28 @@ static ALLOCATOR: kernel::mm::LockedHeap = kernel::mm::LockedHeap::new();
 ///
 /// # Safety
 ///
-/// heap_start と heap_size は有効なヒープ領域を指している必要があります。
-/// この関数は一度だけ呼ばれる必要があります。
+/// この関数を呼び出すには、以下の条件を満たす必要があります:
+/// 
+/// - `heap_start` と `heap_size` が有効なヒープ領域を指していること
+/// - [heap_start, heap_start+heap_size) の範囲が他の目的で使用されていないこと
+/// - ヒープ領域が書き込み可能であること
+/// - この関数は一度だけ呼び出されるべきであること
+/// - `heap_start` がヌルポインタでないこと
+/// - `heap_start + heap_size` がオーバーフローしないこと
 pub unsafe fn init_heap(heap_start: usize, heap_size: usize) {
+    // 基本的な妥当性チェック（デバッグビルドのみ）
+    debug_assert!(heap_start != 0, "Heap start address must not be null");
+    debug_assert!(heap_size > 0, "Heap size must be greater than zero");
+    debug_assert!(
+        heap_start.checked_add(heap_size).is_some(),
+        "Heap address range must not overflow"
+    );
+    debug_assert!(
+        heap_start >= 0x1000,
+        "Heap start address too low (potential null pointer region)"
+    );
+    
+    // Safety: 呼び出し元が上記の条件を保証している
     unsafe {
         ALLOCATOR.init(heap_start, heap_size);
     }

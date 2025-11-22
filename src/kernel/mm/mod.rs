@@ -6,7 +6,7 @@ pub mod allocator;
 pub mod frame;
 
 pub use allocator::{LockedHeap, LinkedListAllocator};
-pub use frame::{BitmapFrameAllocator, LockedFrameAllocator};
+pub use frame::BootInfoFrameAllocator;
 
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
 

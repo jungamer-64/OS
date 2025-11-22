@@ -165,9 +165,32 @@ impl LinkedListAllocator {
 
     /// 指定された領域を空きリストに追加し、隣接ブロックと結合
     /// 
+    /// # Safety
+    /// 
+    /// - addr は有効なメモリアドレスである必要があります（非ヌル）
+    /// - size は少なくとも ListNode を格納できるサイズである必要があります
+    /// - addr + size がオーバーフローしないことを保証する必要があります
+    /// - [addr, addr+size) の範囲は有効なヒープ領域内である必要があります
+    /// 
     /// アドレス順にソートされた状態を維持しながら挿入し、前後のブロックと結合する
     /// 注意: addr は ListNode のアラインメントに合わせて切り上げられます。
     unsafe fn add_free_region(&mut self, addr: usize, size: usize) {
+        // ヌルポインタチェック
+        if addr == 0 {
+            return;
+        }
+        
+        // オーバーフローチェック
+        if let Some(end) = addr.checked_add(size) {
+            // end がアドレス空間内に収まるか確認（usize::MAX を超えていないことは保証されている）
+            if end <= addr {
+                return;
+            }
+        } else {
+            // オーバーフローする場合は追加しない
+            return;
+        }
+        
         let node_align = mem::align_of::<ListNode>();
         let node_min_size = mem::size_of::<ListNode>();
 

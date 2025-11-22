@@ -68,12 +68,29 @@ pub struct VgaTextMode {
 }
 
 impl VgaTextMode {
-    /// 新しい VGA ドライバを作成（const fn ではない）
+    /// 新しい VGA ドライバを作成
+    /// 
+    /// # Safety
+    /// 
+    /// VGA_BUFFER_ADDR が有効なVGAテキストバッファを指していることを前提とします。
+    /// この関数はカーネル初期化時に一度だけ呼び出されるべきです。
     pub fn new() -> Self {
+        // VGAバッファアドレスの基本的な妥当性チェック
+        // 実際のハードウェアでは 0xB8000 が標準的なVGAテキストバッファアドレス
+        assert!(VGA_BUFFER_ADDR != 0, "VGA buffer address cannot be null");
+        assert!(VGA_BUFFER_ADDR >= 0x1000, "VGA buffer address too low");
+        assert!(
+            VGA_BUFFER_ADDR % core::mem::align_of::<Buffer>() == 0,
+            "VGA buffer address must be properly aligned"
+        );
+        
         Self {
             col: 0,
             row: 0,
             color: ColorCode::new(Color::White, Color::Black),
+            // Safety: 上記のアサーションでアドレスの基本的な妥当性を確認済み
+            // VGA_BUFFER_ADDR は定数として定義されており、カーネル初期化時に
+            // 適切なメモリマップが設定されていることが前提
             buffer: unsafe { &mut *(VGA_BUFFER_ADDR as *mut Buffer) },
         }
     }

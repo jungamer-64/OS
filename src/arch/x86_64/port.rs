@@ -5,6 +5,21 @@
 
 use core::marker::PhantomData;
 
+/// ポート番号の有効範囲
+/// 
+/// x86_64では0x0000-0xFFFFの範囲が有効。
+/// ただし、一部のポート（0x0000-0x00FF）は特権ポートとして扱われる。
+const MAX_PORT: u16 = 0xFFFF;
+
+/// ポート番号が有効な範囲内かチェック
+/// 
+/// 実際には u16 なので常に有効範囲内だが、将来の拡張性のために関数として提供。
+#[allow(clippy::absurd_extreme_comparisons)]
+#[inline]
+const fn is_valid_port(port: u16) -> bool {
+    port <= MAX_PORT
+}
+
 /// 読み書き可能な I/O ポート
 #[derive(Debug)]
 pub struct Port<T> {
@@ -14,12 +29,29 @@ pub struct Port<T> {
 
 impl<T> Port<T> {
     /// 新しいポートを作成（const 関数）
+    /// 
+    /// # Safety
+    /// 
+    /// ポート番号の妥当性チェックはコンパイル時には行えないため、
+    /// 呼び出し元がポート番号の有効性を保証する必要があります。
+    /// 
+    /// # Panics
+    /// 
+    /// ポート番号が無効な場合（理論上はu16なので発生しない）
     #[must_use]
     pub const fn new(port: u16) -> Self {
+        // コンパイル時定数アサーション（u16なので実際には常に真）
+        assert!(is_valid_port(port), "Invalid port number");
         Self {
             port,
             _phantom: PhantomData,
         }
+    }
+    
+    /// ポート番号を取得
+    #[must_use]
+    pub const fn port_number(&self) -> u16 {
+        self.port
     }
 }
 
