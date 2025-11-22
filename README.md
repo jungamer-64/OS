@@ -41,11 +41,19 @@ The kernel is designed with an architecture abstraction layer (`src/arch/`) that
 
 ### Safety & Robustness
 
+- ✅ **Type-Safe Memory Management** - New Type Pattern for addresses and sizes
+  - `PhysAddr` / `VirtAddr` - Prevents physical/virtual address confusion
+  - `LayoutSize` - Distinguishes sizes from addresses at compile time
+  - `PageFrameNumber` - Type-safe page frame operations
+  - **Zero Runtime Overhead** - All types are `#[repr(transparent)]`
+- ✅ **Strict Provenance Compliant** - Modern Rust pointer safety
+  - Uses `ptr.addr()` / `from_exposed_addr_mut()` instead of casts
+  - Preserves pointer provenance for optimizer
 - ✅ **Memory Safety** - All buffer accesses bounds-checked
 - ✅ **Error Handling** - Comprehensive Result types throughout
 - ✅ **Hardware Validation** - Multi-stage hardware presence checks
 - ✅ **Timeout Protection** - All blocking operations have timeouts
-- ✅ **Deadlock Prevention** - Documented lock ordering, interrupt disabling
+- ✅ **Deadlock Prevention** - Documented lock ordering, critical sections with interrupt flag preservation
 - ✅ **Idempotent Init** - Safe to call initialization multiple times
 - ✅ **Documented Unsafe** - All unsafe blocks have SAFETY comments explaining invariants
 
@@ -126,25 +134,51 @@ The kernel will boot and display:
 
 ## 📁 Project Structure
 
-```
-tiny_os/
+```text
+OS/
 ├── src/
 │   ├── main.rs              # Kernel entry point
-│   ├── constants.rs         # Hardware constants and config
-│   ├── init.rs              # Initialization routines
-│   ├── serial.rs            # UART serial port driver
-│   ├── vga_buffer.rs        # VGA text mode driver
-│   └── display/
-│       ├── mod.rs           # Display module exports
-│       ├── core.rs          # Output abstraction
-│       ├── boot.rs          # Boot information display
-│       └── panic.rs         # Panic handler display
+│   ├── lib.rs               # Library interface with global allocator
+│   ├── qemu.rs              # QEMU-specific exit codes
+│   ├── arch/                # Architecture abstraction layer
+│   │   ├── mod.rs           # Architecture trait definitions
+│   │   └── x86_64/          # x86_64 implementation
+│   │       ├── cpu.rs       # CPU operations, critical_section
+│   │       ├── gdt.rs       # Global Descriptor Table
+│   │       ├── interrupts.rs # Interrupt Descriptor Table
+│   │       ├── pic.rs       # Programmable Interrupt Controller
+│   │       ├── port.rs      # I/O port operations
+│   │       └── qemu.rs      # QEMU debug interface
+│   ├── errors/              # Unified error handling
+│   │   ├── mod.rs           # Error module exports
+│   │   └── unified.rs       # KernelResult, ErrorKind
+│   └── kernel/              # Core kernel functionality
+│       ├── core/            # Core abstractions
+│       │   ├── device.rs    # Device trait hierarchy
+│       │   └── mod.rs       # Core module exports
+│       ├── driver/          # Hardware drivers
+│       │   ├── framebuffer.rs # UEFI framebuffer (primary display)
+│       │   ├── keyboard.rs  # PS/2 keyboard driver
+│       │   ├── serial.rs    # UART 16550 serial port
+│       │   └── vga.rs       # VGA text mode (legacy fallback)
+│       ├── mm/              # Memory management
+│       │   ├── allocator.rs # Heap allocator (LinkedListAllocator)
+│       │   ├── frame.rs     # Physical frame allocator
+│       │   ├── paging.rs    # Page table management
+│       │   ├── types.rs     # Type-safe memory types (PhysAddr, VirtAddr, LayoutSize)
+│       │   └── mod.rs       # Memory management interface
+│       └── task/            # Async task management
+│           ├── executor.rs  # Task executor
+│           ├── keyboard.rs  # Keyboard task
+│           └── mod.rs       # Task module exports
+├── docs/                    # Documentation
+│   ├── SAFETY_GUIDELINES.md # Safety best practices (型安全化ガイド含む)
+│   └── ...                  # Other documentation
 ├── .cargo/
 │   └── config.toml          # Cargo configuration
-├── x86_64-blog_os.json      # Custom target specification
+├── x86_64-rany_os.json      # Custom target specification
 ├── Cargo.toml               # Dependencies and build config
 ├── rust-toolchain.toml      # Rust toolchain specification
-├── Makefile                 # Build automation
 └── README.md                # This file
 ```
 
@@ -186,12 +220,44 @@ main.rs
 
 ### Memory Map
 
-```
+```text
 0x00000000 - 0x000FFFFF  : Real mode area (1 MB)
 0x00100000 - ...         : Kernel code (loaded by bootloader)
 0x000B8000 - 0x000B8FA0  : VGA text buffer (80x25x2 = 4000 bytes, PC/AT legacy)
 0x000003F8 - 0x000003FF  : COM1 serial port (8 I/O ports, PC/AT standard)
 ```
+
+### Type-Safe Memory Management
+
+The kernel uses the **New Type Pattern** to eliminate entire classes of bugs at compile time:
+
+```rust
+// ❌ Before: Bug-prone primitive obsession
+fn init_heap(start: usize, size: usize);  
+init_heap(0x5000, 0x1000);  // OK
+init_heap(0x1000, 0x5000);  // Bug, but compiles!
+
+// ✅ After: Type-safe design
+fn init_heap(start: VirtAddr, size: LayoutSize);
+init_heap(VirtAddr::new(0x5000), LayoutSize::new(0x1000));  // OK
+init_heap(LayoutSize::new(0x1000), VirtAddr::new(0x5000));  // Compile error!
+```
+
+**Key Types:**
+
+- **`PhysAddr`** - Physical memory addresses
+- **`VirtAddr`** - Virtual memory addresses  
+- **`LayoutSize`** - Memory region sizes
+- **`PageFrameNumber`** - Page frame identifiers
+
+**Benefits:**
+
+- 🛡️ **Prevents Type Confusion** - Physical/virtual addresses cannot be mixed
+- 🛡️ **Prevents Argument Errors** - Size/address parameters cannot be swapped
+- ⚡ **Zero Runtime Cost** - All types use `#[repr(transparent)]`
+- 🔒 **Strict Provenance** - Uses `ptr.addr()` / `from_exposed_addr_mut()` for modern Rust pointer safety
+
+**See:** `docs/SAFETY_GUIDELINES.md` for comprehensive safety practices and type usage examples.
 
 ## 🔧 Development
 

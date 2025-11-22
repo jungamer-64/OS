@@ -2,7 +2,7 @@
 name = "tiny_os"
 version = "0.4.0"
 authors = ["jungamer-64 <your.email@example.com>"]
-edition = "2021"
+edition = "2024"
 default-run = "tiny_os"
 description = "Minimal x86_64 no_std Rust kernel with robust hardware support"
 license = "MIT OR Apache-2.0"

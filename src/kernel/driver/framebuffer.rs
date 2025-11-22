@@ -39,8 +39,15 @@ pub fn init_framebuffer(info: FrameBufferInfo, buffer: &'static mut [u8]) {
 }
 
 /// フレームバッファにアクセス
+/// 
+/// # Panics
+/// 
+/// フレームバッファが初期化されていない場合にパニックします。
+/// カーネル起動時に `init_framebuffer` を呼び出してください。
 pub fn framebuffer() -> &'static Mutex<Framebuffer> {
-    FRAMEBUFFER.get().expect("Framebuffer not initialized")
+    FRAMEBUFFER.get().expect(
+        "Framebuffer not initialized. Call init_framebuffer() during kernel initialization."
+    )
 }
 
 /// フレームバッファドライバ
@@ -322,7 +329,11 @@ fn get_char_bitmap(c: char) -> Option<&'static [u8; 16]> {
     
     if end <= FONT.len() {
         let slice = &FONT[start..end];
-        Some(slice.try_into().unwrap())
+        // Safety: スライスのサイズは常にFONT_CHAR_HEIGHT (16)バイトであり、
+        // これは[u8; FONT_CHAR_HEIGHT]に正確に変換可能
+        Some(slice.try_into().expect(
+            "Font slice size mismatch. This is a bug in font data."
+        ))
     } else {
         None
     }

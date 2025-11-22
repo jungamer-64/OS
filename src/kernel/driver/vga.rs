@@ -190,10 +190,16 @@ pub static VGA: Once<Mutex<VgaTextMode>> = Once::new();
 /// VGA ドライバを初期化
 /// 
 /// カーネル起動時に一度だけ呼び出す必要があります。
+/// 
+/// # Panics
+/// 
+/// VGAデバイスの初期化に失敗した場合にパニックします。
 pub fn init_vga() -> KernelResult<()> {
     VGA.call_once(|| {
         let mut vga = VgaTextMode::new();
-        vga.init().expect("VGA initialization failed");
+        vga.init().expect(
+            "VGA initialization failed. Check VGA hardware compatibility."
+        );
         Mutex::new(vga)
     });
     Ok(())
@@ -201,7 +207,12 @@ pub fn init_vga() -> KernelResult<()> {
 
 /// VGA ドライバにアクセス
 /// 
-/// init_vga() が呼ばれていない場合は panic します。
+/// # Panics
+/// 
+/// `init_vga()` が呼ばれていない場合にパニックします。
+/// カーネル起動時に必ず `init_vga()` を呼び出してください。
 pub fn vga() -> &'static Mutex<VgaTextMode> {
-    VGA.get().expect("VGA not initialized. Call init_vga() first.")
+    VGA.get().expect(
+        "VGA not initialized. Call init_vga() during kernel initialization."
+    )
 }

@@ -7,7 +7,7 @@ pub mod gdt;
 pub mod interrupts;
 pub mod pic;
 
-pub use cpu::X86Cpu;
+pub use cpu::{X86Cpu, InterruptFlags, critical_section};
 pub use cpu::read_timestamp;
 pub use qemu::write_debug_byte;
 pub use port::{Port, PortReadOnly, PortWriteOnly};

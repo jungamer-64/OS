@@ -1,3 +1,4 @@
+// src/lib.rs
 //! Tiny OS - 理想的な Rust カーネル
 //!
 //! trait ベースの抽象化と型安全性を最大化したカーネルアーキテクチャ
@@ -26,7 +27,17 @@ use crate::arch::{Cpu, ArchCpu};
 #[global_allocator]
 static ALLOCATOR: kernel::mm::LockedHeap = kernel::mm::LockedHeap::new();
 
+/// ヒープ初期化エラー
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeapError {
+    /// 既に初期化済み
+    AlreadyInitialized,
+}
+
 /// ヒープを初期化
+///
+/// この関数は、ヒープの初期化を一度だけ実行することを保証します。
+/// 二回目以降の呼び出しは `Err(HeapError::AlreadyInitialized)` を返します。
 ///
 /// # Safety
 ///
@@ -35,25 +46,45 @@ static ALLOCATOR: kernel::mm::LockedHeap = kernel::mm::LockedHeap::new();
 /// - `heap_start` と `heap_size` が有効なヒープ領域を指していること
 /// - [heap_start, heap_start+heap_size) の範囲が他の目的で使用されていないこと
 /// - ヒープ領域が書き込み可能であること
-/// - この関数は一度だけ呼び出されるべきであること
 /// - `heap_start` がヌルポインタでないこと
 /// - `heap_start + heap_size` がオーバーフローしないこと
-pub unsafe fn init_heap(heap_start: usize, heap_size: usize) {
+///
+/// # Errors
+///
+/// - `HeapError::AlreadyInitialized` - 既に初期化済みの場合
+///
+/// # Examples
+///
+/// ```no_run
+/// # use tiny_os::{init_heap, kernel::mm::{VirtAddr, LayoutSize}};
+/// let heap_start = unsafe { VirtAddr::new_unchecked(0x4444_4444_0000) };
+/// let heap_size = LayoutSize::new(100 * 1024); // 100 KB
+/// 
+/// unsafe {
+///     init_heap(heap_start, heap_size).expect("Failed to initialize heap");
+/// }
+/// ```
+pub unsafe fn init_heap(
+    heap_start: kernel::mm::VirtAddr, 
+    heap_size: kernel::mm::LayoutSize
+) -> Result<(), HeapError> {
     // 基本的な妥当性チェック（デバッグビルドのみ）
-    debug_assert!(heap_start != 0, "Heap start address must not be null");
-    debug_assert!(heap_size > 0, "Heap size must be greater than zero");
+    debug_assert!(heap_start.as_usize() != 0, "Heap start address must not be null");
+    debug_assert!(heap_size.as_usize() > 0, "Heap size must be greater than zero");
     debug_assert!(
-        heap_start.checked_add(heap_size).is_some(),
+        heap_start.checked_add(heap_size.as_usize()).is_some(),
         "Heap address range must not overflow"
     );
     debug_assert!(
-        heap_start >= 0x1000,
+        heap_start.as_usize() >= 0x1000,
         "Heap start address too low (potential null pointer region)"
     );
     
     // Safety: 呼び出し元が上記の条件を保証している
+    // ALLOCATOR.init内部でunsafe操作を行うが、二重初期化はここで防止される
     unsafe {
-        ALLOCATOR.init(heap_start, heap_size);
+        ALLOCATOR.init(heap_start, heap_size)
+            .map_err(|_| HeapError::AlreadyInitialized)
     }
 }
 

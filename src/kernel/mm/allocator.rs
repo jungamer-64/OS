@@ -7,21 +7,23 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 use core::mem;
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
+use super::types::{PhysAddr, VirtAddr, LayoutSize};
 
 /// ヒープ統計情報
 #[derive(Debug, Clone, Copy)]
 pub struct HeapStats {
     /// ヒープ容量（初期化時のサイズ）
-    pub heap_capacity: usize,
+    pub heap_capacity: LayoutSize,
     /// 総割り当てバイト数（累積）
-    pub total_allocated: usize,
+    pub total_allocated: LayoutSize,
     /// 総解放バイト数（累積）
-    pub total_deallocated: usize,
+    pub total_deallocated: LayoutSize,
     /// 現在の使用バイト数
-    pub current_usage: usize,
+    pub current_usage: LayoutSize,
     /// 最大使用バイト数（ピーク）
-    pub peak_usage: usize,
+    pub peak_usage: LayoutSize,
     /// 割り当て回数
     pub allocation_count: usize,
     /// 解放回数
@@ -31,33 +33,36 @@ pub struct HeapStats {
 impl HeapStats {
     const fn new() -> Self {
         Self {
-            heap_capacity: 0,
-            total_allocated: 0,
-            total_deallocated: 0,
-            current_usage: 0,
-            peak_usage: 0,
+            heap_capacity: LayoutSize::zero(),
+            total_allocated: LayoutSize::zero(),
+            total_deallocated: LayoutSize::zero(),
+            current_usage: LayoutSize::zero(),
+            peak_usage: LayoutSize::zero(),
             allocation_count: 0,
             deallocation_count: 0,
         }
     }
     
     /// 利用可能な空きメモリ（推定）
-    pub fn available(&self) -> usize {
-        self.heap_capacity.saturating_sub(self.current_usage)
+    pub fn available(&self) -> LayoutSize {
+        self.heap_capacity.checked_sub(self.current_usage)
+            .unwrap_or(LayoutSize::zero())
     }
     
     /// 使用率（0-100）
     pub fn usage_percentage(&self) -> usize {
-        if self.heap_capacity == 0 {
+        let capacity = self.heap_capacity.as_usize();
+        let usage = self.current_usage.as_usize();
+        if capacity == 0 {
             return 0;
         }
-        (self.current_usage * 100) / self.heap_capacity
+        (usage * 100) / capacity
     }
 }
 
 /// リンクリストノード（空きブロックを管理）
 struct ListNode {
-    size: usize,
+    size: LayoutSize,
     next: Option<&'static mut ListNode>,
     #[cfg(debug_assertions)]
     magic: u32, // ヒープ破損検出用マジックナンバー
@@ -67,7 +72,7 @@ struct ListNode {
 const HEAP_MAGIC: u32 = 0xDEADBEEF;
 
 impl ListNode {
-    const fn new(size: usize) -> Self {
+    const fn new(size: LayoutSize) -> Self {
         Self {
             size,
             next: None,
@@ -76,32 +81,19 @@ impl ListNode {
         }
     }
 
-    fn start_addr(&self) -> usize {
-        self as *const Self as usize
+    fn start_addr(&self) -> PhysAddr {
+        unsafe { PhysAddr::new_unchecked(self as *const Self as usize) }
     }
 
-    fn end_addr(&self) -> usize {
-        self.start_addr() + self.size
+    fn end_addr(&self) -> PhysAddr {
+        self.start_addr().checked_add(self.size.as_usize())
+            .expect("ListNode end address overflow")
     }
     
     #[cfg(debug_assertions)]
     fn verify_magic(&self) -> bool {
         self.magic == HEAP_MAGIC
     }
-}
-
-/// アドレスを指定されたアラインメントに切り上げ
-/// 
-/// # Returns
-/// 
-/// アラインされたアドレス、またはオーバーフロー/不正なアラインメントの場合は None
-fn align_up(addr: usize, align: usize) -> Option<usize> {
-    let mask = align.wrapping_sub(1);
-    // alignが2の累乗でない、または0の場合はNone
-    if align == 0 || (align & mask) != 0 {
-        return None;
-    }
-    addr.checked_add(mask).map(|n| n & !mask)
 }
 
 /// リンクリストベースのヒープアロケータ
@@ -114,7 +106,7 @@ impl LinkedListAllocator {
     /// 新しい空のアロケータを作成
     pub const fn new() -> Self {
         Self {
-            head: ListNode::new(0),
+            head: ListNode::new(LayoutSize::zero()),
             stats: HeapStats::new(),
         }
     }
@@ -125,31 +117,29 @@ impl LinkedListAllocator {
     ///
     /// `heap_start` と `heap_size` は有効なヒープ領域を指している必要があります。
     /// この関数は一度だけ呼ばれる必要があります。
-    pub unsafe fn init(&mut self, heap_start: usize, heap_size: usize) {
+    pub unsafe fn init(&mut self, heap_start: PhysAddr, heap_size: LayoutSize) {
         // ListNode のアラインメントを考慮して、実際に使える開始アドレスとサイズを計算する
         let node_align = mem::align_of::<ListNode>();
 
-        // align_up は Option を返す -> 無効なアラインメントなら初期化を中止
-        let aligned_start = match align_up(heap_start, node_align) {
+        // PhysAddr::align_up を使用（車輪の再発明を削除）
+        let aligned_start = match heap_start.align_up(node_align) {
             Some(a) => a,
-            None => {
-                // node_align が不正な値（理論的には起きない）が来た場合は初期化不可
-                return;
-            }
+            None => return, // アラインメント計算不可
         };
 
         // 切り上げで減った先頭分
-        let head_shrink = aligned_start.saturating_sub(heap_start);
+        let head_shrink = aligned_start.as_usize().saturating_sub(heap_start.as_usize());
 
         // 使えるサイズを計算
-        if heap_size <= head_shrink {
+        let heap_size_val = heap_size.as_usize();
+        if heap_size_val <= head_shrink {
             // 元サイズが小さすぎて使える領域がない
             return;
         }
-        let usable_size = heap_size - head_shrink;
+        let usable_size = LayoutSize::new(heap_size_val - head_shrink);
 
         // usable_size が ListNode を置ける最小サイズより小さいなら初期化失敗扱い
-        if usable_size < mem::size_of::<ListNode>() {
+        if usable_size.as_usize() < mem::size_of::<ListNode>() {
             return;
         }
 
@@ -174,16 +164,19 @@ impl LinkedListAllocator {
     /// 
     /// アドレス順にソートされた状態を維持しながら挿入し、前後のブロックと結合する
     /// 注意: addr は ListNode のアラインメントに合わせて切り上げられます。
-    unsafe fn add_free_region(&mut self, addr: usize, size: usize) {
+    unsafe fn add_free_region(&mut self, addr: PhysAddr, size: LayoutSize) {
+        let addr_val = addr.as_usize();
+        let size_val = size.as_usize();
+        
         // ヌルポインタチェック
-        if addr == 0 {
+        if addr_val == 0 {
             return;
         }
         
         // オーバーフローチェック
-        if let Some(end) = addr.checked_add(size) {
-            // end がアドレス空間内に収まるか確認（usize::MAX を超えていないことは保証されている）
-            if end <= addr {
+        if let Some(end) = addr_val.checked_add(size_val) {
+            // end がアドレス空間内に収まるか確認
+            if end <= addr_val {
                 return;
             }
         } else {
@@ -194,31 +187,33 @@ impl LinkedListAllocator {
         let node_align = mem::align_of::<ListNode>();
         let node_min_size = mem::size_of::<ListNode>();
 
-        // アラインメント調整
-        let aligned = match align_up(addr, node_align) {
+        // アラインメント調整 (PhysAddr::align_up 使用)
+        let aligned = match addr.align_up(node_align) {
             Some(a) => a,
             None => return,
         };
 
-        if aligned < addr { return; }
-        let shrink = aligned - addr;
-        if size <= shrink || size - shrink < node_min_size { return; }
+        let aligned_val = aligned.as_usize();
+        if aligned_val < addr_val { return; }
+        let shrink = aligned_val - addr_val;
+        if size_val <= shrink || size_val - shrink < node_min_size { return; }
         
-        let usable_size = size - shrink;
+        let usable_size = LayoutSize::new(size_val - shrink);
         let new_start = aligned;
-        // new_end is not strictly needed here as we calculate it dynamically during merge, 
-        // but let's keep it if we want to use it for checks. 
-        // Actually, the error said it's unused, so let's remove it.
 
         // 挿入位置の検索
         // current < new_region < next となる位置を探す
         let mut current = &mut self.head;
         
         while let Some(ref mut next) = current.next {
-            if next.start_addr() > new_start {
+            if next.start_addr().as_usize() > new_start.as_usize() {
                 break;
             }
-            current = current.next.as_mut().unwrap();
+            // Safety: while let条件でSomeであることが保証されている
+            current = match current.next.as_mut() {
+                Some(n) => n,
+                None => unreachable!("next was Some in while let condition"),
+            };
         }
 
         // ここで current は new_region の直前のノード（またはhead）
@@ -226,9 +221,11 @@ impl LinkedListAllocator {
 
         // Step 1: 前のブロック（current）との結合判定
         // currentがhead(ダミー)の場合は結合しない（サイズ0なので）
-        let merged_with_prev = if current.size > 0 && current.end_addr() == new_start {
+        let merged_with_prev = if !current.size.is_zero() && 
+            current.end_addr().as_usize() == new_start.as_usize() {
             // 前のブロックと結合
-            current.size += usable_size;
+            current.size = current.size.checked_add(usable_size)
+                .expect("ListNode size overflow during merge");
             true
         } else {
             false
@@ -240,7 +237,7 @@ impl LinkedListAllocator {
             // current.next を new_node.next に繋ぐ
             new_node.next = current.next.take();
             
-            let node_ptr = new_start as *mut ListNode;
+            let node_ptr = unsafe { new_start.as_mut_ptr::<ListNode>() };
             unsafe {
                 node_ptr.write(new_node);
                 current.next = Some(&mut *node_ptr);
@@ -248,17 +245,15 @@ impl LinkedListAllocator {
         }
 
         // Step 3: 後ろのブロック（next）との結合判定
-        // current は今や「結合されたブロック」または「新しく挿入されたブロック」を指している必要はない
-        // 実際には、merged_with_prevならcurrentが拡大されたブロック。
-        // そうでなければ、current.nextが新しいブロック。
-        // どちらの場合も、"着目しているブロック" と "その次のブロック" の結合を試みる必要がある。
-
         // 結合対象のブロック（prevと結合したならcurrent、そうでなければcurrent.next）
         let target_node = if merged_with_prev {
             current
         } else {
             // current.next は必ずSome(new_node)になっているはず
-            current.next.as_mut().unwrap()
+            match current.next.as_mut() {
+                Some(n) => n,
+                None => unreachable!("new_node was just inserted"),
+            }
         };
 
         // target_node と target_node.next の結合
@@ -266,9 +261,10 @@ impl LinkedListAllocator {
         let target_end = target_node.end_addr();
         
         if let Some(ref mut next) = target_node.next {
-            if target_end == next.start_addr() {
+            if target_end.as_usize() == next.start_addr().as_usize() {
                 // 次のブロックを吸収
-                target_node.size += next.size;
+                target_node.size = target_node.size.checked_add(next.size)
+                    .expect("ListNode size overflow during merge");
                 // 次の次のブロックへのポインタを取得して繋ぎ変える
                 target_node.next = next.next.take();
             }
@@ -291,13 +287,19 @@ impl LinkedListAllocator {
                 // 見つかった領域をリストから削除
                 let next = region.next.take();
                 // Safety: current.nextがSomeであることはwhile let で保証されている
-                let removed = current.next.take().unwrap();
+                let removed = match current.next.take() {
+                    Some(n) => n,
+                    None => unreachable!("current.next was Some in while let condition"),
+                };
                 current.next = next;
                 return Some((removed, alloc_start));
             }
             // 次のノードへ移動
             // Safety: while let条件でSomeであることが保証されている
-            current = current.next.as_mut().unwrap();
+            current = match current.next.as_mut() {
+                Some(n) => n,
+                None => unreachable!("current.next was Some in while let condition"),
+            };
         }
 
         None
@@ -305,20 +307,25 @@ impl LinkedListAllocator {
 
     /// 指定された領域から割り当てを試みる
     fn alloc_from_region(region: &ListNode, size: usize, align: usize) -> Result<usize, ()> {
-        let alloc_start = align_up(region.start_addr(), align).ok_or(())?;
+        let region_start = region.start_addr();
+        // PhysAddr::align_up を使用
+        let alloc_start_addr = region_start.align_up(align).ok_or(())?;
+        let alloc_start = alloc_start_addr.as_usize();
         
         // アライン後の開始位置が領域内にあるかチェック
-        if alloc_start < region.start_addr() || alloc_start > region.end_addr() {
+        let region_start_val = region_start.as_usize();
+        let region_end_val = region.end_addr().as_usize();
+        if alloc_start < region_start_val || alloc_start > region_end_val {
             return Err(());
         }
         
         let alloc_end = alloc_start.checked_add(size).ok_or(())?;
         
-        if alloc_end > region.end_addr() {
+        if alloc_end > region_end_val {
             return Err(());
         }
         
-        let excess_size = region.end_addr() - alloc_end;
+        let excess_size = region_end_val - alloc_end;
         if excess_size > 0 && excess_size < mem::size_of::<ListNode>() {
             // 残りの領域が小さすぎてノードを格納できないが、
             // 内部断片化として許容する（アロケーションに含める）
@@ -341,16 +348,24 @@ impl LinkedListAllocator {
     /// メモリ割り当て後の統計更新
     fn record_allocation(&mut self, size: usize) {
         self.stats.allocation_count += 1;
-        self.stats.total_allocated += size;
-        self.stats.current_usage += size;
-        self.stats.peak_usage = self.stats.peak_usage.max(self.stats.current_usage);
+        let size_layout = LayoutSize::new(size);
+        self.stats.total_allocated = self.stats.total_allocated.checked_add(size_layout)
+            .expect("Total allocated overflow");
+        self.stats.current_usage = self.stats.current_usage.checked_add(size_layout)
+            .expect("Current usage overflow");
+        if self.stats.current_usage.as_usize() > self.stats.peak_usage.as_usize() {
+            self.stats.peak_usage = self.stats.current_usage;
+        }
     }
     
     /// メモリ解放後の統計更新
     fn record_deallocation(&mut self, size: usize) {
         self.stats.deallocation_count += 1;
-        self.stats.total_deallocated += size;
-        self.stats.current_usage = self.stats.current_usage.saturating_sub(size);
+        let size_layout = LayoutSize::new(size);
+        self.stats.total_deallocated = self.stats.total_deallocated.checked_add(size_layout)
+            .expect("Total deallocated overflow");
+        self.stats.current_usage = self.stats.current_usage.checked_sub(size_layout)
+            .unwrap_or(LayoutSize::zero());
     }
     
     /// 統計情報を取得
@@ -362,6 +377,8 @@ impl LinkedListAllocator {
 /// Mutex で保護されたヒープアロケータ
 pub struct LockedHeap {
     inner: Mutex<LinkedListAllocator>,
+    /// 初期化済みフラグ（二重初期化防止用）
+    initialized: AtomicBool,
 }
 
 impl LockedHeap {
@@ -369,7 +386,13 @@ impl LockedHeap {
     pub const fn new() -> Self {
         Self {
             inner: Mutex::new(LinkedListAllocator::new()),
+            initialized: AtomicBool::new(false),
         }
+    }
+
+    /// ヒープが初期化済みかどうかを確認
+    pub fn is_initialized(&self) -> bool {
+        self.initialized.load(Ordering::Acquire)
     }
 
     /// ヒープを初期化
@@ -377,11 +400,28 @@ impl LockedHeap {
     /// # Safety
     ///
     /// - heap_start と heap_size は有効なヒープ領域を指している必要があります
-    /// - この関数は一度だけ呼ばれる必要があります
-    pub unsafe fn init(&self, heap_start: usize, heap_size: usize) {
-        unsafe {
-            self.inner.lock().init(heap_start, heap_size);
+    /// 
+    /// # Errors
+    ///
+    /// 既に初期化されている場合は `Err(())` を返します
+    pub unsafe fn init(&self, heap_start: VirtAddr, heap_size: LayoutSize) -> Result<(), ()> {
+        // 既に初期化済みの場合はエラー
+        if self.initialized.compare_exchange(
+            false, 
+            true, 
+            Ordering::AcqRel, 
+            Ordering::Acquire
+        ).is_err() {
+            return Err(());
         }
+        
+        // 注: 簡易実装として仮想アドレスを物理アドレスとしてキャストしている。
+        // 本来はマッピングを確認すべきだが、ストレートマップを前提とする。
+        let addr = unsafe { PhysAddr::new_unchecked(heap_start.as_usize()) };
+        unsafe {
+            self.inner.lock().init(addr, heap_size);
+        }
+        Ok(())
     }
     
     /// ヒープ統計情報を取得
@@ -402,11 +442,13 @@ unsafe impl GlobalAlloc for LockedHeap {
         if let Some((region, alloc_start)) = allocator.find_region(size, align) {
             let region_start = region.start_addr();
             let region_end = region.end_addr();
+            let region_size = region.size;
 
             // Prefixの処理
-            if alloc_start > region_start {
-                let prefix_size = alloc_start - region_start;
-                if prefix_size >= mem::size_of::<ListNode>() {
+            let region_start_val = region_start.as_usize();
+            if alloc_start > region_start_val {
+                let prefix_size = LayoutSize::new(alloc_start - region_start_val);
+                if prefix_size.as_usize() >= mem::size_of::<ListNode>() {
                     unsafe {
                         allocator.add_free_region(region_start, prefix_size);
                     }
@@ -417,19 +459,22 @@ unsafe impl GlobalAlloc for LockedHeap {
             let alloc_end = match alloc_start.checked_add(size) {
                 Some(end) => end,
                 None => {
+                    // オーバーフロー時は元の領域を戻す
                     unsafe {
-                        allocator.add_free_region(region_start, region.size);
+                        allocator.add_free_region(region_start, region_size);
                     }
                     return ptr::null_mut();
                 }
             };
 
             // Suffixの処理
-            if alloc_end < region_end {
-                let suffix_size = region_end - alloc_end;
-                if suffix_size >= mem::size_of::<ListNode>() {
+            let region_end_val = region_end.as_usize();
+            if alloc_end < region_end_val {
+                let suffix_size = LayoutSize::new(region_end_val - alloc_end);
+                if suffix_size.as_usize() >= mem::size_of::<ListNode>() {
+                    let suffix_addr = unsafe { PhysAddr::new_unchecked(alloc_end) };
                     unsafe {
-                        allocator.add_free_region(alloc_end, suffix_size);
+                        allocator.add_free_region(suffix_addr, suffix_size);
                     }
                 }
             }
@@ -450,8 +495,10 @@ unsafe impl GlobalAlloc for LockedHeap {
         let mut allocator = self.inner.lock();
         allocator.record_deallocation(size);
         
+        let addr = unsafe { PhysAddr::new_unchecked(ptr as usize) };
+        let size_layout = LayoutSize::new(size);
         unsafe {
-            allocator.add_free_region(ptr as usize, size);
+            allocator.add_free_region(addr, size_layout);
         }
     }
 }
@@ -461,7 +508,7 @@ mod tests {
     use super::*;
     use core::alloc::Layout;
 
-    // Helper to align up (since we can't find the import easily, and it's simple)
+    // Helper to align up (PhysAddrメソッドを使用するため不要だが、テスト内の生usize計算用に残す)
     fn align_up(addr: usize, align: usize) -> Option<usize> {
         let remainder = addr % align;
         if remainder == 0 {
@@ -482,15 +529,16 @@ mod tests {
             let unaligned_start = start + 1;
             let size = 4096 - 1;
             
-            heap.init(unaligned_start, size);
+            // VirtAddr::newを使用（注意: types.rsでnewが復活している前提）
+            heap.init(VirtAddr::new(unaligned_start), LayoutSize::new(size));
             
             let stats = heap.stats();
             let align = core::mem::align_of::<ListNode>();
             let aligned_start = align_up(unaligned_start, align).unwrap();
             let expected_capacity = size - (aligned_start - unaligned_start);
             
-            assert_eq!(stats.heap_capacity, expected_capacity);
-            assert!(stats.heap_capacity > 0);
+            assert_eq!(stats.heap_capacity.as_usize(), expected_capacity);
+            assert!(stats.heap_capacity.as_usize() > 0);
             
             let layout = Layout::new::<u64>();
             let ptr = heap.alloc(layout);
@@ -504,7 +552,7 @@ mod tests {
     fn test_coalescing() {
         let mut heap = LockedHeap::new();
         static mut HEAP_MEM: [u8; 4096] = [0; 4096];
-        unsafe { heap.init(HEAP_MEM.as_ptr() as usize, 4096); }
+        unsafe { heap.init(VirtAddr::new(HEAP_MEM.as_ptr() as usize), LayoutSize::new(4096)); }
 
         let layout = Layout::from_size_align(64, 16).unwrap();
 
@@ -527,10 +575,10 @@ mod tests {
             heap.dealloc(ptr3, layout);
 
             let stats = heap.stats();
-            assert_eq!(stats.current_usage, 0);
+            assert_eq!(stats.current_usage.as_usize(), 0);
             
             // Verify fragmentation is low by allocating full capacity
-            let cap = stats.heap_capacity;
+            let cap = stats.heap_capacity.as_usize();
             let full_layout = Layout::from_size_align(cap, 16).unwrap();
             let ptr_full = heap.alloc(full_layout);
             assert!(!ptr_full.is_null());
@@ -542,7 +590,7 @@ mod tests {
     fn test_prefix_suffix() {
         let mut heap = LockedHeap::new();
         static mut HEAP_MEM: [u8; 4096] = [0; 4096];
-        unsafe { heap.init(HEAP_MEM.as_ptr() as usize, 4096); }
+        unsafe { heap.init(VirtAddr::new(HEAP_MEM.as_ptr() as usize), LayoutSize::new(4096)); }
         
         let align = 256; 
         let size = 64;
@@ -554,14 +602,14 @@ mod tests {
             assert_eq!(ptr as usize % align, 0);
             
             let stats = heap.stats();
-            assert_eq!(stats.current_usage, size);
+            assert_eq!(stats.current_usage.as_usize(), size);
             
             heap.dealloc(ptr, layout);
             
             let stats_after = heap.stats();
-            assert_eq!(stats_after.current_usage, 0);
+            assert_eq!(stats_after.current_usage.as_usize(), 0);
             
-            let cap = stats_after.heap_capacity;
+            let cap = stats_after.heap_capacity.as_usize();
             let full_layout = Layout::from_size_align(cap, mem::align_of::<ListNode>()).unwrap();
             let ptr_full = heap.alloc(full_layout);
             assert!(!ptr_full.is_null());
@@ -572,9 +620,9 @@ mod tests {
     fn test_small_fragment() {
         let mut heap = LockedHeap::new();
         static mut HEAP_MEM: [u8; 4096] = [0; 4096];
-        unsafe { heap.init(HEAP_MEM.as_ptr() as usize, 4096); }
+        unsafe { heap.init(VirtAddr::new(HEAP_MEM.as_ptr() as usize), LayoutSize::new(4096)); }
         
-        let cap = heap.stats().heap_capacity;
+        let cap = heap.stats().heap_capacity.as_usize();
         let node_size = mem::size_of::<ListNode>();
         
         // Alloc such that remaining is < node_size
@@ -588,7 +636,7 @@ mod tests {
             
             let stats = heap.stats();
             // Usage should be size
-            assert_eq!(stats.current_usage, size);
+            assert_eq!(stats.current_usage.as_usize(), size);
             
             // The fragment is lost (internal fragmentation).
             // If we dealloc, we get `size` back.

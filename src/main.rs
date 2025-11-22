@@ -46,8 +46,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     tiny_os::arch::x86_64::init_idt();
     serial_print!(b"[KERNEL] IDT initialized\n");
 
-    let phys_mem_offset = boot_info.physical_memory_offset.into_option().unwrap_or(0);
-
     if let Some(framebuffer) = boot_info.framebuffer.as_mut() {
         let info = framebuffer.info();
         let buffer = framebuffer.buffer_mut();
@@ -62,22 +60,26 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let virt_mem_offset = x86_64::VirtAddr::new(phys_mem_offset);
     
     // ページング初期化
-    let mut mapper = unsafe { tiny_os::kernel::mm::paging::init(virt_mem_offset) };
+    let _mapper = unsafe { tiny_os::kernel::mm::paging::init(virt_mem_offset) };
     
     // フレームアロケータ初期化
-    let mut frame_allocator = unsafe {
+    let _frame_allocator = unsafe {
         tiny_os::kernel::mm::frame::BootInfoFrameAllocator::init(&boot_info.memory_regions)
     };
     serial_print!(b"[OK] Paging & Frame Allocator initialized\n");
 
     // ヒープ初期化
     if let Ok((heap_start_phys, heap_size)) = tiny_os::kernel::mm::init_heap(&boot_info.memory_regions) {
-        let heap_start_virt = heap_start_phys + phys_mem_offset as usize;
+        let heap_start_virt = tiny_os::kernel::mm::VirtAddr::new(heap_start_phys.as_usize() + phys_mem_offset as usize);
         // SAFETY: init_heapで取得した有効な領域を仮想アドレスに変換して使用
         unsafe {
-            tiny_os::init_heap(heap_start_virt, heap_size);
+            match tiny_os::init_heap(heap_start_virt, heap_size) {
+                Ok(()) => serial_print!(b"[OK] Heap initialized\n"),
+                Err(tiny_os::HeapError::AlreadyInitialized) => {
+                    serial_print!(b"[WARN] Heap already initialized\n");
+                }
+            }
         }
-        serial_print!(b"[OK] Heap initialized\n");
     } else {
         serial_print!(b"[FAIL] Heap initialization failed\n");
     }

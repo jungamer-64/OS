@@ -4,16 +4,18 @@
 pub mod paging;
 pub mod allocator;
 pub mod frame;
+pub mod types;
 
 pub use allocator::{LockedHeap, LinkedListAllocator};
 pub use frame::BootInfoFrameAllocator;
+pub use types::{PhysAddr, VirtAddr, LayoutSize, PageFrameNumber, MemoryError};
 
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
 
 /// ブート情報からヒープを初期化
 ///
 /// 利用可能なメモリ領域を検索し、ヒープとして初期化します。
-pub fn init_heap(regions: &MemoryRegions) -> Result<(usize, usize), &'static str> {
+pub fn init_heap(regions: &MemoryRegions) -> Result<(PhysAddr, LayoutSize), &'static str> {
     // ヒープに必要な最小サイズ (例: 100 KiB)
     const MIN_HEAP_SIZE: u64 = 100 * 1024;
 
@@ -22,8 +24,8 @@ pub fn init_heap(regions: &MemoryRegions) -> Result<(usize, usize), &'static str
         .find(|r| r.kind == MemoryRegionKind::Usable && r.end - r.start >= MIN_HEAP_SIZE)
         .ok_or("No usable memory region found for heap")?;
 
-    let heap_start = heap_region.start as usize;
-    let heap_size = (heap_region.end - heap_region.start) as usize;
+    let heap_start = PhysAddr::new(heap_region.start as usize);
+    let heap_size = LayoutSize::new((heap_region.end - heap_region.start) as usize);
 
     // グローバルアロケータを初期化
     // 注意: lib.rs で定義されている ALLOCATOR ではなく、
