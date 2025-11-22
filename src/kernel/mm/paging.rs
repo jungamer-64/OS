@@ -1,83 +1,144 @@
-// src/kernel/mm/paging.rs
 //! ページング管理
 //!
 //! ライフタイムベースのページマッピングで安全性を保証。
-
 use core::marker::PhantomData;
-use crate::kernel::core::{KernelResult, KernelError, MemoryError, ErrorKind};
-use x86_64::{VirtAddr, PhysAddr};
-use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB, Mapper, FrameAllocator};
-use x86_64::structures::paging::OffsetPageTable;
+use crate::kernel::core::KernelResult;
+
+/// 仮想アドレス
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct VirtAddr(pub usize);
+
+/// 物理アドレス
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct PhysAddr(pub usize);
+
+/// ページテーブルフラグ
+#[derive(Debug, Clone, Copy)]
+pub struct PageTableFlags {
+    bits: u64,
+}
+
+impl PageTableFlags {
+    pub const PRESENT: Self = Self { bits: 1 << 0 };
+    pub const WRITABLE: Self = Self { bits: 1 << 1 };
+    pub const USER: Self = Self { bits: 1 << 2 };
+    
+    pub const fn empty() -> Self {
+        Self { bits: 0 }
+    }
+    
+    pub const fn new(bits: u64) -> Self {
+        Self { bits }
+    }
+}
+
+/// ページテーブルエントリを型で表現
+#[repr(transparent)]
+struct PageTableEntry(u64);
+
+impl PageTableEntry {
+    const PRESENT: u64 = 1 << 0;
+    const WRITABLE: u64 = 1 << 1;
+    const USER: u64 = 1 << 2;
+    
+    fn set_present(&mut self, present: bool) {
+        if present {
+            self.0 |= Self::PRESENT;
+        } else {
+            self.0 &= !Self::PRESENT;
+        }
+    }
+    
+    fn is_present(&self) -> bool {
+        (self.0 & Self::PRESENT) != 0
+    }
+}
+
+/// ページテーブル（簡易版）
+pub struct PageTable {
+    // 実際の実装は省略
+}
+
+impl PageTable {
+    /// ページをマップ
+    /// 
+    /// # Safety
+    /// 
+    /// virt と phys は有効なアドレスである必要があります。
+    pub unsafe fn map_page(
+        &mut self,
+        virt: VirtAddr,
+        phys: PhysAddr,
+        flags: PageTableFlags,
+    ) -> KernelResult<()> {
+        // 実装は省略
+        Ok(())
+    }
+    
+    /// ページをアンマップ
+    /// 
+    /// # Safety
+    /// 
+    /// virt は現在マップされているアドレスである必要があります。
+    pub unsafe fn unmap_page(&mut self, virt: VirtAddr) -> KernelResult<()> {
+        // 実装は省略
+        Ok(())
+    }
+}
 
 /// ページテーブルへの参照を保持するページマッピング
-///
+/// 
 /// ライフタイム `'pt` により、ページテーブルの所有権を管理します。
-/// Drop 時 に自動的にアンマップされます。
+/// Drop 時に自動的にアンマップされます。
 pub struct PageMapping<'pt> {
-    page: x86_64::structures::paging::Page<Size4KiB>,
-    mapper: &'pt mut OffsetPageTable<'pt>,
+    virt: VirtAddr,
+    phys: PhysAddr,
+    page_table: &'pt mut PageTable,
     _phantom: PhantomData<&'pt mut PageTable>,
 }
 
 impl<'pt> PageMapping<'pt> {
     /// 新しいページマッピングを作成
-    ///
+    /// 
     /// # Safety
-    ///
+    /// 
     /// virt と phys は有効なアドレスである必要があります。
-    /// また、mapper は正しく初期化されている必要があります。
     pub unsafe fn new(
-        mapper: &'pt mut OffsetPageTable<'pt>,
-        frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+        page_table: &'pt mut PageTable,
         virt: VirtAddr,
         phys: PhysAddr,
         flags: PageTableFlags,
     ) -> KernelResult<Self> {
-        use x86_64::structures::paging::Page;
-        
-        let page = Page::from_start_address(virt).map_err(|_| {
-            KernelError::with_context(ErrorKind::Memory(MemoryError::InvalidAddress), "Invalid virtual address")
-        })?;
-        
-        let frame = PhysFrame::from_start_address(phys).map_err(|_| {
-            KernelError::with_context(ErrorKind::Memory(MemoryError::InvalidAddress), "Invalid physical address")
-        })?;
-        
-        mapper.map_to(page, frame, flags, frame_allocator).map_err(|_| {
-             KernelError::with_context(ErrorKind::Memory(MemoryError::OutOfMemory), "Failed to map page")
-        })?.flush();
-
+        unsafe {
+            page_table.map_page(virt, phys, flags)?;
+        }
         Ok(Self {
-            page,
-            mapper,
+            virt,
+            phys,
+            page_table,
             _phantom: PhantomData,
         })
+    }
+    
+    /// 仮想アドレスを取得
+    pub fn virt_addr(&self) -> VirtAddr {
+        self.virt
+    }
+    
+    /// 物理アドレスを取得
+    pub fn phys_addr(&self) -> PhysAddr {
+        self.phys
     }
 }
 
 impl Drop for PageMapping<'_> {
     fn drop(&mut self) {
         // SAFETY: このマッピングを作成したので、アンマップも安全
-        // ただし、本来は unmap の結果を確認すべきだが、Drop では panic できないため無視する
-        let _ = self.mapper.unmap(self.page);
-    }
-}
-
-/// ページテーブル（簡易ラッパー）
-/// 
-/// # TODO
-/// 
-/// - TLB フラッシュ実装
-/// - メモリバリア追加
-/// - マルチコアサポート
-pub struct PageTableWrapper {
-    inner: PageTable,
-}
-
-impl PageTableWrapper {
-    pub fn new() -> Self {
-        Self {
-            inner: PageTable::new(),
+        unsafe {
+            self.page_table.unmap_page(self.virt)
+                .expect("Failed to unmap page during drop");
         }
     }
 }

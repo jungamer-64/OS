@@ -1,0 +1,1 @@
+screendump kernel_screenshot.ppm

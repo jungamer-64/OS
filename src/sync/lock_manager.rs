@@ -56,7 +56,7 @@ impl LockGuard {
 
     #[cfg(debug_assertions)]
     fn read_timestamp() -> u64 {
-        crate::diagnostics::read_tsc()
+        crate::arch::read_timestamp()
     }
 
     #[cfg(not(debug_assertions))]

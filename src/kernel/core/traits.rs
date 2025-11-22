@@ -3,7 +3,7 @@
 
 use super::types::*;
 use super::result::*;
-// use alloc::boxed::Box; // Phase 4 で有効化
+use alloc::boxed::Box;
 
 /// デバイス抽象化の基本 trait
 /// 
@@ -19,6 +19,7 @@ pub trait Device {
     fn reset(&mut self) -> KernelResult<()>;
     
     /// デバイスが利用可能か確認
+    #[inline]
     fn is_available(&self) -> bool {
         true
     }
@@ -34,12 +35,15 @@ pub trait CharDevice: Device {
     /// 1バイト書き込み
     fn write_byte(&mut self, byte: u8) -> KernelResult<()>;
     
-    /// バッファを書き込み
+    /// バッファを書き込み（最適化版）
+    #[inline]
     fn write_bytes(&mut self, buf: &[u8]) -> KernelResult<usize> {
-        for &byte in buf.iter() {
+        let mut written = 0;
+        for &byte in buf {
             self.write_byte(byte)?;
+            written += 1;
         }
-        Ok(buf.len())
+        Ok(written)
     }
 }
 
@@ -57,6 +61,7 @@ pub trait BlockDevice: Device {
     fn write_block(&mut self, block: u64, buf: &[u8]) -> KernelResult<usize>;
     
     /// デバイスの総ブロック数
+    #[inline]
     fn total_blocks(&self) -> u64 {
         0 // デフォルト実装
     }
@@ -66,7 +71,7 @@ pub trait BlockDevice: Device {
 /// 
 /// スケジューラで管理される実行単位。
 /// タスクの実行状態は外部（Scheduler）が管理します。
-pub trait Task {
+pub trait Task: Send {
     /// タスク ID を取得
     fn id(&self) -> TaskId;
     
@@ -74,6 +79,7 @@ pub trait Task {
     fn priority(&self) -> Priority;
     
     /// タスク名を取得
+    #[inline]
     fn name(&self) -> &str {
         "unnamed"
     }
@@ -105,8 +111,8 @@ pub trait Scheduler {
     /// 指定されたタスクにスイッチ
     fn switch_to(&mut self, id: TaskId) -> KernelResult<()>;
     
-    // /// タスクを追加 (Phase 4 で有効化)
-    // fn add_task(&mut self, task: Box<dyn Task>) -> KernelResult<TaskId>;
+    /// タスクを追加
+    fn add_task(&mut self, task: Box<dyn Task>) -> KernelResult<TaskId>;
     
     /// タスクを削除
     fn remove_task(&mut self, id: TaskId) -> KernelResult<()>;

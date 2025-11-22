@@ -7,3 +7,4 @@ pub mod driver;
 pub mod mmio;
 pub mod mm;
 pub mod task;
+pub mod r#async;

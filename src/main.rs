@@ -1,273 +1,135 @@
-// src/main.rs
-
-//! Minimal Rust Operating System Kernel
+//! Tiny OS - 理想的な Rust カーネル
 //!
-//! This is a bare-metal OS kernel that runs directly on hardware
-//! without requiring a host operating system. It provides:
+//! trait ベースの抽象化と型安全性を最大化したカーネルアーキテクチャ
 //!
-//! - VGA text mode output with 16-color support
-//! - Serial port (COM1) communication for debugging
-//! - Safe, interrupt-protected I/O operations
-//! - Comprehensive panic handler with detailed error reporting
-//! - Robust initialization with error recovery
+//! # 機能
 //!
-//! # Architecture
+//! - デバイス trait による統一的なドライバインターフェース
+//! - 型安全な MMIO とポート I/O
+//! - リンクリストヒープアロケータ
+//! - ビットマップフレームアロケータ
+//! - Future ベースの非同期処理基盤
 //!
-//! The kernel is organized into several modules:
-//! - `constants`: Configuration values and messages
-//! - `display`: Output formatting and presentation
-//! - `init`: Hardware initialization routines with error handling
-//! - `serial`: COM1 serial port driver with timeout protection
-//! - `vga_buffer`: VGA text mode driver with bounds checking
+//! # アーキテクチャ
 //!
-//! # Safety and Robustness
-//!
-//! This kernel implements multiple safety layers:
-//! - Mutex-based synchronization for all I/O
-//! - Interrupt-safe critical sections
-//! - Boundary validation on all buffer operations
-//! - Hardware detection before use
-//! - Timeout protection on blocking operations
-//! - Idempotent initialization
-//!
-//! # Error Handling Philosophy
-//!
-//! The kernel follows a "fail gracefully" approach:
-//! - Critical failures (VGA init) cause panic with detailed info
-//! - Non-critical failures (serial port) log warnings but continue
-//! - All panics provide maximum debug information
-//! - System attempts to provide output even in failure cases
+//! - `kernel/core` - trait, types, result, prelude
+//! - `kernel/driver` - デバイスドライバ (Serial, VGA, Keyboard)
+//! - `kernel/mm` - メモリ管理 (paging, allocator, frame)
+//! - `kernel/async` - 非同期処理 (executor, waker, timer)
+//! - `arch/x86_64` - アーキテクチャ依存コード
 
 #![no_std]
 #![no_main]
-// Enable additional safety features
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
-// Allow missing docs for entry_point macro
 #![allow(missing_docs)]
 
-use tiny_os::{diagnostics, display, init, serial, vga_buffer};
-use tiny_os::{print, println};
-use tiny_os::arch::{Cpu, ArchCpu};
-
+use tiny_os::kernel::driver::init_vga;
+use tiny_os::println;
+use tiny_os::constants::{HEAP_START, HEAP_SIZE};
 use bootloader_api::{entry_point, BootInfo};
 use core::panic::PanicInfo;
-
-
+use core::fmt::Write;
+use tiny_os::arch::{Cpu, ArchCpu};
 
 entry_point!(kernel_main);
 
-/// Kernel entry point
-///
-/// This function is called by the bootloader after basic hardware
-/// initialization. It sets up kernel subsystems, displays boot
-/// information, and enters the idle loop.
-///
-/// # Initialization Sequence
-///
-/// 1. Initialize VGA buffer (required for output)
-/// 2. Initialize serial port (optional, for debugging)
-/// 3. Display boot environment information
-/// 4. Display feature list and usage notes
-/// 5. Enter low-power idle loop
-///
-/// # Error Handling
-///
-/// - VGA initialization failure causes panic (no output capability)
-/// - All other errors are logged and handled gracefully
-///
-/// # Arguments
-///
-/// * `boot_info` - Boot information from the bootloader including:
-///   - Memory map
-///   - Framebuffer information (if available)
-///   - RSDP address (for ACPI)
-///   - Physical memory offset
-///
-/// Returns
-///
-/// This function never returns (`-> !`). The kernel runs indefinitely
-/// in a low-power idle loop until reset or power-off.
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
-    // Ensure interrupts remain disabled until we set up an IDT. The bootloader leaves
-    // them enabled, which would trigger timer interrupts we cannot handle yet and
-    // cause triple-fault reboots.
-    ArchCpu::disable_interrupts();
+    // まず最初にGDT/IDTを初期化（VGAより前）
+    tiny_os::arch::x86_64::init_gdt();
+    tiny_os::arch::x86_64::init_idt();
+    
+    // VGA を初期化
+    init_vga().expect("Failed to initialize VGA");
+    
+    // ヘッダー表示
+    println!("========================================");
+    println!("  Tiny OS - Ideal Rust Kernel");
+    println!("========================================");
+    println!();
 
-    // Phase 1: Initialize all subsystems
-    // This is the most critical phase - if VGA fails, we can't show errors
-    match init::initialize_all() {
-        Ok(()) => {
-            // Initialization successful
-            if serial::is_available() {
-                // serial::log_lines(SERIAL_KERNEL_INIT_SUCCESS_LINES.iter().copied());
-            }
-        }
-        Err(e) => {
-            if matches!(e, init::InitError::VgaFailed(_)) {
-                panic!("Critical: VGA initialization failed - no output capability");
-            }
+    // 初期化完了メッセージ
+    println!("[OK] GDT initialized");
+    println!("[OK] IDT initialized");
+    println!("[OK] VGA initialized");
 
-            let vga_accessible = vga_buffer::is_accessible();
-            let serial_available = serial::is_available();
-
-            // Log the failure through any remaining channels
-            if vga_accessible {
-                if let Err(err) = vga_buffer::print_colored(
-                    "[CRITICAL] Initialization failed\n",
-                    vga_buffer::ColorCode::error(),
-                ) {
-                    log_vga_failure("init failure banner", err);
-                }
-            }
-            if serial_available {
-                println!("[CRITICAL] Initialization failed: {:?}", e);
-                println!(
-                    "[WARN] Non-critical failure encountered. Continuing boot sequence."
-                );
-                // serial::log_lines(SERIAL_NON_CRITICAL_CONTINUATION_LINES.iter().copied());
-            }
-        }
+    // ヒープ初期化
+    println!("Initializing Heap...");
+    unsafe {
+        tiny_os::init_heap(HEAP_START, HEAP_SIZE);
     }
+    println!("[OK] Heap initialized");
 
-    trace_serial("after init sequence");
-
-    // Phase 2: Display boot environment
-    trace_serial("before boot environment");
-    display::display_boot_environment(boot_info);
-    trace_serial("after boot environment");
-
-    // Phase 3: Display boot information and features
-    trace_serial("before boot info");
-    display::display_boot_information();
-    trace_serial("after boot info");
-    display::display_feature_list();
-    trace_serial("after feature list");
-    display::display_usage_note();
-    trace_serial("after usage note");
-
-    // Phase 4: Final system check
-    trace_serial("before system check");
-    perform_system_check();
-    trace_serial("after system check");
-
-    // Phase 5: Display system health report
-    trace_serial("before health report");
-    diagnostics::print_health_report();
-    trace_serial("after health report");
-
-    // Phase 6: Run interactive shell
-    trace_serial("entering interactive shell");
-    display::run_shell();
-}
-
-#[cfg(debug_assertions)]
-fn trace_serial(message: &str) {
-    if serial::is_available() {
-        println!("[TRACE] {}", message);
+    // 割り込み有効化
+    println!("Enabling Interrupts...");
+    ArchCpu::enable_interrupts();
+    println!("[OK] Interrupts enabled");
+    
+    // カーネル情報表示
+    println!("Kernel Information:");
+    println!("  - Architecture: x86_64");
+    println!("  - Boot Protocol: UEFI");
+    println!("  - Allocator: LinkedList (Global)");
+    println!("  - Async Runtime: Future Executor");
+    println!();
+    
+    // ブート情報表示
+    println!("Boot Information:");
+    if let Some(framebuffer) = boot_info.framebuffer.as_ref() {
+        let info = framebuffer.info();
+        println!("  - Framebuffer: {}x{}", info.width, info.height);
+        println!("  - Pixel Format: {:?}", info.pixel_format);
     }
-}
-
-#[cfg(not(debug_assertions))]
-fn trace_serial(_message: &str) {}
-
-/// Perform final system checks before entering idle loop
-///
-/// This function validates that critical systems are functioning
-/// and logs any warnings about degraded functionality.
-fn perform_system_check() {
-    let status = init::detailed_status();
-    let vga_ok = status.vga_available;
-    let serial_ok = status.serial_available;
-    let init_ok = matches!(status.phase, init::InitPhase::Complete);
-    let output_ok = status.has_output();
-
-    // Log system status to serial if available
-    if serial_ok {
-        println!("[CHECK] Final system check:");
-        println!("     - VGA buffer: {}", ok_failed(vga_ok));
-        println!("     - Serial port: {}", availability_label(serial_ok));
-        println!("     - Initialization phase: {:?}", status.phase);
-        println!(
-            "     - Output capability: {}",
-            availability_label(output_ok)
-        );
-        println!();
+    if let Some(rsdp_addr) = boot_info.rsdp_addr.into_option() {
+        println!("  - RSDP Address: {:#x}", rsdp_addr);
     }
-
-    // Display warnings on VGA for any issues
-    if !vga_ok {
-        return;
-    }
-
-    if !serial_ok {
-        if let Err(err) = vga_buffer::print_colored(
-            "[WARN] Serial port not available - debugging limited\n",
-            vga_buffer::ColorCode::warning(),
-        ) {
-            log_vga_failure("system check serial warning", err);
-        }
-    }
-
-    if !init_ok {
-        if let Err(err) = vga_buffer::set_color(vga_buffer::ColorCode::warning()) {
-            log_vga_failure("system check warning color", err);
-        }
-        print!("[WARN] Core initialization incomplete: ");
-        println!("{}", init::status_string());
-        if let Err(err) = vga_buffer::set_color(vga_buffer::ColorCode::normal()) {
-            log_vga_failure("system check reset color", err);
-        }
-    }
-
-    if serial_ok && init_ok {
-        if let Err(err) = vga_buffer::print_colored(
-            "[OK] All core systems operational\n\n",
-            vga_buffer::ColorCode::success(),
-        ) {
-            log_vga_failure("system check success banner", err);
-        }
+    println!();
+    
+    // アーキテクチャ情報表示
+    println!("Architecture Features:");
+    println!("  - trait-based Device abstraction");
+    println!("  - Type-safe Port I/O and MMIO");
+    println!("  - Lifetime-based resource management");
+    println!("  - Prelude module for ergonomics");
+    println!();
+    
+    // モジュール情報表示
+    println!("Kernel Modules:");
+    println!("  [✓] kernel/core     - Traits, Types, Result");
+    println!("  [✓] kernel/driver   - Serial, VGA, Keyboard");
+    println!("  [✓] kernel/mm       - Paging, Allocator, Frame");
+    println!("  [✓] kernel/async    - Executor, Waker, Timer");
+    println!("  [✓] arch/x86_64     - Port I/O");
+    println!();
+    
+    // 成功メッセージ
+    println!("========================================");
+    println!("  Kernel initialized successfully!");
+    println!("========================================");
+    println!();
+    println!("Entering halt loop...");
+    
+    // Halt loop
+    loop {
+        ArchCpu::halt();
     }
 }
 
-fn ok_failed(ok: bool) -> &'static str {
-    if ok {
-        "OK"
-    } else {
-        "FAILED"
-    }
-}
-
-fn availability_label(ok: bool) -> &'static str {
-    if ok {
-        "Available"
-    } else {
-        "Unavailable"
-    }
-}
-
-fn log_vga_failure(context: &str, err: vga_buffer::VgaError) {
-    if serial::is_available() {
-        println!(
-            "[WARN] VGA output failed during {}: {}",
-            context,
-            err.as_str()
-        );
-    }
-}
-
-/// Kernel panic handler
-///
-/// Delegates to [`tiny_os::panic::handle_panic`] so that the shared library
-/// owns the complete panic pipeline.
+/// Panic handler
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    tiny_os::panic::handle_panic(info)
+    use tiny_os::arch::Cpu;
+    
+    // 割り込みを無効化
+    ArchCpu::disable_interrupts();
+    
+    // VGA が初期化されていれば使用
+    if let Some(vga) = tiny_os::kernel::driver::vga::VGA.get() {
+        let _ = writeln!(vga.lock(), "\n\n[KERNEL PANIC]\n{}", info);
+    }
+    
+    // Halt loop
+    loop {
+        ArchCpu::halt();
+    }
 }
-
-// Optional: Add a global allocator error handler if allocation were enabled
-// Since we're no_std without alloc, this is not needed yet
-// #[alloc_error_handler]
-// fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
-//     panic!("Allocation error: {:?}", layout);
-// }

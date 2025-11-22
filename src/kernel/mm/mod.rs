@@ -4,3 +4,6 @@
 pub mod paging;
 pub mod allocator;
 pub mod frame;
+
+pub use allocator::{LockedHeap, LinkedListAllocator};
+pub use frame::{BitmapFrameAllocator, LockedFrameAllocator};

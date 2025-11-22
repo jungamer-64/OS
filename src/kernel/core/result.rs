@@ -17,23 +17,45 @@ pub struct KernelError {
 
 impl KernelError {
     /// 新しいエラーを作成
+    #[inline]
     pub const fn new(kind: ErrorKind) -> Self {
         Self { kind, context: None }
     }
     
     /// コンテキスト情報付きエラーを作成
+    #[inline]
     pub const fn with_context(kind: ErrorKind, ctx: &'static str) -> Self {
         Self { kind, context: Some(ctx) }
     }
     
     /// エラー種類を取得
-    pub fn kind(&self) -> &ErrorKind {
+    #[inline]
+    pub const fn kind(&self) -> &ErrorKind {
         &self.kind
     }
     
     /// コンテキストを取得
-    pub fn context(&self) -> Option<&'static str> {
+    #[inline]
+    pub const fn context(&self) -> Option<&'static str> {
         self.context
+    }
+    
+    /// デバイスエラーか確認
+    #[inline]
+    pub const fn is_device_error(&self) -> bool {
+        matches!(self.kind, ErrorKind::Device(_))
+    }
+    
+    /// メモリエラーか確認
+    #[inline]
+    pub const fn is_memory_error(&self) -> bool {
+        matches!(self.kind, ErrorKind::Memory(_))
+    }
+    
+    /// タスクエラーか確認
+    #[inline]
+    pub const fn is_task_error(&self) -> bool {
+        matches!(self.kind, ErrorKind::Task(_))
     }
 }
 
@@ -111,24 +133,28 @@ impl fmt::Display for KernelError {
 }
 
 impl From<DeviceError> for KernelError {
+    #[inline]
     fn from(e: DeviceError) -> Self {
         KernelError::new(ErrorKind::Device(e))
     }
 }
 
 impl From<MemoryError> for KernelError {
+    #[inline]
     fn from(e: MemoryError) -> Self {
         KernelError::new(ErrorKind::Memory(e))
     }
 }
 
 impl From<TaskError> for KernelError {
+    #[inline]
     fn from(e: TaskError) -> Self {
         KernelError::new(ErrorKind::Task(e))
     }
 }
 
 impl From<ErrorKind> for KernelError {
+    #[inline]
     fn from(kind: ErrorKind) -> Self {
         KernelError::new(kind)
     }

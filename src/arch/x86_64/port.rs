@@ -36,7 +36,7 @@ impl Port<u8> {
             core::arch::asm!(
                 "in al, dx",
                 in("dx") self.port,
-                lateout("al") value,
+                out("al") value,
                 options(nomem, nostack, preserves_flags)
             );
         }
@@ -70,7 +70,7 @@ impl Port<u16> {
             core::arch::asm!(
                 "in ax, dx",
                 in("dx") self.port,
-                lateout("ax") value,
+                out("ax") value,
                 options(nomem, nostack, preserves_flags)
             );
         }
@@ -99,7 +99,7 @@ impl Port<u32> {
             core::arch::asm!(
                 "in eax, dx",
                 in("dx") self.port,
-                lateout("eax") value,
+                out("eax") value,
                 options(nomem, nostack, preserves_flags)
             );
         }
@@ -145,7 +145,7 @@ impl PortReadOnly<u8> {
             core::arch::asm!(
                 "in al, dx",
                 in("dx") self.port,
-                lateout("al") value,
+                out("al") value,
                 options(nomem, nostack, preserves_flags)
             );
         }
@@ -162,7 +162,7 @@ impl PortReadOnly<u16> {
             core::arch::asm!(
                 "in ax, dx",
                 in("dx") self.port,
-                lateout("ax") value,
+                out("ax") value,
                 options(nomem, nostack, preserves_flags)
             );
         }
@@ -179,7 +179,7 @@ impl PortReadOnly<u32> {
             core::arch::asm!(
                 "in eax, dx",
                 in("dx") self.port,
-                lateout("eax") value,
+                out("eax") value,
                 options(nomem, nostack, preserves_flags)
             );
         }

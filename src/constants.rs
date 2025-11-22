@@ -395,3 +395,18 @@ mod tests {
         assert_eq!(expected_baud, 38400);
     }
 }
+
+// ============================================================================
+// Memory Configuration
+// ============================================================================
+
+/// Heap start address
+///
+/// Arbitrary address in the higher half of the address space.
+/// Must be large enough to not overlap with kernel code or stack.
+pub const HEAP_START: usize = 0x_4444_4444_0000;
+
+/// Heap size
+///
+/// Initial heap size: 100 KiB.
+pub const HEAP_SIZE: usize = 100 * 1024;

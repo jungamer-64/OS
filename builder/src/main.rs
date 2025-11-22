@@ -10,7 +10,7 @@ fn main() {
         .arg("--package").arg("tiny_os")
         .arg("--bin").arg("tiny_os")
         .arg("--target").arg("x86_64-blog_os.json")
-        .arg("-Z").arg("build-std=core,compiler_builtins")
+        .arg("-Z").arg("build-std=core,compiler_builtins,alloc")
         .arg("-Z").arg("build-std-features=compiler-builtins-mem");
 
     let status = build_cmd.status().expect("failed to execute cargo build");
@@ -43,7 +43,7 @@ fn main() {
     let mut qemu = Command::new("qemu-system-x86_64");
     qemu.arg("-drive").arg(format!("format=raw,file={}", disk_image.display()));
     
-    let ovmf_path = Path::new("ovmf-x64/OVMF-pure-efi.fd");
+    let ovmf_path = Path::new("ovmf-x64/OVMF.fd");
     if ovmf_path.exists() {
         qemu.arg("-bios").arg(ovmf_path);
     } else {
