@@ -8,6 +8,21 @@ use bootloader_api::info::{FrameBufferInfo, PixelFormat};
 use core::fmt;
 use spin::{Mutex, Once};
 
+/// Represents an RGB color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl Color {
+    /// Basic white color.
+    pub const WHITE: Color = Color { r: 255, g: 255, b: 255 };
+    /// Basic black color.
+    pub const BLACK: Color = Color { r: 0, g: 0, b: 0 };
+}
+
 /// グローバルフレームバッファドライバ
 pub static FRAMEBUFFER: Once<Mutex<Framebuffer>> = Once::new();
 
@@ -86,7 +101,7 @@ impl Framebuffer {
         self.buffer[total_bytes - bytes_per_line..].fill(0);
     }
 
-    fn write_pixel(&mut self, x: usize, y: usize, intensity: u8) {
+    fn write_pixel(&mut self, x: usize, y: usize, color: Color) {
         if x >= self.info.width || y >= self.info.height {
             return;
         }
@@ -104,42 +119,44 @@ impl Framebuffer {
         match self.info.pixel_format {
             PixelFormat::Rgb => {
                 if bytes_per_pixel >= 3 {
-                    dest[0] = intensity;
-                    dest[1] = intensity;
-                    dest[2] = intensity;
+                    dest[0] = color.r;
+                    dest[1] = color.g;
+                    dest[2] = color.b;
                 }
             }
             PixelFormat::Bgr => {
                 if bytes_per_pixel >= 3 {
-                    dest[0] = intensity;
-                    dest[1] = intensity;
-                    dest[2] = intensity;
+                    dest[0] = color.b;
+                    dest[1] = color.g;
+                    dest[2] = color.r;
                 }
             }
             PixelFormat::U8 => {
                 if bytes_per_pixel >= 1 {
-                    dest[0] = intensity;
+                    // Simple grayscale conversion
+                    dest[0] = ((color.r as u16 + color.g as u16 + color.b as u16) / 3) as u8;
                 }
             }
             _ => {
+                // Default to RGB for unknown formats, hoping for the best
                 if bytes_per_pixel >= 3 {
-                    dest[0] = intensity;
-                    dest[1] = intensity;
-                    dest[2] = intensity;
+                    dest[0] = color.r;
+                    dest[1] = color.g;
+                    dest[2] = color.b;
                 }
             }
         }
     }
 
-    pub fn draw_rect(&mut self, x: usize, y: usize, width: usize, height: usize, intensity: u8) {
+    pub fn draw_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: Color) {
         for i in 0..width {
             for j in 0..height {
-                self.write_pixel(x + i, y + j, intensity);
+                self.write_pixel(x + i, y + j, color);
             }
         }
     }
 
-    pub fn draw_line(&mut self, x1: usize, y1: usize, x2: usize, y2: usize, intensity: u8) {
+    pub fn draw_line(&mut self, x1: usize, y1: usize, x2: usize, y2: usize, color: Color) {
         let mut x = x1 as isize;
         let mut y = y1 as isize;
         let dx = (x2 as isize - x1 as isize).abs();
@@ -149,7 +166,7 @@ impl Framebuffer {
         let mut err = dx + dy;
 
         loop {
-            self.write_pixel(x as usize, y as usize, intensity);
+            self.write_pixel(x as usize, y as usize, color);
             if x == x2 as isize && y == y2 as isize { break; }
             let e2 = 2 * err;
             if e2 >= dy {
@@ -175,9 +192,9 @@ impl Framebuffer {
                 for (y, row_byte) in bitmap.iter().enumerate() {
                     for x in 0..8 {
                         if (row_byte >> x) & 1 != 0 {
-                            self.write_pixel(self.x_pos + x, self.y_pos + y, 255);
+                            self.write_pixel(self.x_pos + x, self.y_pos + y, Color::WHITE);
                         } else {
-                            self.write_pixel(self.x_pos + x, self.y_pos + y, 0);
+                            self.write_pixel(self.x_pos + x, self.y_pos + y, Color::BLACK);
                         }
                     }
                 }

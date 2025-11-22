@@ -73,9 +73,10 @@ fn execute_command(command: &str) {
         }
         "rect" => {
             if let Some(fb) = crate::kernel::driver::framebuffer::FRAMEBUFFER.get() {
+                use crate::kernel::driver::framebuffer::Color;
                 let mut fb = fb.lock();
                 // Draw a white rectangle at (100, 100) with size 100x100
-                fb.draw_rect(100, 100, 100, 100, 255);
+                fb.draw_rect(100, 100, 100, 100, Color::WHITE);
                 println!("Drawn rectangle at (100, 100)");
             }
         }

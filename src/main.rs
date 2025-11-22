@@ -8,12 +8,19 @@
 #![warn(missing_docs)]
 #![allow(missing_docs)]
 
-use bootloader_api::{entry_point, BootInfo};
+use bootloader_api::{entry_point, BootInfo, BootloaderConfig};
 use core::panic::PanicInfo;
 use tiny_os::arch::{Cpu, ArchCpu};
 use x86_64::instructions::port::PortWriteOnly;
 
-entry_point!(kernel_main);
+/// Bootloader configuration.
+pub static BOOTLOADER_CONFIG: BootloaderConfig = {
+    let config = BootloaderConfig::new_default();
+    // ここでマッピングなどの設定をカスタマイズできる
+    config
+};
+
+entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     macro_rules! serial_print {

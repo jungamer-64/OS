@@ -2,14 +2,12 @@
 
 //! Unified error handling module
 //!
-//! This module provides both legacy error types (for backward compatibility)
-//! and unified error types (for new code).
+//! This module provides a consistent error handling approach across
+//! all kernel subsystems.
 //!
-//! # Migration Guide
+//! # Usage
 //!
-//! ## For New Code
-//!
-//! Use the unified error types with the `Unified` prefix:
+//! Use the unified error types:
 //!
 //! ```no_run
 //! use tiny_os::errors::{UnifiedResult, UnifiedKernelError};
@@ -19,27 +17,12 @@
 //!     Ok(())
 //! }
 //! ```
-//!
-//! ## For Legacy Code
-//!
-//! Legacy error types remain available through their original paths:
-//! - `vga_buffer::writer::VgaError`
-//! - `init::InitError`
-//! - `serial::SerialError`
-//!
-//! # Error Conversion
-//!
-//! All legacy error types implement `Into<UnifiedKernelError>` for seamless
-//! migration to the unified error handling system.
 
 pub mod unified;
 
-// Re-export unified types for new code
+// Re-export unified types
 pub use unified::{
     DisplayError as UnifiedDisplayError, ErrorContext, InitError as UnifiedInitError,
     KernelError as UnifiedKernelError, Result as UnifiedResult, SerialError as UnifiedSerialError,
     VgaError as UnifiedVgaError,
 };
-
-// Legacy error types remain available via their original paths
-// (vga_buffer::writer::VgaError, init::InitError, etc.)

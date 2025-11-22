@@ -14,12 +14,8 @@
 
 extern crate alloc;
 
-pub mod constants;
 pub mod errors;
-pub mod memory;
-pub mod panic;
 pub mod qemu;
-pub mod sync;
 pub mod arch;
 pub mod kernel;
 

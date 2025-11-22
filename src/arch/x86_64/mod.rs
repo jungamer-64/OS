@@ -2,9 +2,6 @@
 
 pub mod cpu;
 pub mod qemu;
-// pub mod serial;  // レガシー - kernel::driver::serial を使用
-// pub mod vga;     // レガシー -kernel::driver::vga を使用
-// pub mod keyboard; // レガシー - kernel::driver::keyboard を使用
 pub mod port;
 pub mod gdt;
 pub mod interrupts;
