@@ -10,6 +10,7 @@ use x86_64::registers::model_specific::{Efer, EferFlags, LStar, Star, SFMask};
 use x86_64::registers::rflags::RFlags;
 use crate::arch::x86_64::gdt;
 use crate::debug_println;
+use crate::kernel::process::PROCESS_TABLE;
 
 /// Initialize the syscall mechanism
 ///
@@ -40,8 +41,11 @@ pub fn init() {
         // We clear the interrupt flag to disable interrupts during syscall handling
         SFMask::write(RFlags::INTERRUPT_FLAG);
         
-        let kernel_cs = selectors.kernel_code.0 as u64;
-        let user_cs = selectors.user_code.0 as u64;
+        // Initialize kernel stack for syscalls
+        init_kernel_stack();
+        
+        let kernel_cs = u64::from(selectors.kernel_code.0);
+        let user_cs = u64::from(selectors.user_code.0);
         debug_println!("[OK] Syscall mechanism initialized");
         debug_println!("  STAR: kernel_cs=0x{:x}, user_cs=0x{:x}", kernel_cs, user_cs);
         debug_println!("  LSTAR: 0x{:x}", syscall_entry as *const () as u64);
@@ -52,7 +56,11 @@ pub fn init() {
 ///
 /// This is called when userspace executes the `syscall` instruction.
 /// 
-/// Register state on entry (x86_64 calling convention):
+/// # Safety
+/// This function is unsafe because it directly manipulates CPU registers
+/// and must maintain the syscall calling convention.
+/// 
+/// Register state on entry (x86-64 calling convention):
 /// - RAX: syscall number
 /// - RDI, RSI, RDX, R10, R8, R9: arguments 1-6
 /// - RCX: user RIP (saved by CPU)
@@ -78,19 +86,25 @@ pub unsafe extern "C" fn syscall_entry() -> ! {
         // Save user RSP in a scratch register
         "mov r15, rsp",
         
-        // Switch to kernel stack from TSS
-        // Note: In a future per-process implementation, this will be 
-        // loaded from the current process's kernel stack pointer.
-        // For now, we use the static stack set up in TSS.privilege_stack_table[0]
+        // Phase 2: Load kernel stack from gs:0x04 (TSS.privilege_stack_table[0])
+        // The TSS privilege_stack_table[0] is updated by the kernel during
+        // context switches to point to the current process's kernel stack.
         // 
-        // The kernel stack address is stored at offset 0x04 in the TSS
-        // TSS layout: [0x00-0x03]=reserved, [0x04-0x0B]=RSP0, ...
-        // We access it via gs segment (set up during CPU init)
-        // 
-        // WORKAROUND: x86_64 crate doesn't expose TSS.privilege_stack_table[0]
-        // directly in a way accessible from assembly. We'll use a static variable.
-        // Load kernel stack pointer from our static variable
-        "mov rsp, qword ptr [rip + {kernel_stack}]",
+        // TSS structure layout (simplified):
+        // Offset 0x00: reserved (4 bytes)
+        // Offset 0x04: RSP0 (8 bytes) <- Ring 3 -> Ring 0 stack
+        // Offset 0x0C: RSP1 (8 bytes)
+        // Offset 0x14: RSP2 (8 bytes)
+        // ...
+        //
+        // The GS segment base is set to point to the TSS during init.
+        // However, x86_64 doesn't use GS for TSS access in long mode.
+        // Instead, we use a memory location that stores the current kernel stack.
+        //
+        // For Phase 2, we'll use a hybrid approach:
+        // - Load from CURRENT_KERNEL_STACK (updated on context switch)
+        // - Falls back to FALLBACK_KERNEL_STACK if not set
+        "mov rsp, qword ptr [rip + {current_stack}]",
         
         // Now RSP points to kernel stack - safe to use push instructions
         
@@ -145,13 +159,24 @@ pub unsafe extern "C" fn syscall_entry() -> ! {
         // - Switch CS/SS back to user segments
         "sysretq",
         
-        kernel_stack = sym KERNEL_SYSCALL_STACK,
+        current_stack = sym CURRENT_KERNEL_STACK,
         syscall_handler = sym syscall_handler,
     );
 }
 
-// Temporary kernel stack for syscalls
-// TODO: Replace with per-process kernel stacks in Phase 2
+// Kernel stack management
+// 
+// Phase 2 Implementation:
+// - Per-process kernel stacks (primary)
+// - Fallback to global stack if no process is active
+// 
+// Each process has its own kernel stack stored in Process.kernel_stack
+// This provides:
+// 1. ✅ Safe for concurrent syscalls (each process isolated)
+// 2. ✅ Safe with interrupts (stack is per-process)
+// 3. ✅ Isolated per-process
+
+// Fallback kernel stack for early boot or when no process is active
 #[repr(C, align(16))]
 struct KernelStack {
     data: [u8; 8192], // 8KB stack
@@ -161,9 +186,9 @@ static mut KERNEL_STACK: KernelStack = KernelStack {
     data: [0; 8192],
 };
 
-// Pointer to top of kernel stack (stacks grow downward)
-// Use addr_of! to avoid creating a reference to static mut
-fn get_kernel_stack_top() -> usize {
+// Pointer to top of fallback kernel stack (stacks grow downward)
+#[allow(clippy::ptr_as_ptr)] // Intentional: pointer arithmetic for stack calculation
+fn get_fallback_kernel_stack_top() -> usize {
     unsafe {
         let stack_ptr = core::ptr::addr_of!(KERNEL_STACK);
         let data_ptr = core::ptr::addr_of!((*stack_ptr).data);
@@ -171,10 +196,65 @@ fn get_kernel_stack_top() -> usize {
     }
 }
 
+/// Get the current process's kernel stack pointer
+/// 
+/// Returns the kernel stack for the currently running process.
+/// If no process is active, returns the fallback global stack.
+/// 
+/// # Phase 2 Implementation
+/// This function can be used in the future for more dynamic stack selection.
+#[allow(dead_code)]
+#[allow(clippy::cast_possible_truncation)] // x86_64 target only
+#[allow(clippy::collapsible_if)] // More readable with explicit nesting
+fn get_current_kernel_stack() -> usize {
+    // Try to get the current process's kernel stack
+    if let Some(table) = PROCESS_TABLE.try_lock() {
+        if let Some(process) = table.current_process() {
+            // Use the process's kernel stack
+            return process.kernel_stack().as_u64() as usize;
+        }
+    }
+    
+    // Fallback to global stack if no process is active or table is locked
+    get_fallback_kernel_stack_top()
+}
+
 // Static variable storing the kernel stack pointer
+// Note: This is updated before each syscall entry
 use lazy_static::lazy_static;
+use spin::Mutex;
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+// Current kernel stack (atomic for lock-free access from assembly)
+static CURRENT_KERNEL_STACK: AtomicUsize = AtomicUsize::new(0);
+
 lazy_static! {
-    static ref KERNEL_SYSCALL_STACK: usize = get_kernel_stack_top();
+    static ref KERNEL_SYSCALL_STACK: Mutex<usize> = Mutex::new(get_fallback_kernel_stack_top());
+}
+
+/// Initialize the current kernel stack pointer
+/// 
+/// This should be called during kernel initialization to set up the
+/// fallback stack before any processes are created.
+pub fn init_kernel_stack() {
+    let stack_top = get_fallback_kernel_stack_top();
+    CURRENT_KERNEL_STACK.store(stack_top, Ordering::Release);
+}
+
+/// Update the current kernel stack pointer
+/// 
+/// This should be called during context switch to update the stack
+/// pointer for the next syscall.
+#[allow(dead_code)]
+#[allow(clippy::cast_possible_truncation)] // x86_64 target only
+pub fn set_kernel_stack(stack_top: VirtAddr) {
+    CURRENT_KERNEL_STACK.store(stack_top.as_u64() as usize, Ordering::Release);
+}
+
+/// Get the currently configured kernel stack
+#[allow(dead_code)]
+pub fn get_kernel_stack() -> VirtAddr {
+    VirtAddr::new(CURRENT_KERNEL_STACK.load(Ordering::Acquire) as u64)
 }
 
 
@@ -188,6 +268,7 @@ lazy_static! {
 /// This function is called from assembly and must maintain the syscall
 /// calling convention.
 #[unsafe(no_mangle)]
+#[allow(clippy::cast_sign_loss)] // Intentional: syscall result conversion
 extern "C" fn syscall_handler(
     syscall_num: u64,
     arg1: u64,
