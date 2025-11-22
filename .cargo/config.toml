@@ -1,8 +1,8 @@
 [build]
-# target = "x86_64-blog_os.json"
+# target = "x86_64-rany_os.json"
 
 # build-stdをカスタムターゲットにのみ適用
-[target.x86_64-blog_os]
+[target.x86_64-rany_os]
 linker = "rust-lld"
 
 [unstable]

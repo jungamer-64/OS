@@ -57,22 +57,17 @@ where
     }
 }
 
-/// List of architectures that this kernel can potentially support
-///
-/// This list is used for future extensions and documentation.
-/// Currently, only x86_64 is fully implemented.
-const SUPPORTED_ARCHITECTURES: &[&str] = &["x86_64", "aarch64", "riscv64", "x86", "arm", "riscv32"];
-
 /// Validate that the architecture and pointer width are compatible
 ///
 /// This ensures that the target specification makes sense for the
-/// chosen architecture.
+/// chosen architecture. Currently, only `x86_64` is fully implemented.
 fn validate_architecture_compatibility(arch: &str, pointer_width: u16) -> bool {
+    #[allow(clippy::match_same_arms)]
     match (arch, pointer_width) {
         // 64-bit architectures
-        ("x86_64", 64) | ("aarch64", 64) | ("riscv64", 64) => true,
+        ("x86_64" | "aarch64" | "riscv64", 64) => true,
         // 32-bit architectures
-        ("x86", 32) | ("arm", 32) | ("riscv32", 32) => true,
+        ("x86" | "arm" | "riscv32", 32) => true,
         // Unknown or incompatible combination
         _ => false,
     }
