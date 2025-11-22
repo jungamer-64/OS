@@ -48,54 +48,60 @@ impl ChainedPics {
 
     /// PIC を初期化
     pub unsafe fn initialize(&mut self) {
-        // マスクを保存（現在はすべて無効化するため省略可能だが、念のため）
-        // let mut wait_port: Port<u8> = Port::new(0x80);
-        // let mut wait = || unsafe { wait_port.write(0) };
+        // SAFETY: 呼び出し元がPIC初期化のタイミングを保証している
+        unsafe {
+            // マスクを保存（現在はすべて無効化するため省略可能だが、念のため）
+            // let mut wait_port: Port<u8> = Port::new(0x80);
+            // let mut wait = || unsafe { wait_port.write(0) };
 
-        let mut wait_port: PortWriteOnly<u8> = PortWriteOnly::new(0x80);
-        let mut wait = || unsafe { wait_port.write(0) };
+            let mut wait_port: PortWriteOnly<u8> = PortWriteOnly::new(0x80);
+            let mut wait = || wait_port.write(0);
 
-        // ICW1: 初期化開始
-        self.pics[0].command.write(ICW1_INIT);
-        wait();
-        self.pics[1].command.write(ICW1_INIT);
-        wait();
+            // ICW1: 初期化開始
+            self.pics[0].command.write(ICW1_INIT);
+            wait();
+            self.pics[1].command.write(ICW1_INIT);
+            wait();
 
-        // ICW2: ベクタオフセット設定
-        self.pics[0].data.write(self.pics[0].offset);
-        wait();
-        self.pics[1].data.write(self.pics[1].offset);
-        wait();
+            // ICW2: ベクタオフセット設定
+            self.pics[0].data.write(self.pics[0].offset);
+            wait();
+            self.pics[1].data.write(self.pics[1].offset);
+            wait();
 
-        // ICW3: Master/Slave 接続設定
-        self.pics[0].data.write(4); // Master: Slave は IRQ2 に接続
-        wait();
-        self.pics[1].data.write(2); // Slave: 自身のカスケード ID
-        wait();
+            // ICW3: Master/Slave 接続設定
+            self.pics[0].data.write(4); // Master: Slave は IRQ2 に接続
+            wait();
+            self.pics[1].data.write(2); // Slave: 自身のカスケード ID
+            wait();
 
-        // ICW4: モード設定 (8086)
-        self.pics[0].data.write(ICW4_8086);
-        wait();
-        self.pics[1].data.write(ICW4_8086);
-        wait();
+            // ICW4: モード設定 (8086)
+            self.pics[0].data.write(ICW4_8086);
+            wait();
+            self.pics[1].data.write(ICW4_8086);
+            wait();
 
-        // マスクをクリア（すべての割り込みを有効化、ただし後で個別にマスク可能）
-        // ここではとりあえずすべて無効化（0xFF）せず、すべて有効化（0x00）しておく
-        // 実際には必要なものだけ有効にするのが良いが、IDT側でハンドラがないとダブルフォールトになる
-        // 安全のため、初期化直後はすべてマスクし、後で個別に解除するのが一般的
-        self.pics[0].data.write(0xfb); // IRQ2 (Slave) 以外マスク
-        self.pics[1].data.write(0xff); // Slave はすべてマスク
+            // マスクをクリア（すべての割り込みを有効化、ただし後で個別にマスク可能）
+            // ここではとりあえずすべて無効化（0xFF）せず、すべて有効化（0x00）しておく
+            // 実際には必要なものだけ有効にするのが良いが、IDT側でハンドラがないとダブルフォールトになる
+            // 安全のため、初期化直後はすべてマスクし、後で個別に解除するのが一般的
+            self.pics[0].data.write(0xfb); // IRQ2 (Slave) 以外マスク
+            self.pics[1].data.write(0xff); // Slave はすべてマスク
+        }
     }
 
     /// 割り込み終了を通知 (EOI)
     pub unsafe fn notify_end_of_interrupt(&mut self, interrupt_id: u8) {
-        if self.handles_interrupt(interrupt_id) {
-            // Slave PIC からの割り込みなら、Slave にも EOI を送る
-            if self.pics[1].handles_interrupt(interrupt_id) {
-                self.pics[1].end_of_interrupt();
+        // SAFETY: 呼び出し元が適切な割り込みコンテキストであることを保証している
+        unsafe {
+            if self.handles_interrupt(interrupt_id) {
+                // Slave PIC からの割り込みなら、Slave にも EOI を送る
+                if self.pics[1].handles_interrupt(interrupt_id) {
+                    self.pics[1].end_of_interrupt();
+                }
+                // Master には常に EOI を送る
+                self.pics[0].end_of_interrupt();
             }
-            // Master には常に EOI を送る
-            self.pics[0].end_of_interrupt();
         }
     }
 
@@ -105,15 +111,18 @@ impl ChainedPics {
     
     /// 特定の IRQ のマスクを解除
     pub unsafe fn unmask_irq(&mut self, irq: u8) {
-        let mut port: Port<u8>;
-        if irq < 8 {
-            port = Port::new(PIC1_DATA);
-            let value = port.read();
-            port.write(value & !(1 << irq));
-        } else {
-            port = Port::new(PIC2_DATA);
-            let value = port.read();
-            port.write(value & !(1 << (irq - 8)));
+        // SAFETY: 呼び出し元がPICマスク操作の安全性を保証している
+        unsafe {
+            let mut port: Port<u8>;
+            if irq < 8 {
+                port = Port::new(PIC1_DATA);
+                let value = port.read();
+                port.write(value & !(1 << irq));
+            } else {
+                port = Port::new(PIC2_DATA);
+                let value = port.read();
+                port.write(value & !(1 << (irq - 8)));
+            }
         }
     }
 }
@@ -130,7 +139,10 @@ impl Pic {
     }
 
     unsafe fn end_of_interrupt(&mut self) {
-        self.command.write(PIC_EOI);
+        // SAFETY: 呼び出し元がEOI送信の安全性を保証している
+        unsafe {
+            self.command.write(PIC_EOI);
+        }
     }
 }
 

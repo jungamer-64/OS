@@ -84,11 +84,20 @@ impl LinkedListAllocator {
             if let Ok(alloc_start) = Self::alloc_from_region(region, size, align) {
                 // 見つかった領域をリストから削除
                 let next = region.next.take();
-                let ret = Some((current.next.take().unwrap(), alloc_start));
+                // Safety: current.next is Some(region) as verified by the while-let
+                if let Some(removed_region) = current.next.take() {
+                    current.next = next;
+                    return Some((removed_region, alloc_start));
+                }
+                // This should never happen, but handle it safely
                 current.next = next;
-                return ret;
+                return None;
             } else {
-                current = current.next.as_mut().unwrap();
+                // Move to next node - we know it exists from the while-let condition
+                match current.next.as_mut() {
+                    Some(next_node) => current = next_node,
+                    None => break, // Should not happen, but handle gracefully
+                }
             }
         }
 
@@ -120,7 +129,7 @@ impl LinkedListAllocator {
     fn size_align(layout: Layout) -> (usize, usize) {
         let layout = layout
             .align_to(mem::align_of::<ListNode>())
-            .expect("adjusting alignment failed")
+            .expect("Failed to adjust layout alignment to ListNode alignment - invalid layout")
             .pad_to_align();
         let size = layout.size().max(mem::size_of::<ListNode>());
         (size, layout.align())

@@ -8,6 +8,7 @@ pub mod qemu;
 pub mod port;
 pub mod gdt;
 pub mod interrupts;
+pub mod pic;
 
 pub use cpu::X86Cpu;
 pub use cpu::read_timestamp;

@@ -41,4 +41,76 @@ impl Device for PS2Keyboard {
     }
 }
 
+use spin::Mutex;
+use alloc::collections::VecDeque;
+use core::task::{Waker, Poll, Context};
+use core::pin::Pin;
+use core::future::Future;
+// use crossbeam_queue::ArrayQueue; // Not available, using VecDeque with Mutex
+
+/// スキャンコードキュー
+pub struct ScancodeQueue {
+    queue: VecDeque<u8>,
+    waker: Option<Waker>,
+}
+
+impl ScancodeQueue {
+    pub const fn new() -> Self {
+        Self {
+            queue: VecDeque::new(),
+            waker: None,
+        }
+    }
+
+    /// スキャンコードを追加し、待機中のタスクを起こす
+    pub fn add_scancode(&mut self, scancode: u8) {
+        self.queue.push_back(scancode);
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
+        }
+    }
+
+    /// 次のスキャンコードを取得（非同期）
+    pub fn next_scancode(&mut self) -> Option<u8> {
+        self.queue.pop_front()
+    }
+    
+    /// Waker を登録
+    pub fn register_waker(&mut self, waker: &Waker) {
+        self.waker = Some(waker.clone());
+    }
+}
+
+/// グローバルキーボードインスタンス
+pub static KEYBOARD: Mutex<PS2Keyboard> = Mutex::new(PS2Keyboard::new());
+
+/// グローバルスキャンコードキュー
+pub static SCANCODE_QUEUE: Mutex<ScancodeQueue> = Mutex::new(ScancodeQueue::new());
+
+/// 次のスキャンコードを待つ Future
+pub struct ScancodeStream {
+    _private: (),
+}
+
+impl ScancodeStream {
+    pub fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
+impl Future for ScancodeStream {
+    type Output = u8;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut queue = SCANCODE_QUEUE.lock();
+        
+        if let Some(scancode) = queue.next_scancode() {
+            Poll::Ready(scancode)
+        } else {
+            queue.register_waker(cx.waker());
+            Poll::Pending
+        }
+    }
+}
+
 

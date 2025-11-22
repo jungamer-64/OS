@@ -1,12 +1,13 @@
 [build]
 # target = "x86_64-blog_os.json"
 
+# build-stdをカスタムターゲットにのみ適用
+[target.x86_64-blog_os]
+linker = "rust-lld"
+
 [unstable]
 build-std = ["core", "compiler_builtins", "alloc"]
 build-std-features = ["compiler-builtins-mem"]
 
 [target.'cfg(target_os = "none")']
 runner = "bootimage runner"
-
-[target.x86_64-blog_os]
-linker = "rust-lld"

@@ -56,10 +56,21 @@ macro_rules! println {
 macro_rules! print {
     ($($arg:tt)*) => {{
         use core::fmt::Write;
-        // use $crate::kernel::core::CharDevice; // Removed unused import
-        if let Some(vga) = $crate::kernel::driver::vga::VGA.get() {
+        // まず Framebuffer を試す
+        if let Some(fb) = $crate::kernel::driver::framebuffer::FRAMEBUFFER.get() {
+            let _ = write!(fb.lock(), $($arg)*);
+        }
+        // 次に VGA を試す（UEFI では無効だが念のため）
+        else if let Some(vga) = $crate::kernel::driver::vga::VGA.get() {
             let _ = write!(vga.lock(), $($arg)*);
         }
+        // シリアルポートにも出力（デバッグ用）
+        // FIXME: SerialPortにfmt::Writeトレイトを実装するまで無効化
+        // {
+        //     use $crate::kernel::driver::serial::SERIAL1;
+        //     let mut serial = SERIAL1.lock();
+        //     let _ = write!(serial, $($arg)*);
+        // }
     }};
 }
 

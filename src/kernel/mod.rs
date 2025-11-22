@@ -8,3 +8,4 @@ pub mod mmio;
 pub mod mm;
 pub mod task;
 pub mod r#async;
+pub mod shell;

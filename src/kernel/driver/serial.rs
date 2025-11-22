@@ -86,5 +86,15 @@ impl CharDevice for SerialPort {
     }
 }
 
+use core::fmt;
+impl fmt::Write for SerialPort {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for byte in s.bytes() {
+            self.write_byte(byte).map_err(|_| fmt::Error)?;
+        }
+        Ok(())
+    }
+}
+
 /// グローバル Serial ポート (const 初期化可能)
 pub static SERIAL1: Mutex<SerialPort> = Mutex::new(SerialPort::com1());
