@@ -95,6 +95,20 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     
     println!("[OK] Kernel initialized successfully!");
     
+    // システムコール機構のテスト（カーネル空間から）
+    #[cfg(debug_assertions)]
+    {
+        tiny_os::kernel::syscall::test_syscall_mechanism();
+    }
+    
+    // ユーザーモード実行テスト（オプション）
+    #[cfg(feature = "test_usermode")]
+    {
+        unsafe {
+            tiny_os::kernel::usermode::test_usermode_execution();
+        }
+    }
+    
     // メインループ
     loop {
         ArchCpu::halt();

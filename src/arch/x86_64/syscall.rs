@@ -1,4 +1,5 @@
-//! System Call Mechanism for x86_64
+// src/arch/x86_64/syscall.rs
+//! System Call Mechanism for `x86_64`
 //!
 //! This module implements the syscall/sysret mechanism for transitioning
 //! between Ring 3 (user mode) and Ring 0 (kernel mode).
@@ -16,6 +17,11 @@ use crate::kernel::process::PROCESS_TABLE;
 ///
 /// This sets up the Model Specific Registers (MSRs) required for
 /// the `syscall` and `sysret` instructions to work properly.
+/// 
+/// # Panics
+/// 
+/// Panics if `Star::write` fails (should never happen with valid GDT selectors).
+#[allow(clippy::missing_panics_doc)] // Star::write panic is documented
 pub fn init() {
     unsafe {
         // Enable syscall/sysret in EFER
@@ -52,6 +58,52 @@ pub fn init() {
     }
 }
 
+/// Dump CPU registers for debugging
+///
+/// This function is used to print register values at critical points
+/// during syscall handling (e.g., before iretq, after context switch).
+///
+/// # Safety
+/// This function reads raw CPU registers and may contain invalid values.
+/// It's intended for debugging only and should not be used in production.
+#[cfg(debug_assertions)]
+#[allow(dead_code)]
+fn dump_registers(context: &str) {
+    let (rsp, rbp, rax, rdi, rsi, rdx, cs, ss): (u64, u64, u64, u64, u64, u64, u16, u16);
+    
+    unsafe {
+        core::arch::asm!(
+            "mov {rsp}, rsp",
+            "mov {rbp}, rbp",
+            "mov {rax}, rax",
+            "mov {rdi}, rdi",
+            "mov {rsi}, rsi",
+            "mov {rdx}, rdx",
+            "mov {cs:x}, cs",
+            "mov {ss:x}, ss",
+            rsp = out(reg) rsp,
+            rbp = out(reg) rbp,
+            rax = out(reg) rax,
+            rdi = out(reg) rdi,
+            rsi = out(reg) rsi,
+            rdx = out(reg) rdx,
+            cs = out(reg) cs,
+            ss = out(reg) ss,
+        );
+    }
+    
+    let ring = cs & 3;
+    debug_println!("=== Register Dump: {} ===", context);
+    debug_println!("  RSP: 0x{:016x}", rsp);
+    debug_println!("  RBP: 0x{:016x}", rbp);
+    debug_println!("  RAX: 0x{:016x}", rax);
+    debug_println!("  RDI: 0x{:016x}", rdi);
+    debug_println!("  RSI: 0x{:016x}", rsi);
+    debug_println!("  RDX: 0x{:016x}", rdx);
+    debug_println!("  CS:  0x{:04x} (Ring {})", cs, ring);
+    debug_println!("  SS:  0x{:04x}", ss);
+}
+
 /// Syscall entry point
 ///
 /// This is called when userspace executes the `syscall` instruction.
@@ -86,29 +138,23 @@ pub unsafe extern "C" fn syscall_entry() -> ! {
         // Save user RSP in a scratch register
         "mov r15, rsp",
         
-        // Phase 2: Load kernel stack from gs:0x04 (TSS.privilege_stack_table[0])
-        // The TSS privilege_stack_table[0] is updated by the kernel during
-        // context switches to point to the current process's kernel stack.
-        // 
-        // TSS structure layout (simplified):
-        // Offset 0x00: reserved (4 bytes)
-        // Offset 0x04: RSP0 (8 bytes) <- Ring 3 -> Ring 0 stack
-        // Offset 0x0C: RSP1 (8 bytes)
-        // Offset 0x14: RSP2 (8 bytes)
-        // ...
-        //
-        // The GS segment base is set to point to the TSS during init.
-        // However, x86_64 doesn't use GS for TSS access in long mode.
-        // Instead, we use a memory location that stores the current kernel stack.
-        //
-        // For Phase 2, we'll use a hybrid approach:
-        // - Load from CURRENT_KERNEL_STACK (updated on context switch)
-        // - Falls back to FALLBACK_KERNEL_STACK if not set
+        // Phase 2: Load kernel stack
+        // CURRENT_KERNEL_STACK is updated during:
+        // - init_kernel_stack() (boot time) -> fallback stack
+        // - set_kernel_stack() (context switch) -> process kernel stack
         "mov rsp, qword ptr [rip + {current_stack}]",
         
-        // Now RSP points to kernel stack - safe to use push instructions
+        // === CRITICAL: Align stack BEFORE pushing ===
+        // The kernel stack should already be 16-byte aligned from initialization,
+        // but we verify and align if necessary.
+        // This MUST happen before any push operations.
+        "test rsp, 15",           // Check if RSP & 0xF == 0
+        "jz 1f",                  // If aligned, skip
+        "and rsp, -16",           // Otherwise, align to 16-byte boundary
+        "1:",
         
-        // Save user context on kernel stack
+        // === Save user context (8 registers = 64 bytes) ===
+        // After this, RSP is still 16-byte aligned (aligned - 64 = aligned)
         "push r15",          // User RSP (saved earlier)
         "push rcx",          // User RIP (saved by CPU on syscall)
         "push r11",          // User RFLAGS (saved by CPU on syscall)
@@ -119,40 +165,49 @@ pub unsafe extern "C" fn syscall_entry() -> ! {
         "push r12",
         "push r13",
         "push r14",
-        // r15 was clobbered above, but we don't need to save it since
-        // it's caller-saved and will be handled by the C calling convention
         
-        // Arguments are already in the right registers for C calling convention:
-        // rax = syscall number
-        // rdi, rsi, rdx = args 1-3
-        // r10 = arg4 (need to move to rcx for C convention)
-        // r8, r9 = args 5-6
+        // === C ABI alignment requirement ===
+        // System V AMD64 ABI requires RSP to be at (16*N + 8) before 'call'
+        // because 'call' pushes an 8-byte return address.
+        // 
+        // Current state: RSP is 16-byte aligned (after 64 bytes of pushes)
+        // Required: RSP = 16*N + 8
+        // Solution: Push 8 more bytes as padding
+        "push rax",          // Padding (RAX will be overwritten anyway)
+        
+        // === Prepare arguments for C calling convention ===
+        // rax = syscall number (already set)
+        // rdi, rsi, rdx = args 1-3 (already set)
+        // rcx = arg 4 (need to move from r10)
+        // r8, r9 = args 5-6 (already set)
         "mov rcx, r10",      // Move 4th arg from r10 to rcx for C ABI
         
-        // Align stack to 16-byte boundary (required by System V ABI)
-        "and rsp, -16",
-        
-        // Call the syscall handler
+        // === Call the syscall handler ===
+        // Stack is now properly aligned: (16*N + 8)
+        // After 'call' pushes return address: (16*N)
         "call {syscall_handler}",
         
-        // Result is in RAX, preserve it
+        // === Result is in RAX, preserve it ===
         
-        // Restore callee-saved registers
+        // === Remove padding ===
+        "add rsp, 8",        // Remove the 8-byte padding we added
+        
+        // === Restore callee-saved registers (in reverse order) ===
         "pop r14",
         "pop r13",
         "pop r12",
         "pop rbx",
         "pop rbp",
         
-        // Restore user context
+        // === Restore user context ===
         "pop r11",          // User RFLAGS
         "pop rcx",          // User RIP
         "pop r15",          // User RSP
         
-        // Switch back to user stack
+        // === Switch back to user stack ===
         "mov rsp, r15",
         
-        // Return to user mode
+        // === Return to user mode ===
         // sysretq will:
         // - Load RCX into RIP (user return address)
         // - Load R11 into RFLAGS
@@ -238,23 +293,108 @@ lazy_static! {
 /// fallback stack before any processes are created.
 pub fn init_kernel_stack() {
     let stack_top = get_fallback_kernel_stack_top();
+    
+    // Verify 16-byte alignment (critical for C ABI and syscall_entry)
+    debug_assert!(
+        stack_top.is_multiple_of(16),
+        "Kernel stack must be 16-byte aligned, got 0x{stack_top:x}"
+    );
+    
     CURRENT_KERNEL_STACK.store(stack_top, Ordering::Release);
+    
+    debug_println!("[OK] Kernel syscall stack initialized at 0x{:x}", stack_top);
 }
 
 /// Update the current kernel stack pointer
 /// 
 /// This should be called during context switch to update the stack
 /// pointer for the next syscall.
+/// 
+/// # Panics
+/// 
+/// Panics in debug builds if the stack is not 16-byte aligned.
 #[allow(dead_code)]
 #[allow(clippy::cast_possible_truncation)] // x86_64 target only
 pub fn set_kernel_stack(stack_top: VirtAddr) {
-    CURRENT_KERNEL_STACK.store(stack_top.as_u64() as usize, Ordering::Release);
+    let stack_addr = stack_top.as_u64() as usize;
+    
+    // Verify 16-byte alignment
+    debug_assert!(
+        stack_addr.is_multiple_of(16),
+        "Kernel stack must be 16-byte aligned, got 0x{stack_addr:x}"
+    );
+    
+    CURRENT_KERNEL_STACK.store(stack_addr, Ordering::Release);
 }
 
 /// Get the currently configured kernel stack
 #[allow(dead_code)]
 pub fn get_kernel_stack() -> VirtAddr {
     VirtAddr::new(CURRENT_KERNEL_STACK.load(Ordering::Acquire) as u64)
+}
+
+/// Check stack usage for debugging
+/// 
+/// This function should be called periodically during development
+/// to detect stack overflows or excessive stack usage.
+/// 
+/// # Panics
+/// 
+/// Panics if stack overflow is detected (RSP below stack bottom).
+#[cfg(debug_assertions)]
+#[allow(dead_code)]
+pub fn check_stack_usage() {
+    let current_rsp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack));
+    }
+    
+    let stack_top = CURRENT_KERNEL_STACK.load(Ordering::Acquire) as u64;
+    let stack_bottom = stack_top.saturating_sub(8192);
+    
+    assert!(
+        current_rsp >= stack_bottom,
+        "Stack overflow detected! RSP=0x{current_rsp:x}, bottom=0x{stack_bottom:x}"
+    );
+    
+    let used = stack_top.saturating_sub(current_rsp);
+    if used > 4096 {
+        debug_println!("⚠️  High stack usage: {used} bytes / 8192");
+    }
+}
+
+/// Validate syscall context (debug builds only)
+/// 
+/// Checks if the syscall handler is running in the correct context:
+/// - Stack pointer within valid range
+/// - CPU in Ring 0 (kernel mode)
+#[cfg(debug_assertions)]
+fn validate_syscall_context() {
+    // Check stack range
+    let current_rsp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack));
+    }
+    
+    let stack_top = CURRENT_KERNEL_STACK.load(Ordering::Acquire) as u64;
+    let stack_bottom = stack_top.saturating_sub(8192);
+    
+    assert!(
+        current_rsp >= stack_bottom && current_rsp <= stack_top,
+        "Invalid RSP during syscall: 0x{current_rsp:x} (expected 0x{stack_bottom:x}-0x{stack_top:x})"
+    );
+    
+    // Check privilege level (CS & 3 should be 0 for Ring 0)
+    let cs: u16;
+    unsafe {
+        core::arch::asm!("mov {:x}, cs", out(reg) cs, options(nomem, nostack));
+    }
+    
+    assert_eq!(
+        cs & 3,
+        0,
+        "Syscall handler running in wrong privilege level! CS=0x{cs:x}"
+    );
 }
 
 
@@ -278,13 +418,90 @@ extern "C" fn syscall_handler(
     arg5: u64,
     arg6: u64,
 ) -> u64 {
+    // Validate context in debug builds
+    #[cfg(debug_assertions)]
+    validate_syscall_context();
+    
+    // Trace syscall entry in debug builds
+    #[cfg(all(debug_assertions, feature = "syscall_trace"))]
+    debug_println!(
+        "[SYSCALL] num={}, args=({:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})",
+        syscall_num, arg1, arg2, arg3, arg4, arg5, arg6
+    );
+    
     // Call the syscall dispatcher
     let result = crate::kernel::syscall::dispatch(
         syscall_num, arg1, arg2, arg3, arg4, arg5, arg6
     );
     
+    // Trace syscall return in debug builds
+    #[cfg(all(debug_assertions, feature = "syscall_trace"))]
+    debug_println!("[SYSCALL] num={syscall_num} returned {result:#x}");
+    
     // Convert i64 result to u64 for return
     result as u64
+}
+
+/// User pointer validation module
+/// 
+/// Provides safe wrappers for accessing user-space memory from kernel.
+pub mod validation {
+    /// Check if an address is in user space
+    /// 
+    /// User space: `0x0000_0000_0000_0000` ~ `0x0000_7FFF_FFFF_FFFF`
+    /// Kernel space: `0xFFFF_8000_0000_0000` ~ `0xFFFF_FFFF_FFFF_FFFF`
+    #[must_use]
+    pub const fn is_user_address(addr: u64) -> bool {
+        addr < 0x0000_8000_0000_0000
+    }
+    
+    /// Check if a memory range is valid and in user space
+    /// 
+    /// Returns `true` if:
+    /// - Length is non-zero
+    /// - No overflow in `addr + len`
+    /// - Both start and end are in user space
+    #[must_use]
+    pub const fn is_user_range(addr: u64, len: u64) -> bool {
+        if len == 0 {
+            return false;
+        }
+        
+        // Check for overflow
+        let Some(end) = addr.checked_add(len) else {
+            return false;
+        };
+        
+        is_user_address(addr) && is_user_address(end - 1)
+    }
+    
+    /// Safely copy from user space to kernel space
+    /// 
+    /// Returns `None` if:
+    /// - Address is invalid (not in user space)
+    /// - Address is not readable (page fault would occur)
+    /// 
+    /// # Safety
+    /// 
+    /// This is still unsafe because:
+    /// - We don't check if the page is actually mapped
+    /// - TOCTOU issues (page could be unmapped after check)
+    /// 
+    /// For Phase 2, this should be replaced with proper page table checks.
+    #[must_use]
+    #[allow(dead_code)]
+    #[allow(clippy::missing_const_for_fn)] // Unsafe fn cannot be const
+    pub unsafe fn copy_from_user<T: Copy>(user_ptr: u64) -> Option<T> {
+        if !is_user_range(user_ptr, core::mem::size_of::<T>() as u64) {
+            return None;
+        }
+        
+        // TODO (Phase 2): Check if page is mapped and readable
+        // For now, assume it's valid if in user address space
+        
+        #[allow(clippy::cast_ptr_alignment)] // Caller ensures alignment
+        Some(*(user_ptr as *const T))
+    }
 }
 
 /// Syscall numbers

@@ -32,6 +32,14 @@ path = "src/main.rs"
 # These tests require std features like Vec, String, and the test crate
 std-tests = []
 
+# Feature to enable syscall tracing in debug builds
+# Usage: cargo build --features syscall_trace
+syscall_trace = []
+
+# Feature to enable usermode execution test (Phase 1)
+# Usage: cargo build --features test_usermode
+test_usermode = []
+
 [dependencies]
 # Bootloader API for kernel (v0.11)
 bootloader_api = "=0.11.10"
