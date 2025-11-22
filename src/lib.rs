@@ -23,6 +23,9 @@ pub mod sync;
 pub mod vga_buffer;
 pub mod arch;
 pub mod framebuffer;
+pub mod kernel;
+
+// extern crate alloc; // Phase 4 で有効化
 
 pub use qemu::{exit_qemu, QemuExitCode};
 
