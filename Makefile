@@ -8,15 +8,18 @@
 # ============================================================================
 
 KERNEL_NAME = tiny_os
-TARGET = x86_64-blog_os.json
+# Target architecture specification (currently supports x86_64)
+# Can be overridden via environment variable for future multi-arch support
+TARGET ?= x86_64-blog_os.json
 BUILD_MODE ?= debug
 
 # Directories
 BUILD_DIR = target/$(shell basename $(TARGET) .json)/$(BUILD_MODE)
 KERNEL_BIN = $(BUILD_DIR)/$(KERNEL_NAME)
 
-# QEMU configuration
-QEMU = qemu-system-x86_64
+# QEMU configuration (architecture-specific)
+# Currently configured for x86_64, can be overridden for other architectures
+QEMU ?= qemu-system-x86_64
 QEMU_FLAGS = -drive format=raw,file=$(KERNEL_BIN) \
              -serial stdio \
              -display gtk \

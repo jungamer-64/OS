@@ -37,7 +37,7 @@ use crate::sync::lock_manager::{acquire_lock, LockId};
 pub use backend::{DefaultBackend, Register as SerialRegister, SerialHardware};
 
 #[cfg(target_arch = "x86_64")]
-pub use backend::PortIoBackend;
+pub use crate::arch::serial::PortIoBackend;
 #[cfg(not(target_arch = "x86_64"))]
 pub use backend::StubSerialBackend;
 use constants::MAX_INIT_ATTEMPTS;

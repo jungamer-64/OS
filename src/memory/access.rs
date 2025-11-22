@@ -52,8 +52,9 @@ pub trait MemoryAccessExt<T: Copy>: MemoryAccess<T> {
     /// Returns [`BufferError::OutOfBounds`] if the write would exceed the
     /// buffer capacity.
     fn write_slice(&mut self, start: usize, data: &[T]) -> Result<(), BufferError> {
-        if start.checked_add(data.len()).ok_or(BufferError::OutOfBounds)? > self.capacity() {
-            return Err(BufferError::OutOfBounds);
+        let end = start.checked_add(data.len()).ok_or(BufferError::Overflow)?;
+        if end > self.capacity() {
+            return Err(BufferError::OutOfBounds { index: end, len: self.capacity() });
         }
 
         for (offset, &value) in data.iter().enumerate() {

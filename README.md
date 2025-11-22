@@ -1,10 +1,23 @@
-# Tiny OS - Minimal x86_64 Rust Kernel
+# Tiny OS - Minimal Rust Kernel
 
 ![Rust Version](https://img.shields.io/badge/rust-nightly-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-x86__64-lightgrey.svg)
 
-A minimal, educational operating system kernel written in Rust for the x86_64 architecture. This project demonstrates bare-metal programming, hardware interaction, and safe systems programming using Rust.
+A minimal, educational operating system kernel written in Rust. This project demonstrates bare-metal programming, hardware interaction, and safe systems programming using Rust.
+
+## 🏛️ Architecture Support
+
+**Currently Supported:** x86_64 (PC/AT compatible systems)
+
+The kernel is designed with an architecture abstraction layer (`src/arch/`) that separates platform-specific code from core logic. While currently only x86_64 is implemented, the codebase is structured to facilitate future ports to other architectures such as ARM, RISC-V, or other platforms.
+
+**Architecture-Specific Components:**
+
+- CPU operations (halt, interrupt control)
+- Serial port I/O (PC/AT UART 16550)
+- VGA text buffer (0xB8000 legacy PC/AT standard)
+- QEMU debug interfaces
 
 ## ✨ Features
 
@@ -160,8 +173,8 @@ main.rs
 ```
 0x00000000 - 0x000FFFFF  : Real mode area (1 MB)
 0x00100000 - ...         : Kernel code (loaded by bootloader)
-0x000B8000 - 0x000B8FA0  : VGA text buffer (80x25x2 = 4000 bytes)
-0x000003F8 - 0x000003FF  : COM1 serial port (8 I/O ports)
+0x000B8000 - 0x000B8FA0  : VGA text buffer (80x25x2 = 4000 bytes, PC/AT legacy)
+0x000003F8 - 0x000003FF  : COM1 serial port (8 I/O ports, PC/AT standard)
 ```
 
 ## 🔧 Development

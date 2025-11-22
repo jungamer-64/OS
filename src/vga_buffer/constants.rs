@@ -3,6 +3,10 @@
 //! Constants for VGA text buffer operations
 
 /// VGA text buffer physical memory address
+///
+/// This address (0xB8000) is specific to PC/AT-compatible systems
+/// (x86, x86_64) and represents the standard legacy VGA text mode buffer.
+/// Other architectures will require different display backends.
 pub const VGA_BUFFER_ADDR: usize = 0xb8000;
 
 /// Screen dimensions

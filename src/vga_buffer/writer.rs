@@ -48,6 +48,122 @@ impl VgaError {
     }
 }
 
+/// A writer type that allows writing ASCII bytes and strings to an underlying `Buffer`.
+pub struct VgaWriter {
+    column_position: usize,
+    color_code: ColorCode,
+    buffer: DefaultVgaBuffer,
+}
+
+impl VgaWriter {
+    pub const fn new() -> Self {
+        VgaWriter {
+            column_position: 0,
+            color_code: ColorCode::new(super::color::VgaColor::Yellow, super::color::VgaColor::Black),
+            buffer: DefaultVgaBuffer::new(),
+        }
+    }
+
+    pub fn init_accessibility(&mut self) -> Result<(), VgaError> {
+        let test_idx = 0;
+        let original = self.buffer.read_cell(test_idx)?;
+        self.buffer.write_cell(test_idx, original)?;
+        BUFFER_ACCESSIBLE.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    pub fn clear(&mut self) -> Result<(), VgaError> {
+        let blank = (self.color_code.as_u8() as u16) << 8 | b' ' as u16;
+        for i in 0..CELL_COUNT {
+            self.buffer.write_cell(i, blank)?;
+        }
+        self.column_position = 0;
+        Ok(())
+    }
+
+    pub fn set_color(&mut self, color: ColorCode) -> Result<(), VgaError> {
+        self.color_code = color;
+        Ok(())
+    }
+
+    pub fn write_colored(&mut self, s: &str, color: ColorCode) -> Result<(), VgaError> {
+        let old_color = self.color_code;
+        self.color_code = color;
+        self.write_string(s);
+        self.color_code = old_color;
+        Ok(())
+    }
+
+    pub fn write_byte(&mut self, byte: u8) {
+        match byte {
+            b'\n' => self.new_line(),
+            byte => {
+                if self.column_position >= VGA_WIDTH {
+                    self.new_line();
+                }
+                let row = VGA_HEIGHT - 1;
+                let col = self.column_position;
+                let color_code = self.color_code;
+                let val = (color_code.as_u8() as u16) << 8 | byte as u16;
+                let _ = self.buffer.write_cell(row * VGA_WIDTH + col, val);
+                self.column_position += 1;
+            }
+        }
+    }
+
+    pub fn write_string(&mut self, s: &str) {
+        for byte in s.bytes() {
+            match byte {
+                0x20..=0x7e | b'\n' => self.write_byte(byte),
+                _ => self.write_byte(0xfe),
+            }
+        }
+    }
+
+    fn new_line(&mut self) {
+        for row in 1..VGA_HEIGHT {
+            for col in 0..VGA_WIDTH {
+                let val = self.buffer.read_cell(row * VGA_WIDTH + col).unwrap_or(0);
+                let _ = self.buffer.write_cell((row - 1) * VGA_WIDTH + col, val);
+            }
+        }
+        self.clear_row(VGA_HEIGHT - 1);
+        self.column_position = 0;
+    }
+
+    fn clear_row(&mut self, row: usize) {
+        let blank = (self.color_code.as_u8() as u16) << 8 | b' ' as u16;
+        for col in 0..VGA_WIDTH {
+            let _ = self.buffer.write_cell(row * VGA_WIDTH + col, blank);
+        }
+    }
+
+    pub fn runtime_guard(&self) -> RuntimeGuard {
+        RuntimeGuard
+    }
+
+    pub fn encode_char(c: u8, color: ColorCode) -> u16 {
+        (color.as_u8() as u16) << 8 | c as u16
+    }
+
+    pub fn is_printable(c: u8) -> bool {
+        match c {
+            0x20..=0x7e | b'\n' => true,
+            _ => false,
+        }
+    }
+}
+
+impl fmt::Write for VgaWriter {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.write_string(s);
+        Ok(())
+    }
+}
+
+pub struct RuntimeGuard;
+pub type DoubleBufferedWriter = VgaWriter;
+
 
 /// Position in the VGA buffer with validation
 #[derive(Debug, Clone, Copy)]
@@ -189,3 +305,4 @@ mod tests {
         assert!(!VgaWriter::is_printable(0x7F));
     }
 }
+

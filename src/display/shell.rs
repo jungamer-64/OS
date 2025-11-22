@@ -12,6 +12,9 @@ use crate::display::output::{broadcast_args_with, hardware_output, Output};
 use crate::init;
 use crate::serial::timeout_stats;
 use crate::vga_buffer::{self, ColorCode};
+use crate::arch::Keyboard;
+use crate::display::keyboard::scancode_to_char;
+use crate::print;
 
 const CPU_CYCLES_PER_MS: u64 = 2_000_000; // Assumes ~2GHz host when running under QEMU
 const MAX_FEATURE_LINES: usize = 5;
@@ -185,9 +188,31 @@ fn render_prompt<O: Output>(out: &mut O) {
     broadcast_args_with(out, format_args!("\n"), ColorCode::normal());
     broadcast_args_with(
         out,
-        format_args!("tinyos> _ (waiting for keyboard support)\n"),
+        format_args!("tinyos> "),
         ColorCode::info(),
     );
+}
+
+/// Run the interactive shell loop
+pub fn run_shell() -> ! {
+    show_wait_shell();
+    
+    let mut keyboard = Keyboard::new();
+    
+    loop {
+        if let Some(scancode) = keyboard.read_scancode() {
+            // Key press (bit 7 clear)
+            if scancode & 0x80 == 0 {
+                if let Some(c) = scancode_to_char(scancode) {
+                    print!("{}", c);
+                    if c == '\n' {
+                        print!("tinyos> ");
+                    }
+                }
+            }
+        }
+        core::hint::spin_loop();
+    }
 }
 
 const fn availability(flag: bool) -> &'static str {

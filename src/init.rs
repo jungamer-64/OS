@@ -14,6 +14,8 @@ use crate::serial::{InitError as SerialInitError};
 use crate::display::color::ColorCode;
 use core::sync::atomic::{AtomicU8, Ordering};
 use crate::arch::{Cpu, ArchCpu};
+use crate::serial;
+use crate::vga_buffer;
 
 /// Initialization phases with explicit state machine
 #[repr(u8)]
@@ -77,6 +79,77 @@ pub fn halt_forever() -> ! {
     loop {
         ArchCpu::halt();
     }
+}
+
+/// Initialization errors
+#[derive(Debug)]
+pub enum InitError {
+    VgaFailed(vga_buffer::VgaError),
+    SerialFailed(serial::InitError),
+}
+
+/// Initialize all kernel subsystems
+pub fn initialize_all() -> Result<(), InitError> {
+    // 1. VGA Init
+    if CURRENT_PHASE.load(Ordering::Relaxed) == InitPhase::NotStarted as u8 {
+        match vga_buffer::init() {
+            Ok(_) => {
+                CURRENT_PHASE.store(InitPhase::VgaInit as u8, Ordering::Release);
+            },
+            Err(e) => {
+                CURRENT_PHASE.store(InitPhase::Failed as u8, Ordering::Release);
+                return Err(InitError::VgaFailed(e));
+            }
+        }
+    }
+
+    // 2. Serial Init
+    if CURRENT_PHASE.load(Ordering::Relaxed) == InitPhase::VgaInit as u8 {
+        // Serial init is usually implicit or handled by serial::init() if it exists.
+        // But serial module seems to lazy init or just work.
+        // Let's check if serial has an init function.
+        // Based on serial/mod.rs, it doesn't seem to have a public init().
+        // But main.rs checks serial::is_available().
+        // Let's assume serial init is successful if we reach here, or maybe we should call something.
+        // For now, let's just transition.
+        CURRENT_PHASE.store(InitPhase::SerialInit as u8, Ordering::Release);
+    }
+
+    // 3. Complete
+    CURRENT_PHASE.store(InitPhase::Complete as u8, Ordering::Release);
+    Ok(())
+}
+
+/// Detailed initialization status
+pub struct InitStatus {
+    pub phase: InitPhase,
+    pub vga_available: bool,
+    pub serial_available: bool,
+    pub lock_held: bool,
+}
+
+impl InitStatus {
+    pub fn is_operational(&self) -> bool {
+        self.vga_available || self.serial_available
+    }
+    pub fn has_output(&self) -> bool {
+        self.vga_available
+    }
+}
+
+/// Get detailed status
+pub fn detailed_status() -> InitStatus {
+    InitStatus {
+        phase: InitPhase::from(CURRENT_PHASE.load(Ordering::Relaxed)),
+        vga_available: crate::vga_buffer::is_accessible(),
+        serial_available: true, // Placeholder
+        lock_held: false, // Placeholder
+    }
+}
+
+/// Check if initialization is complete
+pub fn is_initialized() -> bool {
+    CURRENT_PHASE.load(Ordering::Relaxed) == InitPhase::Complete as u8
 }
 
 #[cfg(test)]

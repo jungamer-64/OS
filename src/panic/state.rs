@@ -55,6 +55,11 @@ pub fn current_level() -> Option<PanicLevel> {
     }
 }
 
+/// Check if the system is currently handling a panic
+pub fn is_panicking() -> bool {
+    PANIC_LEVEL.load(Ordering::Relaxed) != 0
+}
+
 #[cfg(test)]
 mod kernel_tests {
     use super::*;

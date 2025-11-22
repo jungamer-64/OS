@@ -59,3 +59,15 @@ pub fn write_debug_byte(byte: u8) {
     #[cfg(target_arch = "x86_64")]
     x86_64::write_debug_byte(byte);
 }
+
+#[cfg(target_arch = "x86_64")]
+pub use self::x86_64::keyboard::Keyboard;
+
+#[cfg(not(target_arch = "x86_64"))]
+pub struct Keyboard;
+
+#[cfg(not(target_arch = "x86_64"))]
+impl Keyboard {
+    pub const fn new() -> Self { Self }
+    pub fn read_scancode(&mut self) -> Option<u8> { None }
+}

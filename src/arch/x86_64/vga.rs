@@ -2,7 +2,8 @@ use core::ptr::NonNull;
 use crate::vga_buffer::{VgaBufferAccess, VgaError};
 use crate::vga_buffer::constants::{VGA_BUFFER_ADDR, CELL_COUNT, VGA_HEIGHT, VGA_WIDTH};
 
-/// Concrete backend that talks to the legacy text-mode buffer at 0xB8000.
+/// Concrete backend that talks to the legacy PC/AT text-mode buffer at 0xB8000.
+/// This is specific to x86/x86_64 PC-compatible systems.
 #[derive(Clone, Copy)]
 pub struct TextModeBuffer {
     ptr: NonNull<u16>,
@@ -13,7 +14,7 @@ impl TextModeBuffer {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            // SAFETY: 0xB8000 is the canonical VGA text buffer address.
+            // SAFETY: 0xB8000 is the canonical VGA text buffer address for PC/AT systems.
             ptr: unsafe { NonNull::new_unchecked(VGA_BUFFER_ADDR as *mut u16) },
         }
     }
@@ -23,6 +24,9 @@ impl TextModeBuffer {
         index < CELL_COUNT
     }
 }
+
+unsafe impl Send for TextModeBuffer {}
+unsafe impl Sync for TextModeBuffer {}
 
 impl Default for TextModeBuffer {
     fn default() -> Self {

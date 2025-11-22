@@ -11,6 +11,7 @@ pub use output::{
 };
 mod shell;
 mod panic;
+pub mod keyboard;
 
 #[cfg(test)]
 mod tests;
@@ -25,7 +26,7 @@ pub use boot::{
     display_boot_information_with, display_feature_list, display_feature_list_with,
     display_usage_note, display_usage_note_with,
 };
-pub use shell::show_wait_shell;
+pub use shell::{show_wait_shell, run_shell};
 pub use panic::{display_panic_info_serial, display_panic_info_vga};
 
 use core::fmt;
@@ -72,4 +73,13 @@ pub fn print_impl(args: fmt::Arguments) {
     // 2. Write to Serial
     // SerialPorts implements fmt::Write directly
     serial::with_serial_ports(|ports| ports.write_fmt(args)).unwrap();
+}
+
+pub fn clear_screen() {
+    #[cfg(target_arch = "x86_64")]
+    crate::vga_buffer::clear().ok();
+}
+
+pub fn get_writer() -> impl Output {
+    output::hardware_output()
 }

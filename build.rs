@@ -124,20 +124,28 @@ fn validate_environment() {
 /// Validate the target specification file
 ///
 /// Ensures the target JSON is well-formed and contains required fields.
+/// Uses the TARGET environment variable to determine which target spec to validate.
 fn validate_target_spec() {
-    let target_path = Path::new("x86_64-blog_os.json");
+    let target = env::var("TARGET").unwrap_or_else(|_| "x86_64-blog_os".to_string());
+    
+    // Try custom target JSON first, fall back to default for built-in targets
+    let target_filename = format!("{target}.json");
+    let target_path = Path::new(&target_filename);
 
-    assert!(
-        target_path.exists(),
-        "Target specification file not found: x86_64-blog_os.json"
-    );
+    if !target_path.exists() {
+        // Built-in target (e.g., x86_64-unknown-linux-gnu), no validation needed
+        println!("cargo:warning=Using built-in target '{target}' (no custom target spec)");
+        return;
+    }
 
-    // Read and validate JSON (simple string checks to avoid dependencies)
+    // Read and validate custom target JSON
     let content = fs::read_to_string(target_path)
         .unwrap_or_else(|e| panic!("Failed to read target specification: {e}"));
 
     let spec: TargetSpec = serde_json::from_str(&content)
         .unwrap_or_else(|e| panic!("Target specification is not valid JSON: {e}"));
+    
+    println!("cargo:rustc-env=TARGET_ARCH={}", spec.arch);
 
     assert!(
         !spec.llvm_target.trim().is_empty(),
@@ -149,27 +157,31 @@ fn validate_target_spec() {
         "Target specification is missing a valid 'data-layout' value"
     );
 
+    // Validate architecture is specified (but don't restrict which architecture)
     assert!(
-        spec.arch == "x86_64",
-        "Target specification has unexpected architecture '{}' (expected 'x86_64')",
-        spec.arch
+        !spec.arch.trim().is_empty(),
+        "Target specification is missing a valid 'arch' value"
     );
 
-    assert_eq!(
-        spec.target_pointer_width, 64,
-        "Target specification uses unsupported pointer width {} (expected 64)",
+    // Validate pointer width matches architecture expectations
+    // Most common values: 32 (x86, ARM32), 64 (x86_64, ARM64, RISC-V 64)
+    assert!(
+        spec.target_pointer_width == 32 || spec.target_pointer_width == 64,
+        "Target specification uses unsupported pointer width {} (expected 32 or 64)",
         spec.target_pointer_width
     );
 
+    // Kernel code typically requires red-zone to be disabled
     assert!(
         spec.disable_redzone,
-        "Target specification must set 'disable-redzone' to true"
+        "Target specification must set 'disable-redzone' to true for kernel code"
     );
 
+    // Kernel panic strategy must be abort (no unwinding support in no_std)
     assert_eq!(
         spec.panic_strategy.as_str(),
         "abort",
-        "Target specification must set 'panic-strategy' to 'abort'"
+        "Target specification must set 'panic-strategy' to 'abort' for kernel code"
     );
 }
 

@@ -125,6 +125,11 @@ impl ValidationReport {
     pub fn scratch_tests(&self) -> &[ScratchTestResult] {
         &self.scratch_tests[..self.scratch_count]
     }
+
+    pub fn is_fully_valid(&self) -> bool {
+        let scratch_passed = self.scratch_tests.iter().take(self.scratch_count).all(|t| t.passed);
+        self.lsr_valid && self.fifo_functional && self.baud_config_valid && scratch_passed
+    }
 }
 
 #[cfg(test)]

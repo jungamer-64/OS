@@ -46,7 +46,7 @@ pub const FEATURES: &[&str] = &[
 pub const SYSTEM_INFO: &[(&str, &str)] = &[
     ("Bootloader", "0.9.33"),
     ("Serial", "COM1 (0x3F8) with FIFO check"),
-    ("VGA Mode", "Text 80x25 (0xB8000)"),
+    ("VGA Mode", "Text 80x25 (0xB8000, PC/AT)"),
     ("Safety", "Mutex + Interrupt disabling"),
 ];
 
@@ -112,10 +112,15 @@ pub const SERIAL_NON_CRITICAL_CONTINUATION_LINES: &[&str] =
 // Hardware Constants - Serial Port (UART 16550)
 // ============================================================================
 
-/// COM1 base I/O port address
+/// COM1 base I/O port address (PC/AT standard)
 ///
 /// Standard PC/AT I/O port for COM1 (first serial port).
-/// This is a de-facto standard that has been consistent since the IBM PC/AT.
+/// This is a de-facto standard for x86/x86_64 PC-compatible systems
+/// that has been consistent since the IBM PC/AT.
+///
+/// **Platform Dependency:** This address is specific to PC-compatible systems.
+/// Other architectures (ARM, RISC-V, etc.) use different serial interfaces
+/// (UART, MMIO-based) and will require architecture-specific backends.
 ///
 /// Memory-mapped I/O alternative: Some systems use memory-mapped UART,
 /// but standard PC systems always use I/O ports.

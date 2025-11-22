@@ -1,8 +1,8 @@
 // src/main.rs
 
-//! Minimal x86_64 Rust Operating System Kernel
+//! Minimal Rust Operating System Kernel
 //!
-//! This is a bare-metal OS kernel that runs directly on x86_64 hardware
+//! This is a bare-metal OS kernel that runs directly on hardware
 //! without requiring a host operating system. It provides:
 //!
 //! - VGA text mode output with 16-color support
@@ -156,15 +156,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     diagnostics::print_health_report();
     trace_serial("after health report");
 
-    // Phase 6: Show standby shell to prevent rapid log spam
-    trace_serial("before wait shell");
-    display::show_wait_shell();
-    trace_serial("after wait shell");
-
-    // Phase 7: Enter low-power idle loop
-    // This never returns
-    trace_serial("entering halt loop");
-    init::halt_forever()
+    // Phase 6: Run interactive shell
+    trace_serial("entering interactive shell");
+    display::run_shell();
 }
 
 #[cfg(debug_assertions)]
