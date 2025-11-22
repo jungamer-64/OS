@@ -44,18 +44,46 @@ lazy_static! {
     static ref GDT: (GlobalDescriptorTable, Selectors) = {
         let mut gdt = GlobalDescriptorTable::new();
         
-        // カーネルセグメント（Ring 0）
+        // IMPORTANT: The order of segments MUST follow the SYSRET instruction requirements:
+        // - user_code segment MUST be at (kernel_code + 16)
+        // - user_data segment MUST be at (kernel_code + 24)
+        //
+        // Correct order (satisfies SYSRET):
+        //   0x08: kernel_code (Ring 0 code)
+        //   0x10: kernel_data (Ring 0 data)
+        //   0x18: user_code   (Ring 3 code) = kernel_code + 16 ✓
+        //   0x20: user_data   (Ring 3 data) = kernel_code + 24 ✓
+        //
+        // Reference: Intel SDM Vol. 2B, SYSRET instruction
+        
         let kernel_code = gdt.append(Descriptor::kernel_code_segment());
         let kernel_data = gdt.append(Descriptor::kernel_data_segment());
-        
-        // ユーザーセグメント（Ring 3）
         let user_code = gdt.append(Descriptor::user_code_segment());
         let user_data = gdt.append(Descriptor::user_data_segment());
         
-        // TSS
+        // TSS (can be anywhere after the required segments)
         let tss = gdt.append(Descriptor::tss_segment(unsafe { 
             &*core::ptr::addr_of!(TSS) 
         }));
+        
+        // Verify SYSRET offset requirements
+        // Note: User segments have DPL=3 (Ring 3) in the lower 2 bits,
+        // so we need to mask them out for comparison:
+        //   user_code.0 = 0x1B (0b0001_1011) = base(0x18) + RPL(0x03)
+        //   user_data.0 = 0x23 (0b0010_0011) = base(0x20) + RPL(0x03)
+        let user_code_base = user_code.0 & !0x03;  // Mask out RPL bits
+        let user_data_base = user_data.0 & !0x03;
+        
+        assert_eq!(
+            user_code_base, 
+            kernel_code.0 + 16,
+            "SYSRET requirement violated: user_code must be kernel_code + 16"
+        );
+        assert_eq!(
+            user_data_base, 
+            kernel_code.0 + 24,
+            "SYSRET requirement violated: user_data must be kernel_code + 24"
+        );
         
         (gdt, Selectors {
             kernel_code,

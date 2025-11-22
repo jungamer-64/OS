@@ -10,6 +10,10 @@ use core::mem;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 use super::types::{PhysAddr, VirtAddr, LayoutSize, MemoryError};
+use super::frame::BootInfoFrameAllocator;
+
+/// Global frame allocator
+pub static BOOT_INFO_ALLOCATOR: Mutex<Option<BootInfoFrameAllocator>> = Mutex::new(None);
 
 /// ヒープ統計情報
 #[derive(Debug, Clone, Copy)]

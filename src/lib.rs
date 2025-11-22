@@ -19,6 +19,7 @@ pub mod errors;
 pub mod qemu;
 pub mod arch;
 pub mod kernel;
+pub mod userland;
 
 use core::panic::PanicInfo;
 use crate::arch::{Cpu, ArchCpu};

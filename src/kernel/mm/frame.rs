@@ -80,3 +80,8 @@ unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
         frame
     }
 }
+
+// Safety: BootInfoFrameAllocator only reads from MemoryRegions which is static and immutable after boot.
+// Access to the allocator itself is synchronized via Mutex in BOOT_INFO_ALLOCATOR.
+unsafe impl Send for BootInfoFrameAllocator {}
+unsafe impl Sync for BootInfoFrameAllocator {}

@@ -32,13 +32,44 @@ pub fn init() {
         // Set up STAR register (kernel and user segment selectors)
         let selectors = gdt::selectors();
         
+        // IMPORTANT: Star::write requires base selectors WITHOUT RPL bits
+        // User segments have RPL=3 (Ring 3) in lower 2 bits:
+        //   user_code.0 = 0x1B (base 0x18 + RPL 0x03)
+        //   user_data.0 = 0x23 (base 0x20 + RPL 0x03)
+        // SYSRET will automatically add RPL=3 when returning to user mode
+        
+        use x86_64::structures::gdt::SegmentSelector;
+        let user_code_base = SegmentSelector(selectors.user_code.0 & !0x03);
+        let user_data_base = SegmentSelector(selectors.user_data.0 & !0x03);
+        
         // Use the Star::write method to set up segment selectors
-        Star::write(
+        match Star::write(
             selectors.kernel_code,
             selectors.kernel_data,
-            selectors.user_code,
-            selectors.user_data,
-        ).unwrap();
+            user_code_base,
+            user_data_base,
+        ) {
+            Ok(()) => {},
+            Err(e) => {
+                debug_println!("[ERROR] Star::write failed: {:?}", e);
+                debug_println!("  kernel_code: 0x{:X}", selectors.kernel_code.0);
+                debug_println!("  kernel_data: 0x{:X}", selectors.kernel_data.0);
+                debug_println!("  user_code_base: 0x{:X}", user_code_base.0);
+                debug_println!("  user_data_base: 0x{:X}", user_data_base.0);
+                debug_println!("  Expected: user_code = kernel_code + 16 = 0x{:X}", selectors.kernel_code.0 + 16);
+                debug_println!("  Expected: user_data = kernel_code + 24 = 0x{:X}", selectors.kernel_code.0 + 24);
+                // Try manual STAR MSR write as workaround
+                debug_println!("[WARN] Attempting manual STAR MSR write...");
+                    use x86_64::registers::model_specific::Msr;
+                    let mut star = Msr::new(0xC0000081);
+                    // STAR format: [63:48] user32_cs, [47:32] kernel_cs, [31:0] reserved
+                    // For 64-bit: user_cs = kernel_cs + 16
+                    let star_value = (u64::from(user_code_base.0) << 48) 
+                                   | (u64::from(selectors.kernel_code.0) << 32);
+                    star.write(star_value);
+                    debug_println!("[OK] Manual STAR MSR write completed: 0x{:X}", star_value);
+            }
+        }
         
         // Set up LSTAR register (syscall entry point)
         LStar::write(VirtAddr::new(syscall_entry as *const () as u64));
@@ -520,5 +551,15 @@ pub enum SyscallNumber {
     Alloc = 4,
     /// Deallocate memory
     Dealloc = 5,
+    /// Fork process
+    Fork = 6,
+    /// Execute program
+    Exec = 7,
+    /// Wait for child process
+    Wait = 8,
+    /// Map memory
+    Mmap = 9,
+    /// Unmap memory
+    Munmap = 10,
 }
 

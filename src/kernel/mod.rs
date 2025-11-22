@@ -12,4 +12,6 @@ pub mod shell;
 pub mod bench;
 pub mod syscall;
 pub mod process;
+pub mod scheduler;
 pub mod usermode;
+pub mod loader;

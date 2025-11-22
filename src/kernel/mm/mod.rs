@@ -5,12 +5,18 @@ pub mod paging;
 pub mod allocator;
 pub mod frame;
 pub mod types;
+pub mod user_paging;
+pub mod page_fault;
 
 pub use allocator::{LockedHeap, LinkedListAllocator};
 pub use frame::BootInfoFrameAllocator;
 pub use types::{PhysAddr, VirtAddr, LayoutSize, PageFrameNumber, MemoryError};
 
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
+use core::sync::atomic::AtomicU64;
+
+/// Physical memory offset (global)
+pub static PHYS_MEM_OFFSET: AtomicU64 = AtomicU64::new(0);
 
 /// ブート情報からヒープを初期化
 ///

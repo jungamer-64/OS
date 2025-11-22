@@ -11,6 +11,12 @@ use alloc::alloc::{alloc_zeroed, Layout};
 use spin::Mutex;
 use lazy_static::lazy_static;
 
+pub mod lifecycle;
+pub mod switch;
+
+pub use lifecycle::{create_user_process, terminate_process};
+pub use switch::context_switch;
+
 /// Process ID type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProcessId(u64);
@@ -117,9 +123,48 @@ pub struct Process {
     
     /// Saved CPU state for context switching
     saved_registers: RegisterState,
+
+    /// Saved kernel stack pointer for context switching
+    /// This holds the RSP when the process is switched out
+    context_rsp: u64,
+
+    /// Parent Process ID
+    parent_pid: Option<ProcessId>,
+
+    /// Exit code (if terminated)
+    exit_code: Option<i32>,
+
+    /// Top of mmap allocation (bump allocator)
+    mmap_top: VirtAddr,
 }
 
 impl Process {
+    /// Create a new process from a loaded program
+    ///
+    /// This is a convenience constructor that creates a process from
+    /// a `LoadedProgram` returned by the loader.
+    ///
+    /// # Arguments
+    /// * `pid` - Process ID
+    /// * `page_table_frame` - Physical frame containing the process's page table
+    /// * `kernel_stack` - Virtual address of the kernel stack
+    /// * `loaded_program` - Information about the loaded program
+    #[must_use]
+    pub fn from_loaded_program(
+        pid: ProcessId,
+        page_table_frame: PhysFrame,
+        kernel_stack: VirtAddr,
+        loaded_program: &crate::kernel::loader::LoadedProgram,
+    ) -> Self {
+        Self::new(
+            pid,
+            page_table_frame,
+            kernel_stack,
+            loaded_program.stack_top,
+            loaded_program.entry_point,
+        )
+    }
+    
     /// Create a new process
     ///
     /// # Arguments
@@ -148,6 +193,10 @@ impl Process {
             kernel_stack,
             user_stack,
             saved_registers: registers,
+            context_rsp: 0, // Will be set during context switch
+            parent_pid: None,
+            exit_code: None,
+            mmap_top: VirtAddr::new(0x0000_0010_0000_0000), // Start mmap at 64GB
         }
     }
     
@@ -195,6 +244,55 @@ impl Process {
     /// Get mutable saved registers
     pub const fn registers_mut(&mut self) -> &mut RegisterState {
         &mut self.saved_registers
+    }
+
+    /// Get mutable reference to context RSP
+    pub fn context_rsp_mut(&mut self) -> &mut u64 {
+        &mut self.context_rsp
+    }
+
+    /// Get context RSP
+    pub const fn context_rsp(&self) -> u64 {
+        self.context_rsp
+    }
+
+    /// Update process image (for exec)
+    pub fn update_image(&mut self, page_table_frame: PhysFrame, user_stack: VirtAddr, _entry_point: VirtAddr) {
+        self.page_table_frame = page_table_frame;
+        self.user_stack = user_stack;
+        // Note: entry_point is not stored in Process, it's in registers.rip
+        // But we update it here for completeness if we add it later.
+        // Actually, we update registers in exec_process.
+    }
+
+    /// Get parent PID
+    pub fn parent_pid(&self) -> Option<ProcessId> {
+        self.parent_pid
+    }
+
+    /// Set parent PID
+    pub fn set_parent_pid(&mut self, pid: ProcessId) {
+        self.parent_pid = Some(pid);
+    }
+
+    /// Get exit code
+    pub fn exit_code(&self) -> Option<i32> {
+        self.exit_code
+    }
+
+    /// Set exit code
+    pub fn set_exit_code(&mut self, code: i32) {
+        self.exit_code = Some(code);
+    }
+
+    /// Get mmap top
+    pub fn mmap_top(&self) -> VirtAddr {
+        self.mmap_top
+    }
+
+    /// Set mmap top
+    pub fn set_mmap_top(&mut self, addr: VirtAddr) {
+        self.mmap_top = addr;
     }
 }
 
@@ -261,6 +359,26 @@ impl ProcessTable {
     /// Get all ready processes
     pub fn ready_processes(&self) -> impl Iterator<Item = &Process> {
         self.processes.iter().filter(|p| p.state() == ProcessState::Ready)
+    }
+
+    /// Find a terminated child of the given parent
+    /// Returns (child_pid, exit_code) if found
+    pub fn find_terminated_child(&self, parent_pid: ProcessId) -> Option<(ProcessId, i32)> {
+        self.processes.iter()
+            .find(|p| p.parent_pid() == Some(parent_pid) && p.state() == ProcessState::Terminated)
+            .map(|p| (p.pid(), p.exit_code().unwrap_or(0)))
+    }
+
+    /// Check if a process has any children
+    pub fn has_children(&self, parent_pid: ProcessId) -> bool {
+        self.processes.iter().any(|p| p.parent_pid() == Some(parent_pid))
+    }
+    
+    /// Remove a process from the table (reap)
+    pub fn remove_process(&mut self, pid: ProcessId) {
+        if let Some(idx) = self.processes.iter().position(|p| p.pid() == pid) {
+            self.processes.remove(idx);
+        }
     }
 }
 
@@ -514,6 +632,65 @@ pub unsafe fn jump_to_usermode_with_process(process: &Process) -> ! {
     let entry = VirtAddr::new(process.registers().rip);
     unsafe {
         jump_to_usermode(entry, process.user_stack())
+    }
+}
+
+
+
+/// Schedule the next process and switch to it
+///
+/// This function:
+/// 1. Picks the next process using the scheduler
+/// 2. Releases the process table lock (critical for avoiding deadlocks)
+/// 3. Performs the context switch
+///
+/// If no other process is ready, it returns immediately (if current is ready)
+/// or loops/halts (if current is blocked).
+pub fn schedule_next() {
+    use crate::kernel::scheduler::SCHEDULER;
+    
+    // 1. Pick next process and prepare for switch
+    let switch_info = {
+        let mut table = PROCESS_TABLE.lock();
+        let mut scheduler = SCHEDULER.lock();
+        
+        let current_pid = table.current_pid;
+        
+        // If current process is running, it should be in Ready state (unless it blocked itself)
+        // The scheduler will pick it up if it's Ready.
+        
+        if let Some(next_pid) = scheduler.schedule() {
+            if Some(next_pid) == current_pid {
+                // Same process, no switch needed
+                None
+            } else {
+                // Switch needed
+                let current = table.current_process_mut().expect("Current process invalid");
+                let current_ctx_ptr = current.context_rsp_mut() as *mut u64;
+                
+                let next = table.get_process(next_pid).expect("Next process invalid");
+                let next_ctx_val = next.context_rsp();
+                
+                // Update current PID
+                table.set_current(next_pid);
+                
+                Some((current_ctx_ptr, next_ctx_val))
+            }
+        } else {
+            // No ready processes.
+            // If current is blocked, we have a problem (deadlock/idle).
+            // For now, we assume there's always an idle process or we just return.
+            // But if we return and we are Blocked, we will just loop in sys_wait?
+            // Ideally we should enable interrupts and halt.
+            None
+        }
+    }; // Locks released
+    
+    // 2. Perform switch if needed
+    if let Some((current_ctx_ptr, next_ctx_val)) = switch_info {
+        unsafe {
+            crate::kernel::process::switch::switch_context_asm(current_ctx_ptr, next_ctx_val);
+        }
     }
 }
 

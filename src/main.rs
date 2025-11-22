@@ -38,6 +38,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // システムコール機構初期化
     tiny_os::arch::x86_64::syscall::init();
 
+    // 物理メモリオフセットを保存（Phase 2で必要）
+    if let Some(offset) = boot_info.physical_memory_offset.into_option() {
+        tiny_os::kernel::mm::PHYS_MEM_OFFSET.store(offset, core::sync::atomic::Ordering::Relaxed);
+        debug_println!("[OK] Physical memory offset initialized: 0x{:x}", offset);
+    } else {
+        // マッピングが失敗した場合や設定されていない場合
+        // ここでパニックするか、あるいは後でエラーにするか
+        debug_println!("[WARNING] Physical memory offset not provided by bootloader!");
+    }
+
     // Framebuffer初期化とコンソール設定
     if let Some(framebuffer) = boot_info.framebuffer.as_mut() {
         let info = framebuffer.info();
@@ -55,27 +65,29 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let virt_mem_offset = x86_64::VirtAddr::new(phys_mem_offset);
     
     let _mapper = unsafe { tiny_os::kernel::mm::paging::init(virt_mem_offset) };
-    let _frame_allocator = unsafe {
+    
+    // グローバルフレームアロケータの初期化 (Phase 2)
+    // 注意: BootInfoFrameAllocatorは一度しか初期化してはならない（同じ領域を指すため）
+    let frame_allocator = unsafe {
         tiny_os::kernel::mm::frame::BootInfoFrameAllocator::init(&boot_info.memory_regions)
     };
-    debug_println!("[OK] Paging & Frame Allocator initialized");
+    {
+        let mut allocator = tiny_os::kernel::mm::allocator::BOOT_INFO_ALLOCATOR.lock();
+        *allocator = Some(frame_allocator);
+    }
+    debug_println!("[OK] Paging & Global Frame Allocator initialized");
 
     // ヒープ初期化
-    match tiny_os::kernel::mm::init_heap(&boot_info.memory_regions) {
-        Ok((heap_start_phys, heap_size)) => {
-            let heap_start_virt = tiny_os::kernel::mm::VirtAddr::new(
-                heap_start_phys.as_usize() + phys_mem_offset as usize
-            );
-            // SAFETY: init_heapで取得した有効な領域を仮想アドレスに変換して使用
-            match unsafe { tiny_os::init_heap(heap_start_virt, heap_size) } {
-                Ok(()) => debug_println!("[OK] Heap initialized"),
-                Err(tiny_os::HeapError::AlreadyInitialized) => {
-                    debug_println!("[WARN] Heap already initialized");
-                }
-            }
-        }
-        Err(_) => debug_println!("[FAIL] Heap initialization failed"),
+    let (heap_start_phys, heap_size) = tiny_os::kernel::mm::init_heap(&boot_info.memory_regions)
+        .expect("Heap initialization failed");
+    
+    let heap_start_virt = tiny_os::kernel::mm::VirtAddr::new((heap_start_phys.as_u64() + phys_mem_offset) as usize);
+    
+    unsafe {
+        tiny_os::init_heap(heap_start_virt, heap_size)
+            .expect("Heap initialization failed");
     }
+    debug_println!("[OK] Heap initialized at 0x{:x} (Size: {} bytes)", heap_start_virt.as_usize(), heap_size.as_usize());
     
     // ウェルカムバナー
     println!("========================================");

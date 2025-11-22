@@ -6,7 +6,7 @@
 
 use crate::arch::Cpu;
 use crate::debug_println;
-use crate::println;
+
 use crate::kernel::core::traits::CharDevice;
 
 /// Maximum length for sys_write (1MB)
@@ -48,6 +48,8 @@ pub const EIO: SyscallResult = -5;       // I/O error
 pub const EBADF: SyscallResult = -9;     // Bad file descriptor
 pub const ENOMEM: SyscallResult = -12;   // Out of memory
 pub const EFAULT: SyscallResult = -14;   // Bad address (invalid pointer)
+pub const ECHILD: SyscallResult = -10;   // No child processes
+pub const ESRCH: SyscallResult = -3;     // No such process
 pub const EINVAL: SyscallResult = -22;   // Invalid argument
 pub const ENOSYS: SyscallResult = -38;   // Function not implemented
 
@@ -105,9 +107,20 @@ pub fn sys_read(_buf: u64, _len: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6:
 
 /// sys_exit - Exit current process
 pub fn sys_exit(code: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    println!("[SYSCALL] sys_exit called with code={}", code);
-    // TODO: Actually terminate the process
-    // For now, just loop
+    use crate::kernel::process::{PROCESS_TABLE, schedule_next, terminate_process};
+    
+    let pid = {
+        let table = PROCESS_TABLE.lock();
+        table.current_process().map(|p| p.pid())
+    };
+    
+    if let Some(pid) = pid {
+        terminate_process(pid, code as i32);
+        // Schedule next process (this process will not be picked again)
+        schedule_next();
+    }
+    
+    // Should not be reached
     loop {
         crate::arch::ArchCpu::halt();
     }
@@ -131,6 +144,235 @@ pub fn sys_dealloc(ptr: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _ar
     ENOSYS
 }
 
+/// sys_fork - Fork process
+pub fn sys_fork(_arg1: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    match crate::kernel::process::lifecycle::fork_process() {
+        Ok(pid) => pid.as_u64() as SyscallResult,
+        Err(_) => ENOMEM,
+    }
+}
+
+/// sys_exec - Execute program
+pub fn sys_exec(_path: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    // Note: path argument is ignored for now as we only have one embedded program
+    match crate::kernel::process::lifecycle::exec_process() {
+        Ok(_) => 0,
+        Err(_) => ENOMEM,
+    }
+}
+
+/// sys_wait - Wait for child process
+pub fn sys_wait(_pid: u64, status_ptr: u64, _options: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    use crate::kernel::process::{PROCESS_TABLE, ProcessState, schedule_next};
+    
+    loop {
+        let result = {
+            let mut table = PROCESS_TABLE.lock();
+            let current_pid = match table.current_process().map(|p| p.pid()) {
+                Some(pid) => pid,
+                None => return ESRCH,
+            };
+            
+            if let Some((child_pid, _exit_code)) = table.find_terminated_child(current_pid) {
+                // Found terminated child
+                
+                // Write exit code to user pointer if provided
+                if status_ptr != 0 {
+                    if is_user_address(status_ptr) {
+                        // TODO: Check validity of status_ptr (mapped and writable)
+                        // unsafe { *(status_ptr as *mut i32) = exit_code; }
+                        // We need to map it or use copy_to_user (not implemented yet)
+                        // For now, just ignore or assume identity map (unsafe)
+                        debug_println!("[SYSCALL] sys_wait: status_ptr=0x{:x} provided but copy_to_user not impl", status_ptr);
+                    } else {
+                        debug_println!("[SYSCALL] sys_wait: invalid status_ptr 0x{:x}", status_ptr);
+                        // return EFAULT; // Optional: return error?
+                    }
+                }
+                
+                // Reap the child
+                table.remove_process(child_pid);
+                
+                Ok(child_pid.as_u64() as SyscallResult)
+            } else if table.has_children(current_pid) {
+                // Has children but none terminated
+                // Block current process
+                if let Some(current) = table.current_process_mut() {
+                    current.set_state(ProcessState::Blocked);
+                }
+                Err(0) // Signal to block
+            } else {
+                // No children
+                Err(ECHILD)
+            }
+        };
+        
+        match result {
+            Ok(pid) => return pid,
+            Err(0) => {
+                // Block and switch
+                schedule_next();
+                // When we return, we loop again to check children
+            },
+            Err(e) => return e,
+        }
+    }
+}
+
+/// sys_mmap - Map memory
+pub fn sys_mmap(addr: u64, len: u64, _prot: u64, _flags: u64, _fd: u64, _offset: u64) -> SyscallResult {
+    use crate::kernel::process::PROCESS_TABLE;
+    use crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR;
+
+    // Actually map_user_stack maps a range. We can reuse it or make a generic map_user_memory.
+    // map_user_stack is in user_paging.rs.
+    // Let's check user_paging.rs exports.
+    
+    if len == 0 {
+        return EINVAL;
+    }
+    
+    // Align length to page size
+    let len_aligned = (len + 4095) & !4095;
+    
+    let mut table = PROCESS_TABLE.lock();
+    let process = match table.current_process_mut() {
+        Some(p) => p,
+        None => return ESRCH,
+    };
+    
+    // Determine address
+    let start_addr = if addr == 0 {
+        process.mmap_top()
+    } else {
+        // Fixed address request not supported yet for simplicity
+        return EINVAL;
+    };
+    
+    // Update mmap_top
+    let new_top = start_addr + len_aligned;
+    process.set_mmap_top(new_top);
+    
+    // Map memory
+    // We need to access the page table of the current process.
+    // But the page table is active (CR3).
+    // So we can just map into the current address space!
+    // But we need a mapper.
+    // We can create a temporary mapper using CR3.
+    
+    let phys_mem_offset = x86_64::VirtAddr::new(crate::kernel::mm::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed));
+    let (l4_frame, _) = x86_64::registers::control::Cr3::read();
+    let l4_table_ptr = (phys_mem_offset + l4_frame.start_address().as_u64()).as_mut_ptr();
+    let l4_table = unsafe { &mut *l4_table_ptr };
+    let mut mapper = unsafe { x86_64::structures::paging::OffsetPageTable::new(l4_table, phys_mem_offset) };
+    
+    let mut allocator_lock = BOOT_INFO_ALLOCATOR.lock();
+    let frame_allocator = match allocator_lock.as_mut() {
+        Some(alloc) => alloc,
+        None => return ENOMEM,
+    };
+    
+    // We use map_user_stack logic but for arbitrary range?
+    // map_user_stack allocates frames and maps them.
+    // But it assumes stack grows down?
+    // Let's check map_user_stack implementation.
+    // It maps [stack_bottom, stack_top).
+    // So we can use it, or write a loop here.
+    
+    use x86_64::structures::paging::{Page, PageTableFlags, Mapper, FrameAllocator, Size4KiB};
+    
+    let start_page = Page::<Size4KiB>::containing_address(start_addr);
+    let end_page = Page::<Size4KiB>::containing_address(start_addr + len_aligned);
+    let page_range = Page::range(start_page, end_page);
+    
+    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    
+    for page in page_range {
+        let frame = match frame_allocator.allocate_frame() {
+            Some(f) => f,
+            None => return ENOMEM,
+        };
+        unsafe {
+            match mapper.map_to(page, frame, flags, frame_allocator) {
+                Ok(tlb) => tlb.flush(),
+                Err(_) => return ENOMEM, // TODO: Cleanup on failure
+            }
+        }
+    }
+    
+    // Zero the memory
+    // Newly allocated frames might contain garbage.
+    // Security risk! We should zero them.
+    // Since we just mapped them, we can write to them via the direct map.
+    
+    let phys_mem_offset = x86_64::VirtAddr::new(crate::kernel::mm::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed));
+    
+    // We need to iterate over the pages we just mapped and zero them.
+    // We can't easily get the frames again without walking the page table, 
+    // but we know the virtual addresses.
+    // However, we are in kernel mode. We can just write to the user address?
+    // No, SMAP might prevent it (if enabled).
+    // Safer to use the direct map.
+    
+    // Let's walk the range again and get the physical address.
+    // Or better, we should have zeroed them IN the allocation loop.
+    // But we didn't want to change the loop structure too much.
+    // Let's do a second pass for now.
+    
+    for page in page_range {
+
+        if let Ok(frame) = mapper.translate_page(page) {
+             let frame_ptr = (phys_mem_offset + frame.start_address().as_u64()).as_mut_ptr::<u8>();
+             unsafe {
+                 core::ptr::write_bytes(frame_ptr, 0, 4096);
+             }
+        }
+    }
+    
+    start_addr.as_u64() as SyscallResult
+}
+
+/// sys_munmap - Unmap memory
+pub fn sys_munmap(addr: u64, len: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+
+    
+    if len == 0 {
+        return EINVAL;
+    }
+    
+    // Align length
+    let len_aligned = (len + 4095) & !4095;
+    
+    // We need to unmap pages.
+    // Access mapper via CR3.
+    let phys_mem_offset = x86_64::VirtAddr::new(crate::kernel::mm::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed));
+    let (l4_frame, _) = x86_64::registers::control::Cr3::read();
+    let l4_table_ptr = (phys_mem_offset + l4_frame.start_address().as_u64()).as_mut_ptr();
+    let l4_table = unsafe { &mut *l4_table_ptr };
+    let mut mapper = unsafe { x86_64::structures::paging::OffsetPageTable::new(l4_table, phys_mem_offset) };
+    
+    use x86_64::structures::paging::{Page, Mapper, Size4KiB};
+    
+    let start_addr = x86_64::VirtAddr::new(addr);
+    let start_page = Page::<Size4KiB>::containing_address(start_addr);
+    let end_page = Page::<Size4KiB>::containing_address(start_addr + len_aligned);
+    let page_range = Page::range(start_page, end_page);
+    
+    for page in page_range {
+        // Unmap
+        // We ignore errors (e.g. page not mapped)
+        if let Ok((_frame, _flags)) = mapper.unmap(page) {
+            // Flush TLB
+            x86_64::instructions::tlb::flush(page.start_address());
+            
+            // TODO: Free frame
+            // We can't free frames yet.
+        }
+    }
+    
+    0
+}
+
 /// Syscall handler function type
 type SyscallHandler = fn(u64, u64, u64, u64, u64, u64) -> SyscallResult;
 
@@ -142,6 +384,11 @@ static SYSCALL_TABLE: &[SyscallHandler] = &[
     sys_getpid,   // 3
     sys_alloc,    // 4
     sys_dealloc,  // 5
+    sys_fork,     // 6
+    sys_exec,     // 7
+    sys_wait,     // 8
+    sys_mmap,     // 9
+    sys_munmap,   // 10
 ];
 
 /// Dispatch a syscall to its handler
