@@ -4,6 +4,9 @@
 
 このガイドでは、Rust OS カーネルを実機にデプロイして実行する手順を説明します。QEMU エミュレーターでの動作確認後、実際のx86_64ハードウェアでの動作確認を行う際に参照してください。
 
+> [!NOTE]
+> 現在、実機デプロイは x86_64 アーキテクチャでのみサポートされています。他のアーキテクチャ (AArch64, RISC-V) への移植方法については [docs/PORTING.md](PORTING.md) を参照してください。
+
 ## 前提条件
 
 ### 必要なもの
@@ -26,12 +29,31 @@
 ### ソフトウェア要件
 
 ```bash
-# ddコマンド (Linuxでは標準インストール済み)
+# ddコマンド (Linuxでは標準インストーラ済み)
 which dd
 
 # オプション: isoイメージ作成用
 sudo apt install xorriso grub-pc-bin  # Ubuntu/Debian
 ```
+
+## アーキテクチャ選択
+
+現在の実装では x86_64 のみがサポートされています。
+
+```bash
+# デフォルト (x86_64)
+MAKE build
+
+# 明示的にアーキテクチャを指定
+make build ARCH=x86_64
+
+# 将来的なサポート (現在は未実装)
+# make build ARCH=aarch64
+# make build ARCH=riscv64
+```
+
+> [!IMPORTANT]
+> ビルドシステムは複数アーキテクチャの基盤が整っていますが、実装されているのは x86_64 のみです。
 
 ## デプロイ方法
 
@@ -158,18 +180,33 @@ cdrecord -v dev=/dev/sr0 rust_os.iso  # CLIツール
 
 ### UEFI モード
 
-⚠️ **制限事項**: 現在のカーネルはUEFI framebufferに非対応です。
+📋 **Framebuffer実装状況**: 基盤モジュール完成（Phase 1-2）
+
+**現在の状態:**
+
+- ✅ Framebufferモジュール実装済み（pixel操作、font rendering）
+- ✅ Display抽象化層統合済み
+- ⚠️ Bootloader統合は保留中（bootloader 0.11との互換性問題により）
 
 **UEFI環境で動作させる場合:**
 
-1. CSM (Compatibility Support Module) を有効化
-2. これにより、UEFIファームウェアがBIOSエミュレーションを提供
+1. **CSM有効化（推奨）:**
+   - CSM (Compatibility Support Module) を有効化
+   - UEFIファームウェアがBIOSエミュレーションを提供
+   - VGAテキストモードで完全動作
 
-**純粋なUEFI (CSMなし) では:**
+2. **純粋なUEFI（CSMなし）:**
+   - 現在は非対応（画面表示不可の可能性）
+   - シリアルポート出力は動作する可能性
+   - 将来の拡張: framebufferモジュールを有効化予定
 
-- VGA テキストモード (0xB8000) が利用できない可能性
-- 画面が真っ黒になる場合あり
-- シリアルポート出力は動作する可能性
+**技術詳細:**
+
+Framebufferサポートモジュールは実装済みです：
+
+- `src/framebuffer/`: ピクセル操作、8x16フォント、RGB色変換
+- `src/display/backend.rs`: FramebufferDisplayバックエンド
+- Bootloader 0.9との統合方法は今後検討予定
 
 ## トラブルシューティング
 

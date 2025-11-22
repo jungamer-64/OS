@@ -8,15 +8,25 @@ A minimal, educational operating system kernel written in Rust. This project dem
 
 ## 🏛️ Architecture Support
 
-**Currently Supported:** x86_64 (PC/AT compatible systems)
+**Currently Supported:**
 
-The kernel is designed with an architecture abstraction layer (`src/arch/`) that separates platform-specific code from core logic. While currently only x86_64 is implemented, the codebase is structured to facilitate future ports to other architectures such as ARM, RISC-V, or other platforms.
+- ✅ **x86_64** (PC/AT compatible systems) - Fully implemented and tested
+
+**Planned Support** (infrastructure in place):
+
+- 🔨 **AArch64** (ARM 64-bit) - Build system and constants configured
+- 🔨 **RISC-V 64-bit** - Build system and constants configured  
+- 🔨 **x86** (32-bit) - Partial conditional compilation support
+
+The kernel is designed with an architecture abstraction layer (`src/arch/`) that separates platform-specific code from core logic. The build system (`build.rs`, `Makefile`) has been generalized to support multiple target architectures, and hardware constants are conditionally compiled based on the target platform.
+
+**For Porting Information:** See [docs/PORTING.md](docs/PORTING.md) for a comprehensive guide on adding support for new architectures.
 
 **Architecture-Specific Components:**
 
-- CPU operations (halt, interrupt control)
-- Serial port I/O (PC/AT UART 16550)
-- VGA text buffer (0xB8000 legacy PC/AT standard)
+- CPU operations (halt, interrupt control, timestamp counter)
+- Serial port I/O (x86/x86_64: I/O mapped UART 16550, other: MMIO-based)
+- VGA text buffer (x86/x86_64: 0xB8000 legacy standard, other: framebuffer/serial)
 - QEMU debug interfaces
 
 ## ✨ Features
@@ -61,7 +71,7 @@ rustup override set nightly
 rustup component add rust-src llvm-tools-preview
 rustup component add clippy rustfmt
 
-# Install QEMU for x86_64
+# Install QEMU for x86_64 emulation
 # On Ubuntu/Debian:
 sudo apt install qemu-system-x86
 
@@ -70,6 +80,9 @@ brew install qemu
 
 # On Windows:
 # Download from https://www.qemu.org/download/
+
+# For other architectures (future):
+# sudo apt install qemu-system-arm qemu-system-misc  # AArch64, RISC-V
 ```
 
 ### Building
@@ -89,7 +102,7 @@ cargo build --release
 ### Running
 
 ```bash
-# Run in QEMU
+# Run in QEMU (x86_64)
 make run
 
 # Run release version
@@ -97,6 +110,9 @@ make run-release
 
 # Run with GDB debugger (waits for connection)
 make debug
+
+# For future: specify architecture
+# make run ARCH=aarch64
 ```
 
 The kernel will boot and display:

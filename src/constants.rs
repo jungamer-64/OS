@@ -44,7 +44,7 @@ pub const FEATURES: &[&str] = &[
 /// Each tuple contains a (label, value) pair describing
 /// a kernel component or configuration.
 pub const SYSTEM_INFO: &[(&str, &str)] = &[
-    ("Bootloader", "0.9.33"),
+    ("Bootloader", "0.11.x"),
     ("Serial", "COM1 (0x3F8) with FIFO check"),
     ("VGA Mode", "Text 80x25 (0xB8000, PC/AT)"),
     ("Safety", "Mutex + Interrupt disabling"),
@@ -109,28 +109,43 @@ pub const SERIAL_NON_CRITICAL_CONTINUATION_LINES: &[&str] =
     &["       Continuing with available subsystems", ""];
 
 // ============================================================================
-// Hardware Constants - Serial Port (UART 16550)
+// Hardware Constants - Platform-Specific
 // ============================================================================
 
-/// COM1 base I/O port address (PC/AT standard)
+/// COM1 base I/O port address (x86/x86_64 PC/AT standard)
 ///
 /// Standard PC/AT I/O port for COM1 (first serial port).
 /// This is a de-facto standard for x86/x86_64 PC-compatible systems
 /// that has been consistent since the IBM PC/AT.
 ///
-/// **Platform Dependency:** This address is specific to PC-compatible systems.
-/// Other architectures (ARM, RISC-V, etc.) use different serial interfaces
-/// (UART, MMIO-based) and will require architecture-specific backends.
+/// **Platform Dependency:** This address is specific to x86/x86_64 PC-compatible systems.
+/// Other architectures use different serial interfaces:
+/// - ARM: Memory-mapped UART (e.g., PL011 at various addresses)
+/// - RISC-V: Memory-mapped UART (e.g., 16550 compatible at MMIO addresses)
+/// - AArch64: Memory-mapped UART (typically at MMIO base addresses)
 ///
-/// Memory-mapped I/O alternative: Some systems use memory-mapped UART,
-/// but standard PC systems always use I/O ports.
+/// For QEMU virt machines on non-x86:
+/// - AArch64: UART at 0x09000000
+/// - RISC-V: UART at 0x10000000
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub const SERIAL_IO_PORT: u16 = 0x3F8;
 
-/// Baud rate divisor for 38400 baud
+/// Serial UART memory-mapped I/O base address (AArch64 QEMU virt)
 ///
-/// Calculation: 115200 / 38400 = 3
-/// Base frequency: 115200 Hz (standard UART oscillator / 16)
-/// Target baud: 38400 (good balance of speed and reliability)
+/// This is the MMIO base address for the serial UART on AArch64 QEMU virt machine.
+/// Different hardware platforms may use different addresses.
+#[cfg(target_arch = "aarch64")]
+pub const SERIAL_MMIO_BASE: usize = 0x09000000;
+
+/// Serial UART memory-mapped I/O base address (RISC-V QEMU virt)
+///
+/// This is the MMIO base address for the serial UART on RISC-V QEMU virt machine.
+#[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
+pub const SERIAL_MMIO_BASE: usize = 0x10000000;
+
+/// Baud rate for serial communication (architecture-independent)
+///
+/// Target: 38400 baud (good balance of speed and reliability)
 ///
 /// Common alternatives:
 /// - 115200 baud: divisor = 1 (fastest, may have errors on poor hardware)
@@ -138,6 +153,16 @@ pub const SERIAL_IO_PORT: u16 = 0x3F8;
 /// - 38400 baud: divisor = 3 (chosen for reliability)
 /// - 19200 baud: divisor = 6
 /// - 9600 baud: divisor = 12 (very reliable, slower)
+pub const BAUD_RATE: u32 = 38400;
+
+/// Baud rate divisor for 38400 baud (x86/x86_64 specific)
+///
+/// Calculation: 115200 / 38400 = 3
+/// Base frequency: 115200 Hz (standard UART oscillator / 16)
+///
+/// This divisor is specific to x86/x86_64 UART implementation.
+/// Other architectures may use different clock divisors or direct baud rate configuration.
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub const BAUD_RATE_DIVISOR: u16 = 3;
 
 /// Timeout iterations for serial port operations
@@ -234,7 +259,8 @@ pub const SCRATCH_TEST_SECONDARY: u8 = 0x55;
 // Compile-Time Validation
 // ============================================================================
 
-// Ensure baud rate divisor is non-zero (would cause divide-by-zero in UART)
+// Ensure baud rate divisor is non-zero (x86/x86_64 only)
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 const _: () = assert!(BAUD_RATE_DIVISOR > 0, "Baud rate divisor must be non-zero");
 
 // Ensure timeout is reasonable (not too small to be useless, not too large to hang)
@@ -243,7 +269,8 @@ const _: () = assert!(
     "Timeout iterations must be between 1000 and 100M"
 );
 
-// Ensure serial port address is in valid I/O port range
+// Ensure serial port address is in valid I/O port range (x86/x86_64 only)
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 const _: () = assert!(
     SERIAL_IO_PORT >= 0x100 && SERIAL_IO_PORT < 0xFFFF,
     "Serial port address must be in valid I/O range"

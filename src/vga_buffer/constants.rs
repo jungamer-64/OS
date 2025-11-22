@@ -2,12 +2,26 @@
 
 //! Constants for VGA text buffer operations
 
-/// VGA text buffer physical memory address
+/// VGA text buffer physical memory address (x86/x86_64 PC/AT standard)
 ///
 /// This address (0xB8000) is specific to PC/AT-compatible systems
 /// (x86, x86_64) and represents the standard legacy VGA text mode buffer.
-/// Other architectures will require different display backends.
+///
+/// **Platform Dependency:** This is x86/x86_64 specific.
+/// Other architectures will require different display backends:
+/// - Framebuffer devices (common on ARM/AArch64/RISC-V)
+/// - Serial console as primary output
+/// - GPU-based rendering
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub const VGA_BUFFER_ADDR: usize = 0xb8000;
+
+/// VGA buffer address stub for non-x86 architectures
+///
+/// On non-x86 platforms, VGA text mode is not available.
+/// This constant is provided for compatibility but should not be used.
+/// Alternative display methods should be implemented.
+#[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+pub const VGA_BUFFER_ADDR: usize = 0; // Stub - not available on this architecture
 
 /// Screen dimensions
 pub const VGA_WIDTH: usize = 80;

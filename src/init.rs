@@ -8,10 +8,6 @@
 //! - Detailed error reporting
 //! - Rollback support for failed initialization
 
-use crate::diagnostics::DIAGNOSTICS;
-use crate::println;
-use crate::serial::{InitError as SerialInitError};
-use crate::display::color::ColorCode;
 use core::sync::atomic::{AtomicU8, Ordering};
 use crate::arch::{Cpu, ArchCpu};
 use crate::serial;

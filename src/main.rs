@@ -50,7 +50,7 @@ use tiny_os::{diagnostics, display, init, serial, vga_buffer};
 use tiny_os::{print, println};
 use tiny_os::arch::{Cpu, ArchCpu};
 
-use bootloader::{entry_point, BootInfo};
+use bootloader_api::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 
 
@@ -88,7 +88,7 @@ entry_point!(kernel_main);
 ///
 /// This function never returns (`-> !`). The kernel runs indefinitely
 /// in a low-power idle loop until reset or power-off.
-fn kernel_main(boot_info: &'static BootInfo) -> ! {
+fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // Ensure interrupts remain disabled until we set up an IDT. The bootloader leaves
     // them enabled, which would trigger timer interrupts we cannot handle yet and
     // cause triple-fault reboots.

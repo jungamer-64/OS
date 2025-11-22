@@ -12,7 +12,7 @@ use super::backend::{default_display_backend, DisplayHardware};
 use super::output::{broadcast_args_with, broadcast_with, hardware_output, Output};
 use crate::constants::{FEATURES, SERIAL_HINTS, SYSTEM_INFO};
 use crate::vga_buffer::ColorCode;
-use bootloader::BootInfo;
+use bootloader_api::BootInfo;
 
 #[cfg(debug_assertions)]
 fn usage_note_trace(label: &str) {
@@ -39,7 +39,7 @@ fn status_trace(_label: &str) {}
 /// # Arguments
 ///
 /// * `boot_info` - Boot information from the bootloader
-pub fn display_boot_environment(boot_info: &'static BootInfo) {
+pub fn display_boot_environment(boot_info: &BootInfo) {
     let mut out = hardware_output();
     display_boot_environment_with(&mut out, boot_info);
 }
@@ -55,7 +55,7 @@ pub fn display_boot_environment(boot_info: &'static BootInfo) {
 ///
 /// * `out` - The output target
 /// * `boot_info` - Boot information from the bootloader
-pub fn display_boot_environment_with<O: Output>(out: &mut O, _boot_info: &'static BootInfo) {
+pub fn display_boot_environment_with<O: Output>(out: &mut O, _boot_info: &BootInfo) {
     broadcast_args_with(
         out,
         format_args!("\n--- Boot Environment ---\n"),

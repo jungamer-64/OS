@@ -1,4 +1,4 @@
-// src/display/core.rs
+// src/display/output.rs
 
 use core::fmt;
 use crate::vga_buffer::ColorCode;
@@ -47,10 +47,10 @@ impl Output for HardwareOutput {
         }
 
         // Write to serial (ignore color)
-        serial::with_serial_ports(|ports| {
+        let _ = serial::with_serial_ports(|ports| {
             use core::fmt::Write;
             ports.write_fmt(args)
-        }).unwrap();
+        });
     }
 }
 

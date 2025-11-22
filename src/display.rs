@@ -7,7 +7,7 @@ mod backend;
 mod boot;
 mod output;
 pub use output::{
-    broadcast, broadcast_args, broadcast_args_with, broadcast_with, HardwareOutput, Output,
+    broadcast, broadcast_args, broadcast_args_with, broadcast_with, hardware_output, HardwareOutput, Output,
 };
 mod shell;
 mod panic;

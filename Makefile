@@ -8,9 +8,15 @@
 # ============================================================================
 
 KERNEL_NAME = tiny_os
-# Target architecture specification (currently supports x86_64)
+
+# Architecture selection (can be overridden for multi-architecture support)
+# Currently fully implemented: x86_64
+# Future support planned: aarch64, riscv64
+ARCH ?= x86_64
+
+# Target architecture specification
 # Can be overridden via environment variable for future multi-arch support
-TARGET ?= x86_64-blog_os.json
+TARGET ?= $(ARCH)-blog_os.json
 BUILD_MODE ?= debug
 
 # Directories
@@ -18,12 +24,29 @@ BUILD_DIR = target/$(shell basename $(TARGET) .json)/$(BUILD_MODE)
 KERNEL_BIN = $(BUILD_DIR)/$(KERNEL_NAME)
 
 # QEMU configuration (architecture-specific)
-# Currently configured for x86_64, can be overridden for other architectures
-QEMU ?= qemu-system-x86_64
+# Automatically selects the correct QEMU system based on ARCH variable
+QEMU ?= qemu-system-$(ARCH)
+
+# Architecture-specific QEMU flags
+ifeq ($(ARCH),x86_64)
+    QEMU_MACHINE ?=
+    QEMU_CPU ?=
+    QEMU_ARCH_FLAGS =
+else ifeq ($(ARCH),aarch64)
+    QEMU_MACHINE ?= -machine virt
+    QEMU_CPU ?= -cpu cortex-a57
+    QEMU_ARCH_FLAGS = $(QEMU_MACHINE) $(QEMU_CPU)
+else ifeq ($(ARCH),riscv64)
+    QEMU_MACHINE ?= -machine virt
+    QEMU_CPU ?=
+    QEMU_ARCH_FLAGS = $(QEMU_MACHINE)
+endif
+
 QEMU_FLAGS = -drive format=raw,file=$(KERNEL_BIN) \
              -serial stdio \
              -display gtk \
-             -m 128M
+             -m 128M \
+             $(QEMU_ARCH_FLAGS)
 
 # QEMU flags for different modes
 QEMU_FLAGS_DEBUG = $(QEMU_FLAGS) -s -S
@@ -78,15 +101,16 @@ clean:
 # ============================================================================
 
 ## run: Build and run the kernel in QEMU (debug mode)
-run: build
+run:
 	@echo "$(COLOR_BOLD)$(COLOR_GREEN)Starting kernel in QEMU...$(COLOR_RESET)"
 	@echo "$(COLOR_YELLOW)Press Ctrl+A, X to exit QEMU$(COLOR_RESET)"
-	@$(QEMU) $(QEMU_FLAGS)
+	@cargo run -p builder
 
 ## run-release: Build and run the kernel in QEMU (release mode)
 run-release: build-release
 	@echo "$(COLOR_BOLD)$(COLOR_GREEN)Starting kernel in QEMU (release)...$(COLOR_RESET)"
 	@echo "$(COLOR_YELLOW)Press Ctrl+A, X to exit QEMU$(COLOR_RESET)"
+	@# Note: builder currently defaults to debug, manual QEMU invocation for release
 	@$(QEMU) $(QEMU_FLAGS)
 
 ## debug: Build and run the kernel with QEMU debugger (waits for GDB)

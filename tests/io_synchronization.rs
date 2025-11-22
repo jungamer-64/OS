@@ -4,7 +4,7 @@
 #![test_runner(tiny_os::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
-use bootloader::{entry_point, BootInfo};
+use bootloader_api::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 use tiny_os::vga_buffer::{ColorCode, DoubleBufferedWriter, CELL_COUNT, VGA_WIDTH};
 use tiny_os::{exit_qemu, hlt_loop, init, println, serial_println, test_panic_handler};
@@ -16,7 +16,7 @@ extern "Rust" {
 
 entry_point!(test_kernel_main);
 
-fn test_kernel_main(_boot_info: &'static BootInfo) -> ! {
+fn test_kernel_main(_boot_info: &'static mut BootInfo) -> ! {
     if let Err(err) = init::initialize_all() {
         serial_println!("[TEST INIT] initialization failed: {:?}", err);
         exit_qemu(QemuExitCode::Failed);

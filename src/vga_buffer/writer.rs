@@ -6,8 +6,7 @@
 use super::backend::{DefaultVgaBuffer, VgaBufferAccess};
 use super::color::ColorCode;
 use super::constants::*;
-use crate::diagnostics::DIAGNOSTICS;
-use core::fmt::{self, Write};
+use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const DIRTY_WORD_BITS: usize = core::mem::size_of::<u64>() * 8;
@@ -97,6 +96,7 @@ impl VgaWriter {
     pub fn write_byte(&mut self, byte: u8) {
         match byte {
             b'\n' => self.new_line(),
+            b'\x08' => self.backspace(),
             byte => {
                 if self.column_position >= VGA_WIDTH {
                     self.new_line();
@@ -114,9 +114,15 @@ impl VgaWriter {
     pub fn write_string(&mut self, s: &str) {
         for byte in s.bytes() {
             match byte {
-                0x20..=0x7e | b'\n' => self.write_byte(byte),
+                0x20..=0x7e | b'\n' | b'\x08' => self.write_byte(byte),
                 _ => self.write_byte(0xfe),
             }
+        }
+    }
+
+    fn backspace(&mut self) {
+        if self.column_position > 0 {
+            self.column_position -= 1;
         }
     }
 

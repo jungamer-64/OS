@@ -388,7 +388,7 @@ where
 #[doc(hidden)]
 pub fn print_impl(args: ::core::fmt::Arguments) {
     use core::fmt::Write;
-    with_serial_ports(|ports| ports.write_fmt(args)).expect("Printing to serial failed");
+    let _ = with_serial_ports(|ports| ports.write_fmt(args));
 }
 
 /// Prints to the host through the serial interface.

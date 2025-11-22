@@ -57,6 +57,27 @@ where
     }
 }
 
+/// List of architectures that this kernel can potentially support
+///
+/// This list is used for future extensions and documentation.
+/// Currently, only x86_64 is fully implemented.
+const SUPPORTED_ARCHITECTURES: &[&str] = &["x86_64", "aarch64", "riscv64", "x86", "arm", "riscv32"];
+
+/// Validate that the architecture and pointer width are compatible
+///
+/// This ensures that the target specification makes sense for the
+/// chosen architecture.
+fn validate_architecture_compatibility(arch: &str, pointer_width: u16) -> bool {
+    match (arch, pointer_width) {
+        // 64-bit architectures
+        ("x86_64", 64) | ("aarch64", 64) | ("riscv64", 64) => true,
+        // 32-bit architectures
+        ("x86", 32) | ("arm", 32) | ("riscv32", 32) => true,
+        // Unknown or incompatible combination
+        _ => false,
+    }
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=x86_64-blog_os.json");
@@ -171,10 +192,20 @@ fn validate_target_spec() {
         spec.target_pointer_width
     );
 
-    // Kernel code typically requires red-zone to be disabled
+    // Validate architecture and pointer width compatibility
+    assert!(
+        validate_architecture_compatibility(&spec.arch, spec.target_pointer_width),
+        "Architecture '{}' is incompatible with pointer width {}",
+        spec.arch,
+        spec.target_pointer_width
+    );
+
+    // Kernel code on x86/x86_64 requires red-zone to be disabled
+    // Other architectures may not have a red-zone concept
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     assert!(
         spec.disable_redzone,
-        "Target specification must set 'disable-redzone' to true for kernel code"
+        "Target specification must set 'disable-redzone' to true for x86/x86_64 kernel code"
     );
 
     // Kernel panic strategy must be abort (no unwinding support in no_std)

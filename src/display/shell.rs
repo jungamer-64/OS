@@ -15,6 +15,7 @@ use crate::vga_buffer::{self, ColorCode};
 use crate::arch::Keyboard;
 use crate::display::keyboard::scancode_to_char;
 use crate::print;
+use crate::println;
 
 const CPU_CYCLES_PER_MS: u64 = 2_000_000; // Assumes ~2GHz host when running under QEMU
 const MAX_FEATURE_LINES: usize = 5;
@@ -193,26 +194,115 @@ fn render_prompt<O: Output>(out: &mut O) {
     );
 }
 
-/// Run the interactive shell loop
-pub fn run_shell() -> ! {
-    show_wait_shell();
-    
-    let mut keyboard = Keyboard::new();
-    
-    loop {
-        if let Some(scancode) = keyboard.read_scancode() {
-            // Key press (bit 7 clear)
-            if scancode & 0x80 == 0 {
-                if let Some(c) = scancode_to_char(scancode) {
-                    print!("{}", c);
-                    if c == '\n' {
-                        print!("tinyos> ");
-                    }
+const MAX_COMMAND_LEN: usize = 64;
+
+pub struct Shell {
+    buffer: [u8; MAX_COMMAND_LEN],
+    cursor: usize,
+    keyboard: Keyboard,
+}
+
+impl Shell {
+    pub fn new() -> Self {
+        Self {
+            buffer: [0; MAX_COMMAND_LEN],
+            cursor: 0,
+            keyboard: Keyboard::new(),
+        }
+    }
+
+    pub fn run(&mut self) -> ! {
+        show_wait_shell();
+        
+        loop {
+            if let Some(scancode) = self.keyboard.read_scancode() {
+                // Key press (bit 7 clear)
+                if scancode & 0x80 == 0 {
+                    self.handle_key(scancode);
                 }
             }
+            core::hint::spin_loop();
         }
-        core::hint::spin_loop();
     }
+
+    fn handle_key(&mut self, scancode: u8) {
+        if let Some(c) = scancode_to_char(scancode) {
+            match c {
+                '\n' => self.process_command(),
+                '\x08' => self.handle_backspace(),
+                c => self.append_char(c),
+            }
+        }
+    }
+
+    fn append_char(&mut self, c: char) {
+        // Safety: Ensure we only accept ASCII characters to prevent truncation issues
+        // when casting to u8, and filter out non-printable control characters (except space).
+        if !c.is_ascii() || (!c.is_ascii_graphic() && c != ' ') {
+            return;
+        }
+
+        if self.cursor < MAX_COMMAND_LEN {
+            self.buffer[self.cursor] = c as u8;
+            self.cursor += 1;
+            print!("{}", c);
+        }
+    }
+
+    fn handle_backspace(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+            // Securely clear the character from the buffer
+            self.buffer[self.cursor] = 0;
+            print!("\x08 \x08");
+        }
+    }
+
+    fn process_command(&mut self) {
+        print!("\n");
+        if self.cursor > 0 {
+            let cmd = core::str::from_utf8(&self.buffer[..self.cursor])
+                .unwrap_or("")
+                .trim();
+                
+            match cmd {
+                "help" => self.print_help(),
+                "clear" => self.clear_screen(),
+                "status" => self.print_status(),
+                "version" => println!("TinyOS v0.4.0"),
+                "" => {}, // Ignore empty commands
+                _ => println!("Unknown command: {}", cmd),
+            }
+            
+            // Safety: Clear the buffer to prevent data residue
+            self.buffer.fill(0);
+            self.cursor = 0;
+        }
+        print!("tinyos> ");
+    }
+
+    fn print_help(&self) {
+        println!("Available commands:");
+        println!("  help     - Show this help message");
+        println!("  clear    - Clear the screen");
+        println!("  status   - Show system status");
+        println!("  version  - Show version info");
+    }
+
+    fn clear_screen(&self) {
+        crate::display::clear_screen();
+    }
+
+    fn print_status(&self) {
+        let mut out = crate::display::hardware_output();
+        render_status(&mut out);
+    }
+}
+
+/// Run the interactive shell loop
+pub fn run_shell() -> ! {
+    let mut shell = Shell::new();
+    shell.run();
 }
 
 const fn availability(flag: bool) -> &'static str {

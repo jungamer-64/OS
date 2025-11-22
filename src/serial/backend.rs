@@ -7,9 +7,6 @@
 //! serial logic can be reused on targets that do not expose x86 style I/O
 //! ports.
 
-use super::constants::register_offset;
-use crate::constants::SERIAL_IO_PORT;
-
 /// Registers that the UART driver interacts with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Register {

@@ -12,6 +12,7 @@
 use crate::display::color::ColorCode;
 #[cfg(target_arch = "x86_64")]
 use crate::vga_buffer::{self, VgaError};
+use crate::framebuffer::FramebufferError;
 use core::fmt;
 
 /// Errors that can originate from display backends.
@@ -20,6 +21,8 @@ pub enum DisplayError {
     /// Underlying VGA (or similar) hardware reported an error.
     #[cfg(target_arch = "x86_64")]
     Hardware(VgaError),
+    /// Framebuffer hardware reported an error.
+    Framebuffer(FramebufferError),
     /// No display hardware is currently available.
     Unavailable,
 }
@@ -31,6 +34,7 @@ impl DisplayError {
         match self {
             #[cfg(target_arch = "x86_64")]
             Self::Hardware(err) => err.as_str(),
+            Self::Framebuffer(err) => err.as_str(),
             Self::Unavailable => "display hardware unavailable",
         }
     }
@@ -46,6 +50,12 @@ impl fmt::Display for DisplayError {
 impl From<VgaError> for DisplayError {
     fn from(value: VgaError) -> Self {
         Self::Hardware(value)
+    }
+}
+
+impl From<FramebufferError> for DisplayError {
+    fn from(value: FramebufferError) -> Self {
+        Self::Framebuffer(value)
     }
 }
 
@@ -144,6 +154,67 @@ impl DisplayHardware for StubDisplay {
     }
 
     fn write_colored(&mut self, _text: &str, _color: ColorCode) -> Result<(), DisplayError> {
+        Err(DisplayError::Unavailable)
+    }
+}
+
+/// Framebuffer-backed display implementation for UEFI graphics mode.
+///
+/// Note: This backend requires bootloader 0.11 to obtain framebuffer info.
+/// Until then, it will report as unavailable.
+pub struct FramebufferDisplay {
+    // Placeholder: will store FramebufferInfo and FramebufferWriter
+    // when integrated with bootloader 0.11
+    available: bool,
+}
+
+impl FramebufferDisplay {
+    /// Create a new framebuffer display backend.
+    ///
+    /// Note: Will report unavailable until bootloader 0.11 integration
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { available: false }
+    }
+
+    /// Create framebuffer display from bootloader FrameBuffer
+    ///
+    /// This will be implemented in Phase 3 when bootloader 0.11 is integrated.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure framebuffer memory is valid and exclusive.
+    #[allow(dead_code)]
+    pub unsafe fn from_bootloader(_fb: ()) -> Self {
+        // Placeholder for bootloader 0.11 integration
+        // Will create FramebufferInfo and FramebufferWriter here
+        Self { available: false }
+    }
+}
+
+impl Default for FramebufferDisplay {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DisplayHardware for FramebufferDisplay {
+    fn is_available(&self) -> bool {
+        self.available
+    }
+
+    fn write_colored(&mut self, _text: &str, _color: ColorCode) -> Result<(), DisplayError> {
+        // Will be implemented with actual framebuffer writer in Phase 3
+        Err(DisplayError::Unavailable)
+    }
+
+    fn clear(&mut self) -> Result<(), DisplayError> {
+        // Will be implemented with actual framebuffer writer in Phase 3
+        Err(DisplayError::Unavailable)
+    }
+
+    fn set_color(&mut self, _color: ColorCode) -> Result<(), DisplayError> {
+        // Will be implemented with actual framebuffer writer in Phase 3
         Err(DisplayError::Unavailable)
     }
 }
