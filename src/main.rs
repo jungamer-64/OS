@@ -34,6 +34,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     debug_println!("[OK] GDT initialized");
     tiny_os::arch::x86_64::init_idt();
     debug_println!("[OK] IDT initialized");
+    
+    // システムコール機構初期化
+    tiny_os::arch::x86_64::syscall::init();
 
     // Framebuffer初期化とコンソール設定
     if let Some(framebuffer) = boot_info.framebuffer.as_mut() {

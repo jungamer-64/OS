@@ -10,3 +10,5 @@ pub mod task;
 pub mod r#async;
 pub mod shell;
 pub mod bench;
+pub mod syscall;
+pub mod process;

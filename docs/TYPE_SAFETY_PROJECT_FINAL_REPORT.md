@@ -27,10 +27,12 @@ Tiny OS カーネルの型安全性を大幅に向上させるプロジェクト
 ### 導入された型
 
 #### 1. **PhysAddr** (物理アドレス)
+
 ```rust
 #[repr(transparent)]
 pub struct PhysAddr(usize);
 ```
+
 - ✅ ゼロコスト抽象化（`#[repr(transparent)]`）
 - ✅ 境界チェック付きコンストラクタ（`new_checked`）
 - ✅ ページ境界アライメントチェック（`is_aligned`）
@@ -39,10 +41,12 @@ pub struct PhysAddr(usize);
 **使用箇所**: ページテーブル管理、フレームアロケータ、MMIO
 
 #### 2. **VirtAddr** (仮想アドレス)
+
 ```rust
 #[repr(transparent)]
 pub struct VirtAddr(usize);
 ```
+
 - ✅ 正規形アドレス検証（x86_64の47ビット制限）
 - ✅ ページオフセット計算（`page_offset()`）
 - ✅ 型安全なポインタ変換
@@ -50,10 +54,12 @@ pub struct VirtAddr(usize);
 **使用箇所**: カーネルメモリマップ、ヒープ管理、スタック管理
 
 #### 3. **LayoutSize** (メモリレイアウトサイズ)
+
 ```rust
 #[repr(transparent)]
 pub struct LayoutSize(usize);
 ```
+
 - ✅ `core::alloc::Layout`との相互変換
 - ✅ アライメント制約の保持
 - ✅ 算術演算の安全性
@@ -61,10 +67,12 @@ pub struct LayoutSize(usize);
 **使用箇所**: ヒープアロケータ、バッファ管理
 
 #### 4. **PageFrameNumber** (ページフレーム番号)
+
 ```rust
 #[repr(transparent)]
 pub struct PageFrameNumber(u64);
 ```
+
 - ✅ 4KiBページサイズの前提
 - ✅ 物理アドレスとの明確な分離
 - ✅ ページテーブルエントリ生成
@@ -72,6 +80,7 @@ pub struct PageFrameNumber(u64);
 **使用箇所**: ページフレームアロケータ、ページテーブル
 
 ### 影響範囲
+
 - 修正ファイル数: 8ファイル
 - 影響を受けた関数: 50+個
 - コンパイル時に検出された潜在的バグ: 3件
@@ -83,10 +92,12 @@ pub struct PageFrameNumber(u64);
 ### 導入された型
 
 #### 1. **Color4Bit** (4ビット色)
+
 ```rust
 #[repr(transparent)]
 pub struct Color4Bit(u8);
 ```
+
 - ✅ 0-15の範囲チェック（`new()`）
 - ✅ 16色の定数定義（`BLACK`, `WHITE`等）
 - ✅ `#[must_use]`属性でコンパイラ支援
@@ -94,15 +105,18 @@ pub struct Color4Bit(u8);
 **定数**: `BLACK`, `BLUE`, `GREEN`, `CYAN`, `RED`, `MAGENTA`, `BROWN`, `LIGHT_GRAY`, `DARK_GRAY`, `LIGHT_BLUE`, `LIGHT_GREEN`, `LIGHT_CYAN`, `LIGHT_RED`, `PINK`, `YELLOW`, `WHITE`
 
 #### 2. **VgaColor** (VGAカラーコード)
+
 ```rust
 #[repr(transparent)]
 pub struct VgaColor(u8);
 ```
+
 - ✅ 前景色・背景色の型安全な組み合わせ
 - ✅ `foreground()`、`background()`アクセサ
 - ✅ `DEFAULT`定数（白字・黒背景）
 
 #### 3. **VgaChar** (VGA文字)
+
 ```rust
 #[repr(C)]
 struct VgaChar {
@@ -110,25 +124,30 @@ struct VgaChar {
     color: VgaColor,
 }
 ```
+
 - ✅ 文字とスタイルの不可分な組み合わせ
 - ✅ `blank()`ヘルパーメソッド
 
 #### 4. **VgaPosition** (画面位置)
+
 ```rust
 pub struct VgaPosition {
     col: usize,
     row: usize,
 }
 ```
+
 - ✅ 80x25の境界チェック（`new()`）
 - ✅ `next_col()`、`next_row()`で安全な移動
 - ✅ 配列境界外アクセスの完全防止
 
 ### 安全性の向上
+
 - **Before**: `buffer.chars[self.row][self.col]` (境界チェックなし)
 - **After**: `buffer.chars[pos.row()][pos.col()]` (コンパイル時保証)
 
 ### ビルド結果
+
 - ビルド時間: 1.07秒
 - 警告数: 25件 → 0件
 
@@ -139,12 +158,14 @@ pub struct VgaPosition {
 ### 強化された型
 
 #### 1. **TaskId** (タスクID)
+
 ```rust
 #[repr(transparent)]
 pub struct TaskId(pub u64);
 ```
 
 **新機能**:
+
 - ✅ `INVALID`定数（予約ID: 0）
 - ✅ `KERNEL_START` (1-999): カーネルタスク範囲
 - ✅ `USER_START` (1000-): ユーザータスク範囲
@@ -152,18 +173,21 @@ pub struct TaskId(pub u64);
 - ✅ `is_valid()`, `is_kernel()`, `is_user()`判定メソッド
 
 #### 2. **ProcessId** (プロセスID)
+
 ```rust
 #[repr(transparent)]
 pub struct ProcessId(pub u64);
 ```
 
 **新機能**:
+
 - ✅ `INVALID`定数
 - ✅ `INIT`定数（initプロセス: 1）
 - ✅ カーネル・ユーザー範囲の明確な分離
 - ✅ 同様の検証メソッド
 
 #### 3. **Priority** (優先度)
+
 ```rust
 #[repr(u8)]
 pub enum Priority {
@@ -176,12 +200,14 @@ pub enum Priority {
 ```
 
 **新機能**:
+
 - ✅ `MIN`、`MAX`定数
 - ✅ `increase()`, `decrease()`: 境界チェック付き優先度変更
 - ✅ `is_higher_than()`, `is_lower_than()`: 型安全な比較
 - ✅ すべてのメソッドに`#[must_use]`
 
 #### 4. **TaskState** (タスク状態)
+
 ```rust
 pub enum TaskState {
     Ready,
@@ -192,6 +218,7 @@ pub enum TaskState {
 ```
 
 **新機能**:
+
 - ✅ `can_transition_to()`: 状態遷移検証
   - Ready → Running, Blocked, Terminated ✓
   - Running → Ready, Blocked, Terminated ✓
@@ -219,6 +246,7 @@ assert!(!TaskState::Terminated.can_transition_to(TaskState::Ready));
 ### 強化された型
 
 #### 1. **DeviceError**
+
 ```rust
 pub enum DeviceError {
     InitFailed,
@@ -230,11 +258,13 @@ pub enum DeviceError {
 ```
 
 **新機能**:
+
 - ✅ `as_str()`: 人間可読なエラーメッセージ
 - ✅ `is_retryable()`: Timeout, IoErrorは再試行可能
 - ✅ `Display` trait実装
 
 #### 2. **MemoryError**
+
 ```rust
 pub enum MemoryError {
     OutOfMemory,
@@ -244,11 +274,13 @@ pub enum MemoryError {
 ```
 
 **新機能**:
+
 - ✅ `as_str()`: 人間可読なエラーメッセージ
 - ✅ `is_fatal()`: OutOfMemoryは致命的
 - ✅ `Display` trait実装
 
 #### 3. **TaskError**
+
 ```rust
 pub enum TaskError {
     NotFound,
@@ -258,11 +290,13 @@ pub enum TaskError {
 ```
 
 **新機能**:
+
 - ✅ `as_str()`: 人間可読なエラーメッセージ
 - ✅ `is_retryable()`: QueueFullは再試行可能
 - ✅ `Display` trait実装
 
 #### 4. **ErrorKind**
+
 ```rust
 pub enum ErrorKind {
     Device(DeviceError),
@@ -275,11 +309,13 @@ pub enum ErrorKind {
 ```
 
 **新機能**:
+
 - ✅ `is_retryable()`: サブタイプから判定を伝播
 - ✅ `is_fatal()`: サブタイプから判定を伝播
 - ✅ `Display` trait実装
 
 #### 5. **KernelError** (コンテキスト情報付き)
+
 ```rust
 pub struct KernelError {
     kind: ErrorKind,
@@ -288,6 +324,7 @@ pub struct KernelError {
 ```
 
 **新機能**:
+
 - ✅ `is_retryable()`: エラーが再試行可能か判定
 - ✅ `is_fatal()`: エラーが致命的か判定
 - ✅ コンテキスト情報の保持

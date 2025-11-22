@@ -6,6 +6,7 @@ pub mod port;
 pub mod gdt;
 pub mod interrupts;
 pub mod pic;
+pub mod syscall;
 
 pub use cpu::{X86Cpu, InterruptFlags, critical_section};
 pub use cpu::read_timestamp;

@@ -7,8 +7,14 @@ use crate::println;
 use crate::print;
 use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
 use alloc::string::String;
-// use alloc::vec::Vec;
-// use core::fmt::Write;
+
+// セキュリティ関連の定数
+/// 最大入力長（バッファオーバーフロー防止）
+const MAX_INPUT_LENGTH: usize = 1024;
+/// 最大コマンド長
+const MAX_COMMAND_LENGTH: usize = 256;
+/// 最大メモリ割り当てサイズ（1MB）
+const MAX_ALLOC_SIZE: usize = 1024 * 1024;
 
 pub async fn run() {
     // let mut scancode_stream = ScancodeStream::new();
@@ -40,8 +46,16 @@ pub async fn run() {
                                 }
                             }
                             c => {
-                                print!("{}", c);
-                                line_buffer.push(c);
+                                // 入力長制限チェック
+                                if line_buffer.len() >= MAX_INPUT_LENGTH {
+                                    println!();
+                                    println!("[WARNING] Input too long (max {} chars)", MAX_INPUT_LENGTH);
+                                    line_buffer.clear();
+                                    print!("> ");
+                                } else {
+                                    print!("{}", c);
+                                    line_buffer.push(c);
+                                }
                             }
                         }
                     }
@@ -101,10 +115,17 @@ fn execute_command(command: &str) {
             show_system_info();
         }
         cmd if cmd.starts_with("alloc ") => {
-            if let Ok(size) = cmd[6..].trim().parse::<usize>() {
-                test_allocation(size);
-            } else {
-                println!("Usage: alloc <size>");
+            match cmd[6..].trim().parse::<usize>() {
+                Ok(size) => {
+                    if let Err(err) = validate_alloc_size(size) {
+                        println!("[ERROR] {}", err);
+                    } else {
+                        test_allocation(size);
+                    }
+                }
+                Err(_) => {
+                    println!("[ERROR] Invalid size. Usage: alloc <size>");
+                }
             }
         }
         cmd if cmd.starts_with("echo ") => {
@@ -171,4 +192,24 @@ fn show_system_info() {
     // Show memory capacity from heap stats
     let stats = crate::ALLOCATOR.stats();
     println!("Heap Capacity:       {} KB", stats.heap_capacity.as_usize() / 1024);
+}
+
+/// メモリ割り当てサイズの検証
+fn validate_alloc_size(size: usize) -> Result<(), &'static str> {
+    if size == 0 {
+        return Err("Allocation size must be greater than 0");
+    }
+    if size > MAX_ALLOC_SIZE {
+        return Err("Allocation size exceeds maximum limit (1MB)");
+    }
+    Ok(())
+}
+
+/// 入力長の検証
+#[allow(dead_code)]
+fn validate_input_length(input: &str) -> Result<(), &'static str> {
+    if input.len() > MAX_COMMAND_LENGTH {
+        return Err("Command too long");
+    }
+    Ok(())
 }
