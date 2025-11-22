@@ -50,7 +50,7 @@ impl HeapStats {
     }
     
     /// 使用率（0-100）
-    pub fn usage_percentage(&self) -> usize {
+    pub fn usage_rate(&self) -> usize {
         let capacity = self.heap_capacity.as_usize();
         let usage = self.current_usage.as_usize();
         if capacity == 0 {

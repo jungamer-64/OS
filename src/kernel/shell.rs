@@ -64,10 +64,14 @@ fn execute_command(command: &str) {
             println!("  echo  - Echo the input");
             println!("  clear - Clear the screen");
             println!("  rect  - Draw a test rectangle");
-            println!("  circle- Draw a test circle");
-            println!("  info  - Show kernel info");
+            println!("  circle - Draw a test circle");
+            println!("  info   - Show kernel info");
+            println!("  sysinfo- Show system information");
+            println!("  meminfo- Show memory statistics");
+            println!("  alloc  - Test memory allocation (alloc <size>)");
+            println!("  cls    - Alias for clear");
         }
-        "clear" => {
+        "clear" | "cls" => {
             if let Some(fb) = crate::kernel::driver::framebuffer::FRAMEBUFFER.get() {
                 fb.lock().clear();
             }
@@ -90,6 +94,19 @@ fn execute_command(command: &str) {
             println!("Tiny OS v0.4.0");
             println!("Running on x86_64 UEFI");
         }
+        "meminfo" => {
+            show_memory_info();
+        }
+        "sysinfo" => {
+            show_system_info();
+        }
+        cmd if cmd.starts_with("alloc ") => {
+            if let Ok(size) = cmd[6..].trim().parse::<usize>() {
+                test_allocation(size);
+            } else {
+                println!("Usage: alloc <size>");
+            }
+        }
         cmd if cmd.starts_with("echo ") => {
             println!("{}", &cmd[5..]);
         }
@@ -98,4 +115,60 @@ fn execute_command(command: &str) {
             println!("Unknown command: '{}'", trimmed);
         }
     }
+}
+
+fn show_memory_info() {
+    use crate::ALLOCATOR;
+    
+    let stats = ALLOCATOR.stats();
+    
+    println!("=== Memory Statistics ===");
+    println!("Heap Capacity:       {} bytes", stats.heap_capacity.as_usize());
+    println!("Current Usage:       {} bytes", stats.current_usage.as_usize());
+    println!("Peak Usage:          {} bytes", stats.peak_usage.as_usize());
+    println!("Available:           {} bytes", stats.available().as_usize());
+    println!("Usage Rate:          {}%", stats.usage_rate());
+    println!("Allocations:         {}", stats.allocation_count);
+    println!("Deallocations:       {}", stats.deallocation_count);
+    println!("Total Allocated:     {} bytes", stats.total_allocated.as_usize());
+    println!("Total Deallocated:   {} bytes", stats.total_deallocated.as_usize());
+}
+
+fn test_allocation(size: usize) {
+    use alloc::vec::Vec;
+    
+    println!("Allocating {} bytes...", size);
+    
+    // Before stats
+    let before = crate::ALLOCATOR.stats();
+    
+    // Allocate
+    let _test_vec: Vec<u8> = Vec::with_capacity(size);
+    
+    // After stats
+    let after = crate::ALLOCATOR.stats();
+    
+    println!("Before: {} bytes used", before.current_usage.as_usize());
+    println!("After:  {} bytes used", after.current_usage.as_usize());
+    println!("Delta:  {} bytes", 
+        after.current_usage.as_usize().saturating_sub(before.current_usage.as_usize()));
+    
+    // Vec will be dropped here, freeing memory
+    drop(_test_vec);
+    
+    let dropped = crate::ALLOCATOR.stats();
+    println!("After drop: {} bytes used", dropped.current_usage.as_usize());
+}
+
+fn show_system_info() {
+    println!("=== System Information ===");
+    println!("OS Name:             Tiny OS");
+    println!("Version:             v0.4.0");
+    println!("Architecture:        x86_64");
+    println!("Boot Mode:           UEFI");
+    println!("Build Mode:          Debug");
+    
+    // Show memory capacity from heap stats
+    let stats = crate::ALLOCATOR.stats();
+    println!("Heap Capacity:       {} KB", stats.heap_capacity.as_usize() / 1024);
 }
