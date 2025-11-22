@@ -17,6 +17,7 @@ pub struct PhysAddr(pub usize);
 /// ページテーブルフラグ
 #[derive(Debug, Clone, Copy)]
 pub struct PageTableFlags {
+    #[allow(dead_code)]
     bits: u64,
 }
 
@@ -25,10 +26,12 @@ impl PageTableFlags {
     pub const WRITABLE: Self = Self { bits: 1 << 1 };
     pub const USER: Self = Self { bits: 1 << 2 };
     
+    #[must_use]
     pub const fn empty() -> Self {
         Self { bits: 0 }
     }
     
+    #[must_use]
     pub const fn new(bits: u64) -> Self {
         Self { bits }
     }
@@ -36,14 +39,16 @@ impl PageTableFlags {
 
 /// ページテーブルエントリを型で表現
 #[repr(transparent)]
+#[allow(dead_code)]
 struct PageTableEntry(u64);
 
+#[allow(dead_code)]
 impl PageTableEntry {
     const PRESENT: u64 = 1 << 0;
     const WRITABLE: u64 = 1 << 1;
     const USER: u64 = 1 << 2;
     
-    fn set_present(&mut self, present: bool) {
+    const fn set_present(&mut self, present: bool) {
         if present {
             self.0 |= Self::PRESENT;
         } else {
@@ -51,7 +56,7 @@ impl PageTableEntry {
         }
     }
     
-    fn is_present(&self) -> bool {
+    const fn is_present(&self) -> bool {
         (self.0 & Self::PRESENT) != 0
     }
 }

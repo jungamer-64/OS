@@ -11,16 +11,16 @@ use spin::Mutex;
 /// リンクリストノード（空きブロックを管理）
 struct ListNode {
     size: usize,
-    next: Option<&'static mut ListNode>,
+    next: Option<&'static mut Self>,
 }
 
 impl ListNode {
     const fn new(size: usize) -> Self {
-        ListNode { size, next: None }
+        Self { size, next: None }
     }
 
     fn start_addr(&self) -> usize {
-        self as *const Self as usize
+        core::ptr::from_ref(self) as usize
     }
 
     fn end_addr(&self) -> usize {
@@ -29,7 +29,7 @@ impl ListNode {
 }
 
 /// アドレスを指定されたアラインメントに切り上げ
-fn align_up(addr: usize, align: usize) -> usize {
+const fn align_up(addr: usize, align: usize) -> usize {
     (addr + align - 1) & !(align - 1)
 }
 
@@ -40,6 +40,8 @@ pub struct LinkedListAllocator {
 
 impl LinkedListAllocator {
     /// 新しい空のアロケータを作成
+    #[must_use]
+    #[allow(clippy::new_without_default)]
     pub const fn new() -> Self {
         Self {
             head: ListNode::new(0),
@@ -50,7 +52,7 @@ impl LinkedListAllocator {
     ///
     /// # Safety
     ///
-    /// heap_start と heap_size は有効なヒープ領域を指している必要があります。
+    /// `heap_start` と `heap_size` は有効なヒープ領域を指している必要があります。
     /// この関数は一度だけ呼ばれる必要があります。
     pub unsafe fn init(&mut self, heap_start: usize, heap_size: usize) {
         unsafe {
@@ -70,7 +72,7 @@ impl LinkedListAllocator {
         let node_ptr = addr as *mut ListNode;
         unsafe {
             node_ptr.write(node);
-            self.head.next = Some(&mut *node_ptr)
+            self.head.next = Some(&mut *node_ptr);
         }
     }
 
@@ -92,12 +94,11 @@ impl LinkedListAllocator {
                 // This should never happen, but handle it safely
                 current.next = next;
                 return None;
-            } else {
-                // Move to next node - we know it exists from the while-let condition
-                match current.next.as_mut() {
-                    Some(next_node) => current = next_node,
-                    None => break, // Should not happen, but handle gracefully
-                }
+            }
+            // Move to next node - we know it exists from the while-let condition
+            match current.next.as_mut() {
+                Some(next_node) => current = next_node,
+                None => break, // Should not happen, but handle gracefully
             }
         }
 
@@ -137,7 +138,7 @@ impl LinkedListAllocator {
 }
 
 unsafe impl GlobalAlloc for LinkedListAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+    unsafe fn alloc(&self, _layout: Layout) -> *mut u8 {
         // この実装は単純化のため、ロックを取得する必要がありますが
         // `&self` しかないので、内部可変性が必要です。
         // 実際には LockedHeap でラップします。
@@ -156,6 +157,8 @@ pub struct LockedHeap {
 
 impl LockedHeap {
     /// 新しい空のロックされたヒープを作成
+    #[must_use]
+    #[allow(clippy::new_without_default)]
     pub const fn new() -> Self {
         Self {
             inner: Mutex::new(LinkedListAllocator::new()),
@@ -166,7 +169,7 @@ impl LockedHeap {
     ///
     /// # Safety
     ///
-    /// heap_start と heap_size は有効なヒープ領域を指している必要があります。
+    /// `heap_start` と `heap_size` は有効なヒープ領域を指している必要があります。
     pub unsafe fn init(&self, heap_start: usize, heap_size: usize) {
         unsafe {
             self.inner.lock().init(heap_start, heap_size);
@@ -196,7 +199,7 @@ unsafe impl GlobalAlloc for LockedHeap {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         let (size, _) = LinkedListAllocator::size_align(layout);
         unsafe {
-            self.inner.lock().add_free_region(ptr as usize, size)
+            self.inner.lock().add_free_region(ptr as usize, size);
         }
     }
 }

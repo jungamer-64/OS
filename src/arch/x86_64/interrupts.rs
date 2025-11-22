@@ -30,7 +30,7 @@ pub fn init_idt() {
     IDT.load();
 }
 
-extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) {
     use crate::arch::x86_64::port::PortWriteOnly;
     unsafe {
         let mut serial = PortWriteOnly::<u8>::new(0x3F8);
@@ -41,7 +41,7 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
 }
 
 extern "x86-interrupt" fn double_fault_handler(
-    stack_frame: InterruptStackFrame, error_code: u64) -> !
+    _stack_frame: InterruptStackFrame, _error_code: u64) -> !
 {
     use crate::arch::{Cpu, ArchCpu};
     use crate::arch::x86_64::port::PortWriteOnly;
@@ -62,8 +62,8 @@ extern "x86-interrupt" fn double_fault_handler(
 }
 
 extern "x86-interrupt" fn page_fault_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: PageFaultErrorCode,
+    _stack_frame: InterruptStackFrame,
+    _error_code: PageFaultErrorCode,
 ) {
     use crate::arch::x86_64::port::PortWriteOnly;
     
@@ -79,6 +79,7 @@ extern "x86-interrupt" fn page_fault_handler(
     }
 }
 
+#[allow(clippy::missing_const_for_fn)]
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     // 何もしない - EOIさえ送らずリターン
 }
