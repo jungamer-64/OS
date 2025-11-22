@@ -1,11 +1,13 @@
 //! デバイスドライバモジュール
 
+pub mod console;
 pub mod serial;
 pub mod vga;
 pub mod keyboard;
 pub mod pit;
 pub mod framebuffer;
 
+pub use console::{ConsoleAdapter, init_console, write_console, write_debug, CONSOLE};
 pub use serial::SerialPort;
 pub use vga::VgaTextMode;
 pub use keyboard::PS2Keyboard;

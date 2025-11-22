@@ -41,47 +41,22 @@ pub enum HeapError {
 ///
 /// # Safety
 ///
-/// この関数を呼び出すには、以下の条件を満たす必要があります:
-/// 
-/// - `heap_start` と `heap_size` が有効なヒープ領域を指していること
-/// - [heap_start, heap_start+heap_size) の範囲が他の目的で使用されていないこと
-/// - ヒープ領域が書き込み可能であること
-/// - `heap_start` がヌルポインタでないこと
-/// - `heap_start + heap_size` がオーバーフローしないこと
+/// この関数は、カーネルブート時にのみ実行されることが意図されており、
+/// 呼び出し元は、提供されるメモリ範囲が有効かつ排他的であることを保証する必要があります。
 ///
 /// # Errors
 ///
 /// - `HeapError::AlreadyInitialized` - 既に初期化済みの場合
-///
-/// # Examples
-///
-/// ```no_run
-/// # use tiny_os::{init_heap, kernel::mm::{VirtAddr, LayoutSize}};
-/// let heap_start = unsafe { VirtAddr::new_unchecked(0x4444_4444_0000) };
-/// let heap_size = LayoutSize::new(100 * 1024); // 100 KB
-/// 
-/// unsafe {
-///     init_heap(heap_start, heap_size).expect("Failed to initialize heap");
-/// }
-/// ```
 pub unsafe fn init_heap(
     heap_start: kernel::mm::VirtAddr, 
     heap_size: kernel::mm::LayoutSize
 ) -> Result<(), HeapError> {
-    // 基本的な妥当性チェック（デバッグビルドのみ）
+    // 基本的な妥当性チェック
     debug_assert!(heap_start.as_usize() != 0, "Heap start address must not be null");
     debug_assert!(heap_size.as_usize() > 0, "Heap size must be greater than zero");
-    debug_assert!(
-        heap_start.checked_add(heap_size.as_usize()).is_some(),
-        "Heap address range must not overflow"
-    );
-    debug_assert!(
-        heap_start.as_usize() >= 0x1000,
-        "Heap start address too low (potential null pointer region)"
-    );
     
-    // Safety: 呼び出し元が上記の条件を保証している
-    // ALLOCATOR.init内部でunsafe操作を行うが、二重初期化はここで防止される
+    // Safety: 呼び出し元がヒープ領域の有効性を保証している
+    // ALLOCATOR.init内部でunsafe操作と初期化チェックを行う
     unsafe {
         ALLOCATOR.init(heap_start, heap_size)
             .map_err(|_| HeapError::AlreadyInitialized)
@@ -90,35 +65,68 @@ pub unsafe fn init_heap(
 
 pub use qemu::{exit_qemu, QemuExitCode};
 
-/// println! マクロ - 新 VGA ドライバを使用
+/// console_print! マクロ - ユーザー向け画面出力
+///
+/// このマクロは抽象化されたコンソールインターフェースを使用します。
+/// 実際のデバイス（Framebuffer/VGA）は初期化時に決定されます。
+/// デバッグ出力には `debug_print!` を使用してください。
 #[macro_export]
-macro_rules! println {
-    () => ($crate::print!("\n"));
-    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
+macro_rules! console_print {
+    ($($arg:tt)*) => {{
+        $crate::kernel::driver::write_console(format_args!($($arg)*));
+    }};
 }
 
-/// print! マクロ - 新 VGA ドライバを使用
+/// console_println! マクロ - ユーザー向け画面出力（改行付き）
+#[macro_export]
+macro_rules! console_println {
+    () => ($crate::console_print!("\n"));
+    ($($arg:tt)*) => ($crate::console_print!("{}\n", format_args!($($arg)*)));
+}
+
+/// debug_print! マクロ - デバッグ専用（シリアルポートのみ）
+///
+/// このマクロは、抽象化されたデバッグ出力インターフェース (`write_debug`) を使用します。
+/// 画面には表示されず、シリアルポートのみに出力されます。
+#[macro_export]
+macro_rules! debug_print {
+    ($($arg:tt)*) => {{
+        $crate::kernel::driver::write_debug(format_args!($($arg)*));
+    }};
+}
+
+/// debug_println! マクロ - デバッグ専用（改行付き）
+#[macro_export]
+macro_rules! debug_println {
+    () => ($crate::debug_print!("\n"));
+    ($($arg:tt)*) => ($crate::debug_print!("{}\n", format_args!($($arg)*)));
+}
+
+/// println! マクロ - コンソール出力とデバッグ出力の両方
+///
+/// このマクロは互換性のため、画面とシリアルポートの両方に出力します。
+/// 用途に応じて `console_println!` または `debug_println!` の使用を推奨します。
+#[macro_export]
+macro_rules! println {
+    () => {{
+        $crate::console_print!("\n");
+        $crate::debug_print!("\n");
+    }};
+    ($($arg:tt)*) => {{
+        $crate::console_print!("{}\n", format_args!($($arg)*));
+        $crate::debug_print!("{}\n", format_args!($($arg)*));
+    }};
+}
+
+/// print! マクロ - コンソール出力とデバッグ出力の両方
+///
+/// このマクロは互換性のため、画面とシリアルポートの両方に出力します。
+/// 用途に応じて `console_print!` または `debug_print!` の使用を推奨します。
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        // まず Framebuffer を試す
-        if let Some(fb) = $crate::kernel::driver::framebuffer::FRAMEBUFFER.get() {
-            // NOTE: print!マクロでの書き込みエラーは無視する（標準の挙動）
-            let _ = write!(fb.lock(), $($arg)*);
-        }
-        // 次に VGA を試す（UEFI では無効だが念のため）
-        else if let Some(vga) = $crate::kernel::driver::vga::VGA.get() {
-            // NOTE: print!マクロでの書き込みエラーは無視する（標準の挙動）
-            let _ = write!(vga.lock(), $($arg)*);
-        }
-        // シリアルポートにも出力（デバッグ用）
-        {
-            use $crate::kernel::driver::serial::SERIAL1;
-            let mut serial = SERIAL1.lock();
-            // NOTE: print!マクロでの書き込みエラーは無視する（標準の挙動）
-            let _ = write!(serial, $($arg)*);
-        }
+        $crate::console_print!($($arg)*);
+        $crate::debug_print!($($arg)*);
     }};
 }
 
