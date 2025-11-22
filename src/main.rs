@@ -11,7 +11,6 @@
 use bootloader_api::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 use tiny_os::arch::{Cpu, ArchCpu};
-use tiny_os::println;
 use x86_64::instructions::port::PortWriteOnly;
 
 entry_point!(kernel_main);
@@ -19,6 +18,8 @@ entry_point!(kernel_main);
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     macro_rules! serial_print {
         ($msg:expr) => {
+            // SAFETY: 0x3F8はCOM1シリアルポートの標準アドレス。初期初期化コードで使用し、
+            // 他のデバイスが初期化される前にデバッグ出力を行うため。
             unsafe {
                 let mut serial = PortWriteOnly::<u8>::new(0x3F8);
                 for byte in $msg {
@@ -49,6 +50,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial_print!(b"[SKIP] Heap initialization (need boot_info memory map)\n");
     
     serial_print!(b"Initializing Hardware Timer...\n");
+    // SAFETY: PICの初期化はカーネル起動時に1回だけ実行される。
+    // 割り込みコントローラへのアクセスは排他制御されている。
     unsafe {
         tiny_os::arch::x86_64::pic::PICS.lock().initialize();
         // tiny_os::kernel::driver::pit::PIT.lock().set_frequency(100).expect("Failed to set PIT frequency");
@@ -70,6 +73,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     ArchCpu::disable_interrupts();
+    // SAFETY: panic時の緊急出力のため、直接シリアルポートに書き込む。
+    // 割り込みは無効化されており、他のコードは実行されない。
     unsafe {
         let mut serial = PortWriteOnly::<u8>::new(0x3F8);
         for byte in b"\n\n[KERNEL PANIC]\n" {

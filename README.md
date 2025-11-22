@@ -34,7 +34,7 @@ The kernel is designed with an architecture abstraction layer (`src/arch/`) that
 ### Core Functionality
 
 - **VGA Text Mode Output** - 80x25 character display with 16-color support
-- **Serial Port (COM1)** - Debug output via UART 16550 at 38400 baud
+- **Serial Port (COM1)** - Debug output via UART 16550 at 9600 baud
 - **Interrupt-Safe I/O** - Mutex-protected output prevents race conditions
 - **Hardware Detection** - Robust detection of VGA and serial hardware
 - **Panic Handler** - Detailed error reporting with source location
@@ -47,7 +47,7 @@ The kernel is designed with an architecture abstraction layer (`src/arch/`) that
 - ✅ **Timeout Protection** - All blocking operations have timeouts
 - ✅ **Deadlock Prevention** - Documented lock ordering, interrupt disabling
 - ✅ **Idempotent Init** - Safe to call initialization multiple times
-- ✅ **Zero Unsafe** in application code (all unsafe centralized and documented)
+- ✅ **Documented Unsafe** - All unsafe blocks have SAFETY comments explaining invariants
 
 ### Code Quality
 

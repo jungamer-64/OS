@@ -58,19 +58,21 @@ macro_rules! print {
         use core::fmt::Write;
         // まず Framebuffer を試す
         if let Some(fb) = $crate::kernel::driver::framebuffer::FRAMEBUFFER.get() {
+            // NOTE: print!マクロでの書き込みエラーは無視する（標準の挙動）
             let _ = write!(fb.lock(), $($arg)*);
         }
         // 次に VGA を試す（UEFI では無効だが念のため）
         else if let Some(vga) = $crate::kernel::driver::vga::VGA.get() {
+            // NOTE: print!マクロでの書き込みエラーは無視する（標準の挙動）
             let _ = write!(vga.lock(), $($arg)*);
         }
         // シリアルポートにも出力（デバッグ用）
-        // FIXME: SerialPortにfmt::Writeトレイトを実装するまで無効化
-        // {
-        //     use $crate::kernel::driver::serial::SERIAL1;
-        //     let mut serial = SERIAL1.lock();
-        //     let _ = write!(serial, $($arg)*);
-        // }
+        {
+            use $crate::kernel::driver::serial::SERIAL1;
+            let mut serial = SERIAL1.lock();
+            // NOTE: print!マクロでの書き込みエラーは無視する（標準の挙動）
+            let _ = write!(serial, $($arg)*);
+        }
     }};
 }
 

@@ -37,6 +37,8 @@ impl ProgrammableIntervalTimer {
         // ここでは単純に u16 に収まるようにする
         let divisor = if divisor > 65535 { 65535 } else { divisor as u16 };
 
+        // SAFETY: PITのコマンドポート(0x43)とチャネル0データポート(0x40)への書き込みは
+        // PC/AT互換機の標準タイマー設定手順。モード3（矩形波）での設定。
         unsafe {
             // モード設定: Channel 0, Access lo/hi, Mode 3 (Square Wave), Binary
             // 00 11 011 0 = 0x36

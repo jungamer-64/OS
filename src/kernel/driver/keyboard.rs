@@ -20,6 +20,8 @@ impl PS2Keyboard {
     
     /// スキャンコードを読み取り
     pub fn read_scancode(&self) -> Option<u8> {
+        // SAFETY: 0x60はPS/2キーボードのデータポート。
+        // このポートからの読み取りは標準的なPC/AT互換機の操作。
         unsafe {
             Some(self.data_port.read())
         }
