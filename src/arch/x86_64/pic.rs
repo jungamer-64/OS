@@ -29,6 +29,7 @@ pub struct ChainedPics {
 
 impl ChainedPics {
     /// 指定されたオフセットで新しい PIC チェーンを作成
+    #[must_use]
     pub const fn new(offset1: u8, offset2: u8) -> Self {
         Self {
             pics: [
@@ -47,6 +48,10 @@ impl ChainedPics {
     }
 
     /// PIC を初期化
+    ///
+    /// # Safety
+    /// 
+    /// この関数は一度だけ呼ばれる必要があり、他のPIC操作の前に実行される必要があります。
     pub unsafe fn initialize(&mut self) {
         // SAFETY: 呼び出し元がPIC初期化のタイミングを保証している
         unsafe {
@@ -91,6 +96,10 @@ impl ChainedPics {
     }
 
     /// 割り込み終了を通知 (EOI)
+    ///
+    /// # Safety
+    /// 
+    /// この関数は有効な割り込みコンテキスト内で、対応する割り込みIDで呼ばれる必要があります。
     pub unsafe fn notify_end_of_interrupt(&mut self, interrupt_id: u8) {
         // SAFETY: 呼び出し元が適切な割り込みコンテキストであることを保証している
         unsafe {
@@ -110,6 +119,10 @@ impl ChainedPics {
     }
     
     /// 特定の IRQ のマスクを解除
+    ///
+    /// # Safety
+    /// 
+    /// この関数はPICが適切に初期化された後に呼ばれる必要があります。
     pub unsafe fn unmask_irq(&mut self, irq: u8) {
         // SAFETY: 呼び出し元がPICマスク操作の安全性を保証している
         unsafe {
@@ -134,7 +147,7 @@ struct Pic {
 }
 
 impl Pic {
-    fn handles_interrupt(&self, interrupt_id: u8) -> bool {
+    const fn handles_interrupt(&self, interrupt_id: u8) -> bool {
         self.offset <= interrupt_id && interrupt_id < self.offset + 8
     }
 

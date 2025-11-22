@@ -4,6 +4,10 @@
 # build-stdをカスタムターゲットにのみ適用
 [target.x86_64-rany_os]
 linker = "rust-lld"
+rustflags = [
+    "-C", "overflow-checks=on",  # Safety: enable overflow checks
+    # "-C", "target-cpu=x86-64-v2",  # Uncomment for newer CPU features (SSE3, SSSE3, SSE4.1, SSE4.2)
+]
 
 [unstable]
 build-std = ["core", "compiler_builtins", "alloc"]

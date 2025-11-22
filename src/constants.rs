@@ -112,27 +112,27 @@ pub const SERIAL_NON_CRITICAL_CONTINUATION_LINES: &[&str] =
 // Hardware Constants - Platform-Specific
 // ============================================================================
 
-/// COM1 base I/O port address (x86/x86_64 PC/AT standard)
+/// COM1 base I/O port address (`x86`/`x86_64` PC/AT standard)
 ///
 /// Standard PC/AT I/O port for COM1 (first serial port).
-/// This is a de-facto standard for x86/x86_64 PC-compatible systems
+/// This is a de-facto standard for `x86`/`x86_64` PC-compatible systems
 /// that has been consistent since the IBM PC/AT.
 ///
-/// **Platform Dependency:** This address is specific to x86/x86_64 PC-compatible systems.
+/// **Platform Dependency:** This address is specific to `x86`/`x86_64` PC-compatible systems.
 /// Other architectures use different serial interfaces:
 /// - ARM: Memory-mapped UART (e.g., PL011 at various addresses)
 /// - RISC-V: Memory-mapped UART (e.g., 16550 compatible at MMIO addresses)
-/// - AArch64: Memory-mapped UART (typically at MMIO base addresses)
+/// - `AArch64`: Memory-mapped UART (typically at MMIO base addresses)
 ///
 /// For QEMU virt machines on non-x86:
-/// - AArch64: UART at 0x09000000
-/// - RISC-V: UART at 0x10000000
+/// - `AArch64`: UART at `0x09000000`
+/// - RISC-V: UART at `0x10000000`
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub const SERIAL_IO_PORT: u16 = 0x3F8;
 
-/// Serial UART memory-mapped I/O base address (AArch64 QEMU virt)
+/// Serial UART memory-mapped I/O base address (`AArch64` QEMU virt)
 ///
-/// This is the MMIO base address for the serial UART on AArch64 QEMU virt machine.
+/// This is the MMIO base address for the serial UART on `AArch64` QEMU virt machine.
 /// Different hardware platforms may use different addresses.
 #[cfg(target_arch = "aarch64")]
 pub const SERIAL_MMIO_BASE: usize = 0x09000000;
@@ -155,12 +155,12 @@ pub const SERIAL_MMIO_BASE: usize = 0x10000000;
 /// - 9600 baud: divisor = 12 (very reliable, slower)
 pub const BAUD_RATE: u32 = 38400;
 
-/// Baud rate divisor for 38400 baud (x86/x86_64 specific)
+/// Baud rate divisor for 38400 baud (`x86`/`x86_64` specific)
 ///
 /// Calculation: 115200 / 38400 = 3
 /// Base frequency: 115200 Hz (standard UART oscillator / 16)
 ///
-/// This divisor is specific to x86/x86_64 UART implementation.
+/// This divisor is specific to `x86`/`x86_64` UART implementation.
 /// Other architectures may use different clock divisors or direct baud rate configuration.
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub const BAUD_RATE_DIVISOR: u16 = 3;

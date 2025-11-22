@@ -243,8 +243,13 @@ fn print_build_info() {
         }
     }
 
-    // Warning for debug builds
-    if profile == "debug" {
+    // Optimization level reporting
+    if profile == "release" {
+        println!("cargo:warning=Building in RELEASE mode with optimizations");
+        println!("cargo:warning=  - LTO: fat (maximum cross-crate optimization)");
+        println!("cargo:warning=  - opt-level: 3 (maximum performance)");
+        println!("cargo:warning=  - codegen-units: 1 (better optimization)");
+    } else if profile == "debug" {
         println!("cargo:warning=Building in DEBUG mode - performance will be limited");
         println!("cargo:warning=Use --release for production builds");
     }

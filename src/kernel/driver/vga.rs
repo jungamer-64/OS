@@ -117,7 +117,7 @@ impl VgaTextMode {
 }
 
 impl Device for VgaTextMode {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "VGA Text Mode"
     }
     

@@ -37,7 +37,7 @@ impl SerialPort {
 }
 
 impl Device for SerialPort {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "COM1"
     }
     

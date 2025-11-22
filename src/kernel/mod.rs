@@ -9,3 +9,4 @@ pub mod mm;
 pub mod task;
 pub mod r#async;
 pub mod shell;
+pub mod bench;

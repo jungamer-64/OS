@@ -198,7 +198,7 @@ impl fmt::Write for Framebuffer {
 }
 
 impl Device for Framebuffer {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "UEFI Framebuffer"
     }
     

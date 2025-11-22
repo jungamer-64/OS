@@ -32,7 +32,7 @@ impl Task for SimpleTask {
         self.priority
     }
     
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         self.name
     }
     

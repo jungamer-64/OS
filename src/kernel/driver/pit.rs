@@ -52,7 +52,7 @@ impl ProgrammableIntervalTimer {
 }
 
 impl Device for ProgrammableIntervalTimer {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Intel 8253/8254 PIT"
     }
 

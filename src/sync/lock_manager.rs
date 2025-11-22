@@ -45,11 +45,13 @@ impl LockGuard {
     }
 
     /// Get the lock ID
-    pub fn id(&self) -> LockId {
+    #[must_use]
+    pub const fn id(&self) -> LockId {
         self.id
     }
 
     /// Get how long this lock has been held (in arbitrary units)
+    #[must_use]
     pub fn hold_duration(&self) -> u64 {
         Self::read_timestamp().saturating_sub(self.acquired_at)
     }
@@ -167,6 +169,11 @@ pub struct LockStats {
 }
 
 /// Public API for lock acquisition
+///
+/// # Errors
+///
+/// Returns `LockOrderViolation` if the lock is already held or if acquiring
+/// the lock would violate the lock ordering rules.
 pub fn acquire_lock(id: LockId) -> Result<LockGuard, LockOrderViolation> {
     LOCK_MANAGER.try_acquire(id)
 }

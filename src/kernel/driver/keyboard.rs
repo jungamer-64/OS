@@ -27,7 +27,7 @@ impl PS2Keyboard {
 }
 
 impl Device for PS2Keyboard {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PS/2 Keyboard"
     }
     

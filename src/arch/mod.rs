@@ -34,6 +34,7 @@ pub trait Cpu {
 }
 
 /// Read the hardware timestamp counter
+#[must_use]
 pub fn read_timestamp() -> u64 {
     #[cfg(target_arch = "x86_64")]
     return x86_64::read_timestamp();

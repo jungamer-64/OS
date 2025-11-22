@@ -70,11 +70,11 @@ debug-assertions = true
 # Abort on panic (no unwinding in kernel space)
 panic = "abort"
 
-# Link-time optimization for smaller binary
-lto = true
+# Fat LTO for maximum optimization across crates
+lto = "fat"
 
-# Optimize for size while maintaining performance
-opt-level = "z"
+# Optimize for performance (benchmarks will guide further tuning)
+opt-level = 3
 
 # Strip debug symbols in release
 strip = true
@@ -84,6 +84,10 @@ overflow-checks = true
 
 # Codegen units = 1 for better optimization
 codegen-units = 1
+
+# Enable additional optimizations
+# Note: Some of these are enabled by default at opt-level 3
+# but we make them explicit for documentation
 
 [profile.test]
 # Use abort even in tests for consistency

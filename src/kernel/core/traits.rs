@@ -1,8 +1,8 @@
 // src/kernel/core/traits.rs
 //! カーネルコア trait 定義
 
-use super::types::*;
-use super::result::*;
+use super::types::{TaskId, Priority};
+use super::result::KernelResult;
 use alloc::boxed::Box;
 
 /// デバイス抽象化の基本 trait
@@ -10,12 +10,20 @@ use alloc::boxed::Box;
 /// すべてのデバイスドライバはこの trait を実装します。
 pub trait Device {
     /// デバイス名を取得
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
     
     /// デバイスを初期化
+    ///
+    /// # Errors
+    ///
+    /// デバイスの初期化に失敗した場合、エラーを返します。
     fn init(&mut self) -> KernelResult<()>;
     
     /// デバイスをリセット
+    ///
+    /// # Errors
+    ///
+    /// デバイスのリセットに失敗した場合、エラーを返します。
     fn reset(&mut self) -> KernelResult<()>;
     
     /// デバイスが利用可能か確認
@@ -30,12 +38,24 @@ pub trait Device {
 /// バイト単位で読み書きするデバイス用。
 pub trait CharDevice: Device {
     /// 1バイト読み取り（ノンブロッキング）
+    ///
+    /// # Errors
+    ///
+    /// 読み取りに失敗した場合、エラーを返します。
     fn read_byte(&self) -> KernelResult<Option<u8>>;
     
     /// 1バイト書き込み
+    ///
+    /// # Errors
+    ///
+    /// 書き込みに失敗した場合、エラーを返します。
     fn write_byte(&mut self, byte: u8) -> KernelResult<()>;
     
     /// バッファを書き込み（最適化版）
+    ///
+    /// # Errors
+    ///
+    /// 書き込みに失敗した場合、エラーを返します。
     #[inline]
     fn write_bytes(&mut self, buf: &[u8]) -> KernelResult<usize> {
         let mut written = 0;
@@ -55,9 +75,17 @@ pub trait BlockDevice: Device {
     fn block_size(&self) -> usize;
     
     /// ブロックを読み取り
+    ///
+    /// # Errors
+    ///
+    /// 読み取りに失敗した場合、エラーを返します。
     fn read_block(&self, block: u64, buf: &mut [u8]) -> KernelResult<usize>;
     
     /// ブロックを書き込み
+    ///
+    /// # Errors
+    ///
+    /// 書き込みに失敗した場合、エラーを返します。
     fn write_block(&mut self, block: u64, buf: &[u8]) -> KernelResult<usize>;
     
     /// デバイスの総ブロック数
@@ -80,7 +108,7 @@ pub trait Task: Send {
     
     /// タスク名を取得
     #[inline]
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "unnamed"
     }
     
@@ -109,6 +137,10 @@ pub trait Scheduler {
     fn schedule(&mut self) -> Option<TaskId>;
     
     /// 指定されたタスクにスイッチ
+    ///
+    /// # Errors
+    ///
+    /// タスクへの切り替えに失敗した場合、エラーを返します。
     fn switch_to(&mut self, id: TaskId) -> KernelResult<()>;
     
     /// タスクを追加
