@@ -449,3 +449,26 @@ mod tests {
         assert_eq!(distance, 4); // 16 bytes / 4 bytes per u32
     }
 }
+
+#[cfg(test)]
+mod kernel_tests {
+    use super::*;
+
+    #[test_case]
+    fn test_memory_region_new_kernel() {
+        assert!(MemoryRegion::new(0, 10).is_some());
+        assert!(MemoryRegion::new(usize::MAX, 1).is_none()); // Overflow
+        assert!(MemoryRegion::new(0, 0).is_none()); // Zero size
+    }
+
+    #[test_case]
+    fn test_memory_region_overlaps_kernel() {
+        let region1 = MemoryRegion::new(0x1000, 0x100).unwrap();
+        let region2 = MemoryRegion::new(0x1050, 0x100).unwrap();
+        let region3 = MemoryRegion::new(0x2000, 0x100).unwrap();
+
+        assert!(region1.overlaps(&region2));
+        assert!(region2.overlaps(&region1));
+        assert!(!region1.overlaps(&region3));
+    }
+}

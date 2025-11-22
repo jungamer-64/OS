@@ -9,13 +9,16 @@
 //! descriptive errors without sprinkling low-level details throughout
 //! the codebase.
 
-use crate::vga_buffer::{self, ColorCode, VgaError};
+use crate::display::color::ColorCode;
+#[cfg(target_arch = "x86_64")]
+use crate::vga_buffer::{self, VgaError};
 use core::fmt;
 
 /// Errors that can originate from display backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayError {
     /// Underlying VGA (or similar) hardware reported an error.
+    #[cfg(target_arch = "x86_64")]
     Hardware(VgaError),
     /// No display hardware is currently available.
     Unavailable,
@@ -26,6 +29,7 @@ impl DisplayError {
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
+            #[cfg(target_arch = "x86_64")]
             Self::Hardware(err) => err.as_str(),
             Self::Unavailable => "display hardware unavailable",
         }
@@ -38,6 +42,7 @@ impl fmt::Display for DisplayError {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 impl From<VgaError> for DisplayError {
     fn from(value: VgaError) -> Self {
         Self::Hardware(value)
@@ -153,4 +158,30 @@ pub type DefaultDisplayBackend = StubDisplay;
 #[must_use]
 pub const fn default_display_backend() -> DefaultDisplayBackend {
     DefaultDisplayBackend::new()
+}
+
+#[cfg(test)]
+mod kernel_tests {
+    use super::*;
+
+    #[test_case]
+    fn test_stub_display() {
+        let stub = StubDisplay::new();
+        assert!(!stub.is_available());
+        
+        let mut stub = StubDisplay::with_accessible(true);
+        assert!(stub.is_available());
+        
+        // Stub always returns Unavailable error for writes
+        assert_eq!(
+            stub.write_colored("test", ColorCode::normal()),
+            Err(DisplayError::Unavailable)
+        );
+    }
+
+    #[test_case]
+    fn test_display_error_str() {
+        let err = DisplayError::Unavailable;
+        assert_eq!(err.as_str(), "display hardware unavailable");
+    }
 }

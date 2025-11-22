@@ -1,6 +1,6 @@
 //! Utilities for interacting with QEMU test infrastructure.
 
-use crate::arch::{Cpu};
+use crate::arch::{Cpu, ArchCpu};
 use crate::arch::qemu;
 
 /// Exit codes understood by QEMU's ISA debug exit device.
@@ -22,6 +22,6 @@ pub fn exit_qemu(code: QemuExitCode) -> ! {
 
     loop {
         // SAFETY: We are in ring 0 and halting the CPU is safe here.
-        crate::arch::X86Cpu::halt();
+        ArchCpu::halt();
     }
 }

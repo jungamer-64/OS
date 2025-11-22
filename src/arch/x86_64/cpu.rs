@@ -22,3 +22,8 @@ impl Cpu for X86Cpu {
         interrupts::are_enabled()
     }
 }
+
+/// Read the Time Stamp Counter (TSC).
+pub fn read_timestamp() -> u64 {
+    unsafe { core::arch::x86_64::_rdtsc() }
+}

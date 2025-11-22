@@ -2,6 +2,7 @@
 
 //! Display and output formatting facade.
 
+pub mod color;
 mod backend;
 mod boot;
 mod output;
@@ -14,6 +15,7 @@ mod panic;
 #[cfg(test)]
 mod tests;
 
+pub use color::{Color, ColorCode};
 pub use backend::{
     default_display_backend, DefaultDisplayBackend, DisplayError, DisplayHardware, StubDisplay,
     VgaDisplay,

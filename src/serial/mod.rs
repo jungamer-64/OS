@@ -18,7 +18,7 @@
 //! - Interrupt-safe operation
 
 pub mod backend;
-mod constants;
+pub(crate) mod constants;
 mod error;
 pub mod ports;
 mod timeout;

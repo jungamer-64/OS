@@ -2,5 +2,9 @@
 
 pub mod cpu;
 pub mod qemu;
+pub mod serial;
+pub mod vga;
 
 pub use cpu::X86Cpu;
+pub use cpu::read_timestamp;
+pub use qemu::write_debug_byte;

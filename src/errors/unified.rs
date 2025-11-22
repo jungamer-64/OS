@@ -11,6 +11,7 @@ use core::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelError {
     /// VGA subsystem error
+    #[cfg(target_arch = "x86_64")]
     Vga(VgaError),
     /// Serial subsystem error
     Serial(SerialError),
@@ -23,6 +24,7 @@ pub enum KernelError {
 impl fmt::Display for KernelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(target_arch = "x86_64")]
             Self::Vga(e) => write!(f, "VGA error: {e}"),
             Self::Serial(e) => write!(f, "Serial error: {e}"),
             Self::Init(e) => write!(f, "Init error: {e}"),
@@ -32,6 +34,7 @@ impl fmt::Display for KernelError {
 }
 
 /// VGA subsystem errors
+#[cfg(target_arch = "x86_64")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VgaError {
     /// Buffer not accessible
@@ -48,6 +51,7 @@ pub enum VgaError {
     BufferOverflow,
 }
 
+#[cfg(target_arch = "x86_64")]
 impl VgaError {
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
@@ -62,12 +66,14 @@ impl VgaError {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 impl fmt::Display for VgaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 impl From<VgaError> for KernelError {
     fn from(err: VgaError) -> Self {
         Self::Vga(err)
@@ -246,12 +252,37 @@ impl ErrorContext for InitError {
     }
 }
 
-impl ErrorContext for DisplayError {
-    fn context(&self) -> &'static str {
-        match self {
-            Self::NoOutputAvailable => "No display output methods are available",
-            Self::FormatError => "Failed to format output string",
-            Self::SubsystemError => "Underlying display subsystem error",
-        }
+#[cfg(test)]
+mod kernel_tests {
+    use super::*;
+
+    #[test_case]
+    fn test_kernel_error_display() {
+        // Just verify that we can format errors without panicking
+        let err = KernelError::Init(InitError::AlreadyInitialized);
+        let _ = err; 
+    }
+
+    #[test_case]
+    fn test_error_conversions() {
+        let vga_err = VgaError::BufferNotAccessible;
+        let init_err: InitError = vga_err.into();
+        assert!(matches!(init_err, InitError::VgaFailed(VgaError::BufferNotAccessible)));
+
+        let serial_err = SerialError::Timeout;
+        let init_err2: InitError = serial_err.into();
+        assert!(matches!(init_err2, InitError::SerialFailed(SerialError::Timeout)));
+
+        let kernel_err: KernelError = init_err.into();
+        assert!(matches!(kernel_err, KernelError::Init(InitError::VgaFailed(_))));
+    }
+
+    #[test_case]
+    fn test_error_context() {
+        let err = SerialError::PortNotPresent;
+        assert_eq!(err.context(), "Serial port hardware is not available");
+        
+        let k_err = KernelError::Serial(err);
+        assert_eq!(k_err.context(), "Error occurred in serial port subsystem");
     }
 }

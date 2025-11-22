@@ -26,14 +26,14 @@ pub mod arch;
 pub use qemu::{exit_qemu, QemuExitCode};
 
 use core::panic::PanicInfo;
-use crate::arch::{Cpu, X86Cpu};
+use crate::arch::{Cpu, ArchCpu};
 
 /// Halt loop used by tests after executing all test cases.
 #[inline]
 pub fn hlt_loop() -> ! {
     loop {
         // SAFETY: `hlt` is safe in ring 0 and we never leave the loop.
-        X86Cpu::halt();
+        ArchCpu::halt();
     }
 }
 
@@ -95,8 +95,6 @@ fn test_kernel_main(_boot_info: &'static BootInfo) -> ! {
         println!("[TEST INIT] initialization failed: {:?}", err);
     }
 
-    unsafe {
-        test_main();
-    }
+    test_main();
     hlt_loop();
 }

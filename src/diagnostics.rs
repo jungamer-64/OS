@@ -454,16 +454,7 @@ pub static DIAGNOSTICS: SystemDiagnostics = SystemDiagnostics::new();
 #[inline]
 #[must_use]
 pub fn read_tsc() -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: RDTSC is a safe, read-only instruction on x86_64.
-        unsafe { core::arch::x86_64::_rdtsc() }
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        0
-    }
+    crate::arch::read_timestamp()
 }
 
 /// ヘルスチェックレポートの出力
@@ -765,5 +756,39 @@ mod tests {
 
         let health = diag.health_check();
         assert!(health.issues.high_lock_contention);
+    }
+}
+
+#[cfg(test)]
+mod kernel_tests {
+    use super::*;
+
+    #[test_case]
+    fn test_diagnostics_initial_state() {
+        let diag = SystemDiagnostics::new();
+        let snap = diag.snapshot();
+        assert_eq!(snap.vga_writes, 0);
+        assert_eq!(snap.panic_count, 0);
+    }
+
+    #[test_case]
+    fn test_diagnostics_counters() {
+        let diag = SystemDiagnostics::new();
+        diag.record_vga_write(true);
+        diag.record_vga_write(false);
+        
+        let snap = diag.snapshot();
+        assert_eq!(snap.vga_writes, 2);
+        assert_eq!(snap.vga_write_failures, 1);
+    }
+
+    #[test_case]
+    fn test_read_tsc_execution() {
+        // Just verify it doesn't crash
+        let tsc = read_tsc();
+        // TSC should be non-zero on real hardware/QEMU, but might be 0 on some emulators or if very fast?
+        // Actually _rdtsc returns cycle count since reset, so it should be > 0 unless we are extremely early (unlikely in test).
+        // But let's just check it returns *something*.
+        let _ = tsc;
     }
 }

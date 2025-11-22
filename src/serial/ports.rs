@@ -111,7 +111,7 @@ impl ValidationReport {
         }
     }
 
-    const fn record_scratch(&mut self, pattern: u8, readback: u8, passed: bool) {
+    pub fn record_scratch(&mut self, pattern: u8, readback: u8, passed: bool) {
         if self.scratch_count < self.scratch_tests.len() {
             self.scratch_tests[self.scratch_count] = ScratchTestResult {
                 pattern,
@@ -125,12 +125,35 @@ impl ValidationReport {
     pub fn scratch_tests(&self) -> &[ScratchTestResult] {
         &self.scratch_tests[..self.scratch_count]
     }
+}
 
-    pub fn is_fully_valid(&self) -> bool {
-        self.scratch_tests().iter().all(|result| result.passed)
-            && self.lsr_valid
-            && self.fifo_functional
-            && self.baud_config_valid
+#[cfg(test)]
+mod kernel_tests {
+    use super::*;
+
+    #[test_case]
+    fn test_validation_report_new() {
+        let report = ValidationReport::new();
+        assert_eq!(report.scratch_count, 0);
+        assert!(!report.lsr_valid);
+        assert!(!report.fifo_functional);
+        assert!(!report.baud_config_valid);
+    }
+
+    #[test_case]
+    fn test_validation_report_record() {
+        let mut report = ValidationReport::new();
+        report.record_scratch(0xAA, 0xAA, true);
+        assert_eq!(report.scratch_count, 1);
+        assert_eq!(report.scratch_tests()[0].pattern, 0xAA);
+        assert!(report.scratch_tests()[0].passed);
+    }
+
+    #[test_case]
+    fn test_hardware_state_enum() {
+        let state = HardwareState::Uninitialized;
+        assert_eq!(state, HardwareState::Uninitialized);
+        assert_ne!(state, HardwareState::Ready);
     }
 }
 

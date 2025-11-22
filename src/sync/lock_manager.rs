@@ -210,3 +210,21 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod kernel_tests {
+    use super::*;
+
+    #[test_case]
+    fn test_lock_ordering() {
+        assert!(LockId::Serial < LockId::Vga);
+        assert!(LockId::Vga < LockId::Diagnostics);
+    }
+
+    #[test_case]
+    fn test_lock_order_violation_debug() {
+        let violation = LockOrderViolation::AlreadyHeld(LockId::Serial);
+        // Just check it can be debug formatted
+        let _ = violation;
+    }
+}

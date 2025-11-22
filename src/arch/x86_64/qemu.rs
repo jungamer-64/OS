@@ -9,3 +9,11 @@ pub fn exit_qemu(code: u32) {
         port.write(code);
     }
 }
+
+/// Write a byte to the QEMU debug port (0xE9).
+pub fn write_debug_byte(byte: u8) {
+    unsafe {
+        let mut port = Port::<u8>::new(0xE9);
+        port.write(byte);
+    }
+}

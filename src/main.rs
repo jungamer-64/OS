@@ -48,7 +48,7 @@
 
 use tiny_os::{diagnostics, display, init, serial, vga_buffer};
 use tiny_os::{print, println};
-use tiny_os::arch::{Cpu, X86Cpu};
+use tiny_os::arch::{Cpu, ArchCpu};
 
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
@@ -84,7 +84,7 @@ entry_point!(kernel_main);
 ///   - RSDP address (for ACPI)
 ///   - Physical memory offset
 ///
-/// # Returns
+/// Returns
 ///
 /// This function never returns (`-> !`). The kernel runs indefinitely
 /// in a low-power idle loop until reset or power-off.
@@ -92,7 +92,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Ensure interrupts remain disabled until we set up an IDT. The bootloader leaves
     // them enabled, which would trigger timer interrupts we cannot handle yet and
     // cause triple-fault reboots.
-    X86Cpu::disable_interrupts();
+    ArchCpu::disable_interrupts();
 
     // Phase 1: Initialize all subsystems
     // This is the most critical phase - if VGA fails, we can't show errors

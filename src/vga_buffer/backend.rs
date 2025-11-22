@@ -7,9 +7,8 @@
 //! implementation—from the classic text-mode buffer at `0xB8000` to an
 //! in-memory stub for testing.
 
-use super::constants::{CELL_COUNT, VGA_BUFFER_ADDR, VGA_HEIGHT, VGA_WIDTH};
+use super::constants::{CELL_COUNT, VGA_HEIGHT, VGA_WIDTH};
 use super::VgaError;
-use core::ptr::NonNull;
 
 /// Abstraction over the VGA character buffer memory.
 pub trait VgaBufferAccess {
@@ -50,95 +49,11 @@ pub trait VgaBufferAccess {
     fn fill_row(&mut self, row: usize, value: u16) -> Result<(), VgaError>;
 }
 
-/// Concrete backend that talks to the legacy text-mode buffer at 0xB8000.
-#[derive(Clone, Copy)]
-pub struct TextModeBuffer {
-    ptr: NonNull<u16>,
-}
+#[cfg(target_arch = "x86_64")]
+pub type DefaultVgaBuffer = crate::arch::VgaBackend;
 
-impl TextModeBuffer {
-    /// Construct a new text-mode backend.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            // SAFETY: 0xB8000 is the canonical VGA text buffer address.
-            ptr: unsafe { NonNull::new_unchecked(VGA_BUFFER_ADDR as *mut u16) },
-        }
-    }
-
-    #[inline]
-    const fn is_valid_index(index: usize) -> bool {
-        index < CELL_COUNT
-    }
-}
-
-impl VgaBufferAccess for TextModeBuffer {
-    fn read_cell(&self, index: usize) -> Result<u16, VgaError> {
-        if !Self::is_valid_index(index) {
-            return Err(VgaError::InvalidPosition);
-        }
-
-        Ok(unsafe { core::ptr::read_volatile(self.ptr.as_ptr().add(index)) })
-    }
-
-    fn write_cell(&mut self, index: usize, value: u16) -> Result<(), VgaError> {
-        if !Self::is_valid_index(index) {
-            return Err(VgaError::InvalidPosition);
-        }
-
-        unsafe {
-            core::ptr::write_volatile(self.ptr.as_ptr().add(index), value);
-            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
-        }
-        Ok(())
-    }
-
-    fn copy_cells(&mut self, src: usize, dst: usize, count: usize) -> Result<(), VgaError> {
-        if count == 0 {
-            return Ok(());
-        }
-
-        let src_end = src.checked_add(count).ok_or(VgaError::InvalidPosition)?;
-        let dst_end = dst.checked_add(count).ok_or(VgaError::InvalidPosition)?;
-
-        if !Self::is_valid_index(src) || !Self::is_valid_index(dst) {
-            return Err(VgaError::InvalidPosition);
-        }
-        if src_end > CELL_COUNT || dst_end > CELL_COUNT {
-            return Err(VgaError::InvalidPosition);
-        }
-
-        unsafe {
-            core::ptr::copy(
-                self.ptr.as_ptr().add(src),
-                self.ptr.as_ptr().add(dst),
-                count,
-            );
-        }
-        Ok(())
-    }
-
-    fn fill_row(&mut self, row: usize, value: u16) -> Result<(), VgaError> {
-        if row >= VGA_HEIGHT {
-            return Err(VgaError::InvalidPosition);
-        }
-
-        let start = row
-            .checked_mul(VGA_WIDTH)
-            .ok_or(VgaError::InvalidPosition)?;
-
-        for offset in 0..VGA_WIDTH {
-            self.write_cell(start + offset, value)?;
-        }
-        Ok(())
-    }
-}
-
-impl Default for TextModeBuffer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+#[cfg(not(target_arch = "x86_64"))]
+pub type DefaultVgaBuffer = StubBuffer;
 
 /// Simple stub implementation backed by regular memory for testing.
 #[cfg_attr(target_arch = "x86_64", allow(dead_code))]
@@ -230,9 +145,3 @@ impl VgaBufferAccess for StubBuffer {
         Ok(())
     }
 }
-
-#[cfg(target_arch = "x86_64")]
-pub type DefaultVgaBuffer = TextModeBuffer;
-
-#[cfg(not(target_arch = "x86_64"))]
-pub type DefaultVgaBuffer = StubBuffer;

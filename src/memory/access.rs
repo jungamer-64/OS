@@ -49,12 +49,14 @@ pub trait MemoryAccessExt<T: Copy>: MemoryAccess<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`BufferError::Overflow`] if the range would overflow `usize`
-    /// calculations or [`BufferError::OutOfBounds`] when the write would extend
-    /// beyond the accessor's capacity.
+    /// Returns [`BufferError::OutOfBounds`] if the write would exceed the
+    /// buffer capacity.
     fn write_slice(&mut self, start: usize, data: &[T]) -> Result<(), BufferError> {
-        validate_range(start, data.len(), self.capacity())?;
-        for (offset, value) in data.iter().copied().enumerate() {
+        if start.checked_add(data.len()).ok_or(BufferError::OutOfBounds)? > self.capacity() {
+            return Err(BufferError::OutOfBounds);
+        }
+
+        for (offset, &value) in data.iter().enumerate() {
             self.write(start + offset, value)?;
         }
         Ok(())
@@ -253,9 +255,9 @@ mod tests {
 
     #[test]
     fn safe_buffer_to_slice_transfer() {
-        static mut RAW: [u32; 4] = [0; 4];
+        let mut raw = [0u32; 4];
         let mut safe = unsafe {
-            SafeBuffer::new(NonNull::new_unchecked(RAW.as_mut_ptr()), RAW.len()).unwrap()
+            SafeBuffer::new(NonNull::new(raw.as_mut_ptr()).unwrap(), raw.len()).unwrap()
         };
 
         safe.fill(0xABCD_EF01).unwrap();
@@ -268,5 +270,54 @@ mod tests {
         }
 
         assert_eq!(slice, [0xABCD_EF01; 4]);
+    }
+
+    #[test_case]
+    fn test_slice_access() {
+        let mut data = [0u8; 10];
+        let mut mem = SliceMemoryAccess::new(&mut data);
+
+        assert_eq!(mem.capacity(), 10);
+        mem.write(0, 42).unwrap();
+        assert_eq!(mem.read(0).unwrap(), 42);
+        assert_eq!(mem.read(9).unwrap(), 0);
+        assert!(mem.read(10).is_err());
+    }
+
+    #[test_case]
+    fn test_fill_all() {
+        let mut data = [0u8; 5];
+        let mut mem = SliceMemoryAccess::new(&mut data);
+
+        mem.fill_all(0xFF).unwrap();
+        for i in 0..5 {
+            assert_eq!(mem.read(i).unwrap(), 0xFF);
+        }
+    }
+}
+
+#[cfg(test)]
+mod kernel_tests {
+    use super::*;
+
+    #[test_case]
+    fn test_slice_access_kernel() {
+        let mut data = [0u8; 10];
+        let mut mem = SliceMemoryAccess::new(&mut data);
+
+        assert_eq!(mem.capacity(), 10);
+        mem.write(0, 42).unwrap();
+        assert_eq!(mem.read(0).unwrap(), 42);
+    }
+
+    #[test_case]
+    fn test_fill_all_kernel() {
+        let mut data = [0u8; 5];
+        let mut mem = SliceMemoryAccess::new(&mut data);
+
+        mem.fill_all(0xFF).unwrap();
+        for i in 0..5 {
+            assert_eq!(mem.read(i).unwrap(), 0xFF);
+        }
     }
 }

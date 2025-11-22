@@ -51,34 +51,18 @@ pub fn current_level() -> Option<PanicLevel> {
         1 => Some(PanicLevel::Primary),
         2 => Some(PanicLevel::Nested),
         3 => Some(PanicLevel::Critical),
-        _ => None, // 0 or invalid = not panicking
+        _ => None,
     }
 }
 
-/// Check if currently in panic state
-#[must_use = "panic state should be checked to prevent undefined behavior"]
-pub fn is_panicking() -> bool {
-    current_level().is_some()
-}
-
-#[cfg(all(test, feature = "std-tests"))]
-mod tests {
+#[cfg(test)]
+mod kernel_tests {
     use super::*;
 
-    #[test]
-    fn test_panic_level_values() {
+    #[test_case]
+    fn test_panic_level_enum() {
         assert_eq!(PanicLevel::Primary as u8, 1);
         assert_eq!(PanicLevel::Nested as u8, 2);
         assert_eq!(PanicLevel::Critical as u8, 3);
-        // Note: 0 represents no panic state (no enum variant)
-    }
-
-    #[test]
-    fn test_initial_state() {
-        // Note: This test may fail if other tests run first
-        // In a real test environment, you'd reset the state
-        let level = current_level();
-        // Level should be either None (no panic) or Some(panic level)
-        assert!(level.is_none() || level.is_some());
     }
 }

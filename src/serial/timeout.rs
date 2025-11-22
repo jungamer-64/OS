@@ -386,6 +386,23 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod kernel_tests {
+    use super::*;
+
+    #[test_case]
+    fn test_timeout_config_defaults() {
+        let config = TimeoutConfig::default_timeout();
+        assert_eq!(config.max_iterations, 1000);
+    }
+
+    #[test_case]
+    fn test_timeout_config_short() {
+        let config = TimeoutConfig::short_timeout();
+        assert_eq!(config.max_iterations, 100);
+    }
+}
+
 /// Default maximum number of retry attempts for standard operations
 const DEFAULT_MAX_RETRIES: u32 = 3;
 /// Quick retry maximum attempts for time-sensitive operations

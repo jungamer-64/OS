@@ -21,7 +21,7 @@
 
 mod backend;
 mod color;
-mod constants;
+pub(crate) mod constants;
 mod writer;
 
 use crate::diagnostics::DIAGNOSTICS;
@@ -32,7 +32,7 @@ pub use constants::{CELL_COUNT, VGA_HEIGHT, VGA_WIDTH};
 use core::sync::atomic::Ordering;
 use spin::Mutex;
 pub use writer::{DoubleBufferedWriter, VgaError};
-use crate::sync::interrupt::{InterruptController, X64InterruptController};
+use crate::sync::interrupt::{InterruptController, ArchInterruptController};
 use writer::{VgaWriter, BUFFER_ACCESSIBLE};
 
 /// Global VGA writer protected by Mutex
@@ -57,11 +57,11 @@ static VGA_WRITER: Mutex<VgaWriter> = Mutex::new(VgaWriter::new());
 /// - No interrupt can try to acquire VGA_WRITER while we hold it
 /// - No nested lock attempts from the same execution context
 /// - Safe concurrent access from multiple code paths
-pub(crate) fn with_writer<F, R>(f: F) -> Result<R, VgaError>
+pub fn with_writer<F, R>(f: F) -> Result<R, VgaError>
 where
     F: FnOnce(&mut VgaWriter) -> Result<R, VgaError>,
 {
-    X64InterruptController::without_interrupts(|| {
+    ArchInterruptController::without_interrupts(|| {
         // Acquire lock order enforcement first
         let _lock_guard = acquire_lock(LockId::Vga).map_err(|_| VgaError::LockOrderViolation)?;
 
@@ -83,6 +83,7 @@ where
         result
     })
 }
+
 
 /// Initialize VGA buffer and test accessibility
 ///

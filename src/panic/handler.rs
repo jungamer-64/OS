@@ -22,12 +22,9 @@ use crate::{
     serial,
     vga_buffer,
     println,
+    arch::{Cpu, ArchCpu, write_debug_byte},
 };
 use core::panic::PanicInfo;
-use x86_64::instructions::{interrupts, port::Port};
-
-const DEBUG_PORT: u16 = 0xE9;
-const DEBUG_PORT_MAX_PATH: usize = 80;
 
 /// Tracks whether we managed to emit panic information anywhere.
 #[derive(Debug, Default, Clone, Copy)]
@@ -69,7 +66,7 @@ impl PanicTelemetry {
 /// Entry point invoked by the crate-level `#[panic_handler]`.
 pub fn handle_panic(info: &PanicInfo) -> ! {
     // Interrupts can trigger nested panics, so shut them off immediately.
-    interrupts::disable();
+    ArchCpu::disable_interrupts();
 
     let level = enter_panic();
     let telemetry = PanicTelemetry::capture(level);
@@ -192,42 +189,37 @@ fn log_output_summary(outputs: PanicOutputStatus, telemetry: &PanicTelemetry) {
 }
 
 fn emergency_panic_output(info: &PanicInfo) -> bool {
-    let mut port = Port::<u8>::new(DEBUG_PORT);
-
-    write_bytes(&mut port, b"!!! KERNEL PANIC - OUTPUT FAILED !!!\n");
+    write_bytes_to_debug(b"!!! KERNEL PANIC - OUTPUT FAILED !!!\n");
 
     if let Some(location) = info.location() {
-        write_bytes(&mut port, b"File: ");
-        for &byte in location.file().as_bytes().iter().take(DEBUG_PORT_MAX_PATH) {
-            write_byte(&mut port, byte);
+        write_bytes_to_debug(b"File: ");
+        for &byte in location.file().as_bytes().iter().take(128) {
+            write_debug_byte(byte);
         }
-        write_byte(&mut port, b'\n');
+        write_debug_byte(b'\n');
 
-        write_bytes(&mut port, b"Line: ");
-        write_decimal_to_port(&mut port, location.line());
-        write_byte(&mut port, b'\n');
+        write_bytes_to_debug(b"Line: ");
+        write_decimal_to_debug(location.line());
+        write_debug_byte(b'\n');
     }
 
     true
 }
 
 fn emergency_output_minimal(info: &PanicInfo) -> bool {
-    let mut port = Port::<u8>::new(DEBUG_PORT);
-
-    write_bytes(&mut port, b"\n!!! NESTED PANIC DETECTED !!!\n");
+    write_bytes_to_debug(b"\n!!! NESTED PANIC DETECTED !!!\n");
 
     if let Some(location) = info.location() {
-        write_bytes(&mut port, b"Location: ");
-        for &byte in location.file().as_bytes().iter().take(DEBUG_PORT_MAX_PATH) {
-            write_byte(&mut port, byte);
+        write_bytes_to_debug(b"Location: ");
+        for &byte in location.file().as_bytes().iter().take(128) {
+            write_debug_byte(byte);
         }
-        write_byte(&mut port, b':');
-        write_decimal_to_port(&mut port, location.line());
-        write_byte(&mut port, b'\n');
+        write_debug_byte(b':');
+        write_decimal_to_debug(location.line());
+        write_debug_byte(b'\n');
     }
 
-    write_bytes(
-        &mut port,
+    write_bytes_to_debug(
         b"System halting to prevent corruption.\n",
     );
 
@@ -235,26 +227,21 @@ fn emergency_output_minimal(info: &PanicInfo) -> bool {
 }
 
 fn debug_port_emergency_message() {
-    let mut port = Port::<u8>::new(DEBUG_PORT);
-
-    write_bytes(&mut port, b"\n!!! CRITICAL PANIC FAILURE !!!\n");
-    write_bytes(
-        &mut port,
+    write_bytes_to_debug(b"\n!!! CRITICAL PANIC FAILURE !!!\n");
+    write_bytes_to_debug(
         b"Context: Multiple panic attempts detected\n",
     );
-    write_bytes(
-        &mut port,
+    write_bytes_to_debug(
         b"Action: Emergency system halt to prevent data corruption\n",
     );
-    write_bytes(
-        &mut port,
+    write_bytes_to_debug(
         b"Recommendation: Review panic logs for race conditions\n",
     );
 }
 
-fn write_decimal_to_port(port: &mut Port<u8>, mut num: u32) {
+fn write_decimal_to_debug(mut num: u32) {
     if num == 0 {
-        write_byte(port, b'0');
+        write_debug_byte(b'0');
         return;
     }
 
@@ -269,22 +256,13 @@ fn write_decimal_to_port(port: &mut Port<u8>, mut num: u32) {
 
     while idx > 0 {
         idx -= 1;
-        write_byte(port, digits[idx]);
+        write_debug_byte(digits[idx]);
     }
 }
 
-#[inline]
-fn write_byte(port: &mut Port<u8>, byte: u8) {
-    // SAFETY: Writing to the debug port is safe within the panic handler as it
-    // does not rely on any shared resources or locks.
-    unsafe {
-        port.write(byte);
-    }
-}
-
-fn write_bytes(port: &mut Port<u8>, bytes: &[u8]) {
+fn write_bytes_to_debug(bytes: &[u8]) {
     for &byte in bytes {
-        write_byte(port, byte);
+        write_debug_byte(byte);
     }
 }
 
@@ -302,6 +280,28 @@ mod tests {
 
         status.serial = false;
         status.vga = true;
+        assert!(status.any_success());
+    }
+}
+
+#[cfg(test)]
+mod kernel_tests {
+    use super::*;
+
+    #[test_case]
+    fn test_panic_output_status() {
+        let mut status = PanicOutputStatus::default();
+        assert!(!status.any_success());
+
+        status.serial = true;
+        assert!(status.any_success());
+
+        status.serial = false;
+        status.vga = true;
+        assert!(status.any_success());
+        
+        status.vga = false;
+        status.emergency = true;
         assert!(status.any_success());
     }
 }
