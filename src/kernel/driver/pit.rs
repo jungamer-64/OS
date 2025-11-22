@@ -20,6 +20,12 @@ pub struct ProgrammableIntervalTimer {
     command: PortWriteOnly<u8>,
 }
 
+impl Default for ProgrammableIntervalTimer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProgrammableIntervalTimer {
     /// 新しい PIT ドライバを作成
     pub const fn new() -> Self {

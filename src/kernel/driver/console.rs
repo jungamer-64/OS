@@ -7,6 +7,7 @@
 use core::fmt;
 use core::sync::atomic::{AtomicU8, Ordering};
 use spin::Mutex;
+use crate::kernel::core::{KernelResult, DeviceError};
 
 /// パニックレベルの型
 pub type PanicLevel = u8;
@@ -53,8 +54,8 @@ enum ConsoleImpl {
 impl fmt::Write for ConsoleImpl {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         match self {
-            ConsoleImpl::Framebuffer(fb) => fb.lock().write_str(s),
-            ConsoleImpl::Vga(vga) => vga.lock().write_str(s),
+            Self::Framebuffer(fb) => fb.lock().write_str(s),
+            Self::Vga(vga) => vga.lock().write_str(s),
         }
     }
 }
@@ -65,35 +66,41 @@ impl fmt::Write for ConsoleImpl {
 /// `Option` により未初期化状態を型安全に表現します。
 static CONSOLE: Mutex<Option<ConsoleImpl>> = Mutex::new(None);
 
-/// Framebuffer をコンソールとして設定
+/// フレームバッファをコンソールとして設定
 ///
 /// この関数は、カーネル初期化時に一度だけ呼び出されるべきです。
-/// 既に設定されている場合は `Err(())` を返します。
+///
+/// # Errors
+///
+/// 既に設定されている場合は `DeviceError::InitFailed` を返します。
 pub fn set_framebuffer_console(
     fb: &'static Mutex<crate::kernel::driver::framebuffer::Framebuffer>
-) -> Result<(), ()> {
+) -> KernelResult<()> {
     let mut guard = CONSOLE.lock();
     if guard.is_none() {
         *guard = Some(ConsoleImpl::Framebuffer(fb));
         Ok(())
     } else {
-        Err(())
+        Err(DeviceError::InitFailed.into())
     }
 }
 
 /// VGA をコンソールとして設定
 ///
 /// この関数は、カーネル初期化時に一度だけ呼び出されるべきです。
-/// 既に設定されている場合は `Err(())` を返します。
+///
+/// # Errors
+///
+/// 既に設定されている場合は `DeviceError::InitFailed` を返します。
 pub fn set_vga_console(
     vga: &'static Mutex<crate::kernel::driver::vga::VgaTextMode>
-) -> Result<(), ()> {
+) -> KernelResult<()> {
     let mut guard = CONSOLE.lock();
     if guard.is_none() {
         *guard = Some(ConsoleImpl::Vga(vga));
         Ok(())
     } else {
-        Err(())
+        Err(DeviceError::InitFailed.into())
     }
 }
 
@@ -126,11 +133,10 @@ pub fn write_console(args: fmt::Arguments) {
     match panic_level {
         NORMAL => {
             // 通常時: 安全にロック
-            if let Some(mut guard) = CONSOLE.try_lock() {
-                if let Some(ref mut console) = *guard {
+            if let Some(mut guard) = CONSOLE.try_lock()
+                && let Some(ref mut console) = *guard {
                     let _ = console.write_fmt(args);
                 }
-            }
         }
         FIRST_PANIC => {
             // 初回パニック: シリアルのみに出力

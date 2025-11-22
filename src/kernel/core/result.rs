@@ -54,8 +54,23 @@ impl KernelError {
     
     /// タスクエラーか確認
     #[inline]
+    #[must_use]
     pub const fn is_task_error(&self) -> bool {
         matches!(self.kind, ErrorKind::Task(_))
+    }
+    
+    /// 再試行可能なエラーかどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_retryable(&self) -> bool {
+        self.kind.is_retryable()
+    }
+    
+    /// 致命的なエラーかどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_fatal(&self) -> bool {
+        self.kind.is_fatal()
     }
 }
 
@@ -76,6 +91,43 @@ pub enum ErrorKind {
     NotImplemented,
 }
 
+impl ErrorKind {
+    /// 再試行可能なエラーかどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_retryable(self) -> bool {
+        match self {
+            Self::Device(e) => e.is_retryable(),
+            Self::Task(e) => e.is_retryable(),
+            Self::ResourceUnavailable => true,
+            _ => false,
+        }
+    }
+    
+    /// 致命的なエラーかどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_fatal(self) -> bool {
+        match self {
+            Self::Memory(e) => e.is_fatal(),
+            _ => false,
+        }
+    }
+}
+
+impl fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Device(e) => write!(f, "Device error: {}", e),
+            Self::Memory(e) => write!(f, "Memory error: {}", e),
+            Self::Task(e) => write!(f, "Task error: {}", e),
+            Self::InvalidArgument => write!(f, "Invalid argument"),
+            Self::ResourceUnavailable => write!(f, "Resource unavailable"),
+            Self::NotImplemented => write!(f, "Not implemented"),
+        }
+    }
+}
+
 /// デバイスエラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceError {
@@ -91,6 +143,34 @@ pub enum DeviceError {
     BufferTooSmall,
 }
 
+impl DeviceError {
+    /// エラーの説明文字列を取得
+    #[inline]
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InitFailed => "device initialization failed",
+            Self::Timeout => "device operation timed out",
+            Self::NotFound => "device not found",
+            Self::IoError => "I/O error occurred",
+            Self::BufferTooSmall => "buffer too small for operation",
+        }
+    }
+    
+    /// 再試行可能なエラーかどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_retryable(self) -> bool {
+        matches!(self, Self::Timeout | Self::IoError)
+    }
+}
+
+impl fmt::Display for DeviceError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// メモリエラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryError {
@@ -100,6 +180,32 @@ pub enum MemoryError {
     InvalidAddress,
     /// アライメント違反
     MisalignedAccess,
+}
+
+impl MemoryError {
+    /// エラーの説明文字列を取得
+    #[inline]
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OutOfMemory => "out of memory",
+            Self::InvalidAddress => "invalid memory address",
+            Self::MisalignedAccess => "misaligned memory access",
+        }
+    }
+    
+    /// 致命的なエラーかどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_fatal(self) -> bool {
+        matches!(self, Self::OutOfMemory)
+    }
+}
+
+impl fmt::Display for MemoryError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// タスクエラー
@@ -113,16 +219,35 @@ pub enum TaskError {
     InvalidStateTransition,
 }
 
+impl TaskError {
+    /// エラーの説明文字列を取得
+    #[inline]
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotFound => "task not found",
+            Self::QueueFull => "task queue is full",
+            Self::InvalidStateTransition => "invalid task state transition",
+        }
+    }
+    
+    /// 再試行可能なエラーかどうかをチェック
+    #[inline]
+    #[must_use]
+    pub const fn is_retryable(self) -> bool {
+        matches!(self, Self::QueueFull)
+    }
+}
+
+impl fmt::Display for TaskError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl fmt::Display for KernelError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match &self.kind {
-            ErrorKind::Device(e) => write!(f, "Device error: {:?}", e)?,
-            ErrorKind::Memory(e) => write!(f, "Memory error: {:?}", e)?,
-            ErrorKind::Task(e) => write!(f, "Task error: {:?}", e)?,
-            ErrorKind::InvalidArgument => write!(f, "Invalid argument")?,
-            ErrorKind::ResourceUnavailable => write!(f, "Resource unavailable")?,
-            ErrorKind::NotImplemented => write!(f, "Not implemented")?,
-        }
+        write!(f, "{}", self.kind)?;
         
         if let Some(ctx) = self.context {
             write!(f, " (context: {})", ctx)?;

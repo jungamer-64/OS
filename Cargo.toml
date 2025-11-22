@@ -10,7 +10,7 @@ repository = "https://github.com/jungamer-64/OS"
 keywords = ["os", "kernel", "no-std", "bare-metal", "x86_64"]
 categories = ["no-std", "embedded", "os"]
 
-# ビルダーをワークスペースから削除してエラーを回避
+# Workspace disabled to avoid dependency conflicts
 # [workspace]
 # members = ["builder"]
 

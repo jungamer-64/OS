@@ -9,7 +9,7 @@ use core::ptr;
 use core::mem;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
-use super::types::{PhysAddr, VirtAddr, LayoutSize};
+use super::types::{PhysAddr, VirtAddr, LayoutSize, MemoryError};
 
 /// ヒープ統計情報
 #[derive(Debug, Clone, Copy)]
@@ -100,6 +100,12 @@ impl ListNode {
 pub struct LinkedListAllocator {
     head: ListNode,
     stats: HeapStats,
+}
+
+impl Default for LinkedListAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LinkedListAllocator {
@@ -380,8 +386,14 @@ pub struct LockedHeap {
     initialized: AtomicBool,
 }
 
+impl Default for LockedHeap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LockedHeap {
-    /// 新しい空のロックされたヒープを作成
+    /// 新しいロックされたヒープアロケータを作成
     pub const fn new() -> Self {
         Self {
             inner: Mutex::new(LinkedListAllocator::new()),
@@ -395,15 +407,15 @@ impl LockedHeap {
     }
 
     /// ヒープを初期化
-    ///
+    /// 
     /// # Safety
     ///
     /// - heap_start と heap_size は有効なヒープ領域を指している必要があります
     /// 
     /// # Errors
     ///
-    /// 既に初期化されている場合は `Err(())` を返します
-    pub unsafe fn init(&self, heap_start: VirtAddr, heap_size: LayoutSize) -> Result<(), ()> {
+    /// 既に初期化されている場合は `Err(MemoryError::InvalidAddress)` を返します
+    pub unsafe fn init(&self, heap_start: VirtAddr, heap_size: LayoutSize) -> Result<(), MemoryError> {
         // 既に初期化済みの場合はエラー
         if self.initialized.compare_exchange(
             false, 
@@ -411,7 +423,7 @@ impl LockedHeap {
             Ordering::AcqRel, 
             Ordering::Acquire
         ).is_err() {
-            return Err(());
+            return Err(MemoryError::InvalidAddress);
         }
         
         // 注: 簡易実装として仮想アドレスを物理アドレスとしてキャストしている。

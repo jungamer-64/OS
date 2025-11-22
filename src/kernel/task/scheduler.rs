@@ -13,6 +13,12 @@ pub struct RoundRobinScheduler {
     current_task: Option<TaskId>,
 }
 
+impl Default for RoundRobinScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RoundRobinScheduler {
     /// 新しいスケジューラを作成
     pub fn new() -> Self {
