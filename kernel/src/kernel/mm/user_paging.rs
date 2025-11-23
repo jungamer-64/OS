@@ -647,3 +647,56 @@ unsafe fn free_pt_entry(
     }
     entry.set_unused();
 }
+
+/// WORKAROUND: Map user code region to kernel page table
+/// This is needed because we skip CR3 switch (Phase 2.5 limitation)
+/// TODO Phase 3: Remove this when proper CR3 switching is implemented
+pub unsafe fn map_user_code_to_kernel<A>(
+    kernel_mapper: &mut OffsetPageTable,
+    code_size: usize,
+    base_addr: VirtAddr,
+    frame_allocator: &mut A,
+) -> Result<(), MapError>
+where
+    A: FrameAllocator<Size4KiB>,
+{
+    let num_pages = (code_size + 4095) / 4096;
+    
+    crate::debug_println!(
+        "[WORKAROUND] Mapping user code to kernel page table: {} bytes ({} pages) at {:#x}",
+        code_size,
+        num_pages,
+        base_addr.as_u64()
+    );
+    
+    for i in 0..num_pages {
+        let page_addr = base_addr + (i * 4096) as u64;
+        let page: Page<Size4KiB> = Page::containing_address(page_addr);
+        
+        // Check if already mapped
+        if kernel_mapper.translate_page(page).is_ok() {
+            crate::debug_println!("  Page {:#x} already mapped in kernel PT", page_addr.as_u64());
+            continue;
+        }
+        
+        // Allocate physical frame
+        let frame = frame_allocator
+            .allocate_frame()
+            .ok_or(MapError::FrameAllocationFailed)?;
+        
+        // Map as READ-ONLY + USER_ACCESSIBLE + EXECUTABLE
+        let flags = PageTableFlags::PRESENT
+            | PageTableFlags::USER_ACCESSIBLE;
+        
+        unsafe {
+            kernel_mapper
+                .map_to(page, frame, flags, frame_allocator)
+                .map_err(|e| MapError::MappingFailed(format!("{:?}", e)))?
+                .flush();
+        }
+        
+        crate::debug_println!("  Mapped page {:#x} -> frame {:#x}", page_addr.as_u64(), frame.start_address().as_u64());
+    }
+    
+    Ok(())
+}

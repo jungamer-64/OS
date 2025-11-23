@@ -165,3 +165,13 @@ impl FrameDeallocator<Size4KiB> for BootInfoFrameAllocator {
 unsafe impl Send for BootInfoFrameAllocator {}
 unsafe impl Sync for BootInfoFrameAllocator {}
 
+/// Empty frame allocator that never allocates
+/// Used when we only need to map existing frames
+pub struct EmptyFrameAllocator;
+
+unsafe impl FrameAllocator<Size4KiB> for EmptyFrameAllocator {
+    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        None
+    }
+}
+

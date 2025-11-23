@@ -9,7 +9,7 @@ pub mod user_paging;
 pub mod page_fault;
 
 pub use allocator::{LockedHeap, LinkedListAllocator};
-pub use frame::BootInfoFrameAllocator;
+pub use frame::{BootInfoFrameAllocator, EmptyFrameAllocator};
 pub use types::{PhysAddr, VirtAddr, LayoutSize, PageFrameNumber, MemoryError};
 
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};

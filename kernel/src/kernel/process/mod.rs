@@ -580,46 +580,58 @@ where
     // Zero out the page table (clear all entries)
     page_table.zero();
     
-    // Copy ONLY Higher Half kernel mappings (256-511)
+    // Copy ALL kernel mappings (0-511)
     // 
-    // CRITICAL: Higher Half Kernel の核心 - 完全な空間分離！
-    // - Entries 0-255:   USER SPACE (0x0000_0000_0000_0000 - 0x0000_7FFF_FFFF_FFFF)
-    //                    → 完全に空（zero）のままにする！ユーザープログラム専用！
-    // - Entries 256-511: KERNEL SPACE (0xFFFF_8000_0000_0000 - 0xFFFF_FFFF_FFFF_FFFF)
-    //                    → カーネルページテーブルからコピーする
+    // CRITICAL FIX for User Mode Transition:
+    // We MUST copy ALL kernel mappings, not just Higher Half (256-511).
+    // 
+    // Why? During iretq transition to user mode:
+    // 1. CPU is still in kernel mode (CPL=0)
+    // 2. CPU uses current RSP (kernel stack) to pop iretq frame
+    // 3. If kernel stack is not mapped in User CR3 → Page Fault!
+    // 4. Page Fault handler needs kernel mappings → Page Fault again → Double Fault!
     //
-    // なぜ 0-255 をコピーしてはいけないのか：
-    // 1. Identity Mapping の混入: Bootloader が作った物理アドレス=仮想アドレスの
-    //    マッピング（Entry 0付近）がユーザー空間に入り込む
-    // 2. 物理フレームの共有: コピーされた Entry は、カーネルの PDPT と同じ
-    //    物理フレームを指す → ユーザーマッピング時に破壊される！
-    // 3. セキュリティ問題: ユーザーがカーネルメモリにアクセスできてしまう
+    // Solution: Copy ALL kernel mappings (including Lower Half identity mapping)
+    // BUT: Kernel pages are marked PRESENT + WRITABLE (no USER_ACCESSIBLE)
+    //      → User mode cannot access them (protected by CPU)
+    //      → Kernel mode (iretq, exceptions) can access them
+    //
+    // Note: This is different from the original "perfect separation" design,
+    // but it's necessary for x86-64 privilege transitions to work correctly.
     let kernel_pt_frame = x86_64::registers::control::Cr3::read().0;
     let kernel_pt_ptr = (physical_memory_offset + kernel_pt_frame.start_address().as_u64()).as_ptr::<PageTable>();
     let kernel_pt = unsafe { &*kernel_pt_ptr };
     
     // DEBUG: Scan to see what we're copying
-    crate::debug_println!("[create_user_page_table] Scanning kernel Higher Half (256-511)...");
+    crate::debug_println!("[create_user_page_table] Scanning ALL kernel entries (0-511)...");
     let mut count = 0;
-    for i in 256..512 {
+    for i in 0..512 {
         if !kernel_pt[i].is_unused() {
             crate::debug_println!("  Kernel entry {}: addr={:#x}, flags={:?}", 
                 i, kernel_pt[i].addr().as_u64(), kernel_pt[i].flags());
             count += 1;
         }
     }
-    crate::debug_println!("[create_user_page_table] Found {} Higher Half entries", count);
+    crate::debug_println!("[create_user_page_table] Found {} kernel entries", count);
     
-    // Copy ONLY Higher Half entries (256-511)
-    // Lower Half (0-255) remains ZERO for user programs
-    crate::debug_println!("[create_user_page_table] Copying Higher Half kernel entries (256-511)");
-    for i in 256..512 {
+    // Copy ALL entries (0-511) to enable kernel access during privilege transitions
+    crate::debug_println!("[create_user_page_table] Copying ALL kernel entries (0-511)");
+    for i in 0..512 {
         if !kernel_pt[i].is_unused() {
             page_table[i] = kernel_pt[i].clone();
         }
     }
     
     crate::debug_println!("[create_user_page_table] Copy completed, frame={:#x}", frame.start_address().as_u64());
+    
+    // DEBUG: Verify what was actually copied
+    crate::debug_println!("[create_user_page_table] Verifying copied entries:");
+    for i in 0..512 {
+        if !page_table[i].is_unused() {
+            crate::debug_println!("  User Entry {}: addr={:#x}, flags={:?}", 
+                i, page_table[i].addr().as_u64(), page_table[i].flags());
+        }
+    }
     
     Ok(frame)
 }
@@ -907,6 +919,26 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
     unsafe extern "C" {
         fn jump_to_usermode_asm(entry_point: u64, user_stack: u64, user_cr3: u64, rflags: u64) -> !;
     }
+    
+    // DEBUG: Show NASM function address
+    crate::debug_println!("[DEBUG] jump_to_usermode_asm address: {:#x}", 
+        jump_to_usermode_asm as *const () as u64);
+    
+    // DEBUG: Show GDT base address
+    use x86_64::instructions::tables::sgdt;
+    let gdtr = sgdt();
+    crate::debug_println!("[DEBUG] GDT base: {:#x}, limit: {:#x}", 
+        gdtr.base.as_u64(), gdtr.limit);
+    
+    // DEBUG: Check current RSP before calling NASM function
+    let current_rsp: u64;
+    unsafe {
+        core::arch::asm!(
+            "mov {}, rsp",
+            out(reg) current_rsp,
+        );
+    }
+    crate::debug_println!("[DEBUG] Current kernel RSP before NASM call: {:#x}", current_rsp);
     
     // Call the external assembly function
     unsafe {
