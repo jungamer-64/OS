@@ -1,8 +1,5 @@
 //! File System and IPC module
 
-use alloc::vec::Vec;
-use alloc::boxed::Box;
-
 pub mod pipe;
 
 /// Result type for file operations

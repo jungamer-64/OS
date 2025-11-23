@@ -5,7 +5,8 @@
 //! for user-mode processes.
 
 use x86_64::structures::paging::{PhysFrame, PageTable, FrameAllocator, Size4KiB};
-use x86_64::VirtAddr;
+use x86_64::{VirtAddr, PhysAddr};
+use x86_64::registers::control::Cr3Flags;
 use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -177,6 +178,18 @@ impl Drop for Process {
             dealloc(stack_ptr, layout);
         }
         
+        // 3. Close all file descriptors
+        // BTreeMap doesn't have drain(), so we clone the keys and remove one by one
+        let fd_keys: alloc::vec::Vec<u64> = self.file_descriptors.keys().copied().collect();
+        for fd_num in fd_keys {
+            if let Some(fd) = self.file_descriptors.remove(&fd_num) {
+                let mut fd_lock = fd.lock();
+                let _ = fd_lock.close();
+                drop(fd_lock);
+                crate::debug_println!("[Process] Closed FD {} for PID={}", fd_num, self.pid.as_u64());
+            }
+        }
+        
         crate::debug_println!("[Process] Dropped PID={} (Freed resources)", self.pid.as_u64());
     }
 }
@@ -300,8 +313,14 @@ impl Process {
     pub const fn context_rsp(&self) -> u64 {
         self.context_rsp
     }
+    
+    /// Get physical address of process page table
+    #[must_use]
+    pub fn page_table_phys_addr(&self) -> u64 {
+        self.page_table_frame.start_address().as_u64()
+    }
 
-    /// Update process image (for exec)
+    /// Update the process image (e.g., after exec)
     pub fn update_image(&mut self, page_table_frame: PhysFrame, user_stack: VirtAddr, _entry_point: VirtAddr) {
         self.page_table_frame = page_table_frame;
         self.user_stack = user_stack;
@@ -787,6 +806,23 @@ pub fn schedule_next() {
 #[allow(dead_code)]
 pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr) -> ! {
     use x86_64::registers::rflags::RFlags;
+    use x86_64::registers::control::Cr3;
+    
+    // CRITICAL: Switch to user page table BEFORE jumping to user space!
+    // Get current process and load its page table
+    let user_cr3 = {
+        let table = PROCESS_TABLE.lock();
+        let process = table.current_process().expect("No current process for jump_to_usermode");
+        process.page_table_phys_addr()
+    };
+    
+    // Switch to user page table
+    unsafe {
+        Cr3::write(
+            PhysFrame::containing_address(PhysAddr::new(user_cr3)),
+            Cr3Flags::empty(),
+        );
+    }
     
     // GDT selector values (must match your GDT setup)
     // Typically: USER_DATA_SELECTOR = 0x20 | 3, USER_CODE_SELECTOR = 0x18 | 3
@@ -796,7 +832,7 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr) -> !
     // Prepare RFLAGS: enable interrupts (IF=1)
     let rflags = (RFlags::INTERRUPT_FLAG).bits();
     
-    // Use sysretq instruction to return to user mode
+    // Use iretq instruction to return to user mode
     // Stack layout for iretq:
     // [SS, RSP, RFLAGS, CS, RIP]
     unsafe {

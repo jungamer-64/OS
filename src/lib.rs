@@ -11,7 +11,7 @@
 #![cfg_attr(test, reexport_test_harness_main = "test_main")]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
-#![allow(missing_docs)]
+#![cfg_attr(test, allow(missing_docs))]
 
 extern crate alloc;
 
@@ -58,6 +58,7 @@ pub unsafe fn init_heap(
     
     // Safety: 呼び出し元がヒープ領域の有効性を保証している
     // ALLOCATOR.init内部でunsafe操作と初期化チェックを行う
+    // SAFETY: この関数自体が unsafe であり、呼び出し元が安全性を保証している
     unsafe {
         ALLOCATOR.init(heap_start, heap_size)
             .map_err(|_| HeapError::AlreadyInitialized)
@@ -66,7 +67,7 @@ pub unsafe fn init_heap(
 
 pub use qemu::{exit_qemu, QemuExitCode};
 
-/// console_print! マクロ - ユーザー向け画面出力
+/// `console_print!` マクロ - ユーザー向け画面出力
 ///
 /// このマクロは抽象化されたコンソールインターフェースを使用します。
 /// 実際のデバイス（Framebuffer/VGA）は初期化時に決定されます。
@@ -78,14 +79,14 @@ macro_rules! console_print {
     }};
 }
 
-/// console_println! マクロ - ユーザー向け画面出力（改行付き）
+/// `console_println!` マクロ - ユーザー向け画面出力（改行付き）
 #[macro_export]
 macro_rules! console_println {
     () => ($crate::console_print!("\n"));
     ($($arg:tt)*) => ($crate::console_print!("{}\n", format_args!($($arg)*)));
 }
 
-/// debug_print! マクロ - デバッグ専用（シリアルポートのみ）
+/// `debug_print!` マクロ - デバッグ専用（シリアルポートのみ）
 ///
 /// このマクロは、抽象化されたデバッグ出力インターフェース (`write_debug`) を使用します。
 /// 画面には表示されず、シリアルポートのみに出力されます。
@@ -96,7 +97,7 @@ macro_rules! debug_print {
     }};
 }
 
-/// debug_println! マクロ - デバッグ専用（改行付き）
+/// `debug_println!` マクロ - デバッグ専用（改行付き）
 #[macro_export]
 macro_rules! debug_println {
     () => ($crate::debug_print!("\n"));
@@ -131,7 +132,12 @@ macro_rules! print {
     }};
 }
 
-/// Halt loop
+/// CPU を停止し、割り込みが来るまで待つループ
+///
+/// # 警告
+///
+/// 割り込み禁止状態で呼び出すとデッドロックになるため注意が必要です。
+/// 割り込みが有効な状態で使用してください。
 #[inline]
 pub fn hlt_loop() -> ! {
     loop {
@@ -141,7 +147,16 @@ pub fn hlt_loop() -> ! {
 
 /// Test trait
 pub trait Testable {
+    /// テストを実行し、結果をデバッグ出力に書き込みます
     fn run(&self);
+}
+
+/// 型名から最後の識別子のみを抽出（テスト表示用）
+fn short_type_name<T>() -> &'static str {
+    core::any::type_name::<T>()
+        .rsplit("::")
+        .next()
+        .unwrap_or("unknown")
 }
 
 impl<T> Testable for T
@@ -149,15 +164,15 @@ where
     T: Fn(),
 {
     fn run(&self) {
-        print!("[TEST] {} ... ", core::any::type_name::<T>());
+        debug_print!("[TEST] {} ... ", short_type_name::<T>());
         self();
-        println!("ok");
+        debug_println!("ok");
     }
 }
 
 /// Test runner
 pub fn test_runner(tests: &[&dyn Testable]) {
-    println!("[TEST RUNNER] running {} tests", tests.len());
+    debug_println!("[TEST RUNNER] running {} tests", tests.len());
     for test in tests {
         test.run();
     }
@@ -165,14 +180,19 @@ pub fn test_runner(tests: &[&dyn Testable]) {
 }
 
 /// Test panic handler
-#[cfg(all(test, feature = "std-tests"))]
+///
+/// テストビルド時のみ有効。通常ビルドでは main.rs の panic handler が使用されます。
+#[cfg(test)]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     test_panic_handler(info)
 }
 
+/// テストパニックハンドラの実装
+///
+/// `#[inline(never)]`: パニック時のバックトレースを保全するため
 #[inline(never)]
 pub fn test_panic_handler(info: &PanicInfo) -> ! {
-    println!("[TEST PANIC] {}", info);
+    debug_println!("[TEST PANIC] {}", info);
     exit_qemu(QemuExitCode::Failed);
 }

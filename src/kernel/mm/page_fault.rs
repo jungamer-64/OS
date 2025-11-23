@@ -4,7 +4,7 @@
 //! including lazy allocation, copy-on-write, and stack growth.
 
 use x86_64::structures::idt::PageFaultErrorCode;
-use x86_64::{VirtAddr, structures::paging::{Page, PageTableFlags, Mapper, Size4KiB, FrameAllocator, FrameDeallocator, Translate, mapper::TranslateResult}};
+use x86_64::{VirtAddr, structures::paging::{Page, PageTableFlags, Mapper, Size4KiB, FrameAllocator, Translate, mapper::TranslateResult}};
 use crate::kernel::mm::user_paging::{USER_STACK_TOP, USER_CODE_BASE};
 use crate::kernel::mm::paging::COW_FLAG;
 use crate::kernel::mm::BootInfoFrameAllocator;

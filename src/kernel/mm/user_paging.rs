@@ -89,10 +89,10 @@ where
             .allocate_frame()
             .ok_or(MapError::FrameAllocationFailed)?;
         
-        // Map with USER_ACCESSIBLE flag (critical for Ring 3 access!)
+        // Map as READ-ONLY + EXECUTABLE for code region (W^X principle)
+        // Code pages should NEVER be writable for security
         let flags = PageTableFlags::PRESENT
-            | PageTableFlags::WRITABLE
-            | PageTableFlags::USER_ACCESSIBLE;
+            | PageTableFlags::USER_ACCESSIBLE;  // No WRITABLE for code!
         
         // SAFETY: Caller ensures no conflicting mappings
         unsafe {

@@ -9,7 +9,7 @@ use core::ptr;
 use core::mem;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
-use super::types::{PhysAddr, VirtAddr, LayoutSize, MemoryError};
+use super::types::{VirtAddr, LayoutSize, MemoryError};
 use super::frame::BootInfoFrameAllocator;
 
 /// Global frame allocator
@@ -126,12 +126,6 @@ impl LinkedListAllocator {
     /// `heap_start` と `heap_size` は有効なヒープ領域を指している必要があります。
     /// この関数は一度だけ呼ばれる必要があります。
     pub unsafe fn init(&mut self, heap_start: VirtAddr, heap_size: LayoutSize) {
-        use crate::debug_println;
-        debug_println!("[DEBUG] init() called: heap_start={:#x}, heap_size={}", 
-                      heap_start.as_usize(), heap_size.as_usize());
-        debug_println!("[DEBUG] head before init: magic={:#x}, size={}", 
-                      self.head.magic, self.head.size.as_usize());
-        
         // ListNode のアラインメントを考慮して、実際に使える開始アドレスとサイズを計算する
         let node_align = mem::align_of::<ListNode>();
 
@@ -180,13 +174,6 @@ impl LinkedListAllocator {
     /// 
     /// 注意: addr は ListNode のアラインメントに合わせて切り上げられます。
     unsafe fn add_free_region(&mut self, addr: VirtAddr, size: LayoutSize) {
-        use crate::debug_println;
-        
-        // スタックトレース情報を追加（簡易版）
-        debug_println!("[DEBUG] add_free_region() called: addr={:#x}, size={}", 
-                      addr.as_usize(), size.as_usize());
-        debug_println!("  [TRACE] Called from alloc/dealloc/init");
-        
         let addr_val = addr.as_usize();
         let size_val = size.as_usize();
         
@@ -255,24 +242,17 @@ impl LinkedListAllocator {
 
         // Step 2: 新しいノードの挿入（前のブロックと結合しなかった場合）
         if !merged_with_prev {
-            debug_println!("[DEBUG] Creating new ListNode at {:#x}, size={}", 
-                          new_start.as_usize(), usable_size.as_usize());
-            
             let mut new_node = ListNode::new(usable_size);
-            debug_println!("[DEBUG] new_node created: magic={:#x}, size={}", 
-                          new_node.magic, new_node.size.as_usize());
-            
             // current.next を new_node.next に繋ぐ
             new_node.next = current.next.take();
             
             let node_ptr = unsafe { new_start.as_mut_ptr::<ListNode>() };
-            debug_println!("[DEBUG] Writing new_node to {:#x}", node_ptr as usize);
-            
             unsafe {
-                node_ptr.write(new_node);
-                debug_println!("[DEBUG] Write completed, setting current.next");
+                // Use write_volatile to prevent compiler optimizations
+                core::ptr::write_volatile(node_ptr, new_node);
+                // Ensure write completes before setting current.next
+                core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
                 current.next = Some(&mut *node_ptr);
-                debug_println!("[DEBUG] current.next set successfully");
             }
         }
 
@@ -471,28 +451,19 @@ impl LockedHeap {
 
 unsafe impl GlobalAlloc for LockedHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        use crate::debug_println;
-        
         let (size, align) = match LinkedListAllocator::size_align(layout) {
             Ok(sa) => sa,
             Err(_) => return ptr::null_mut(),
         };
         
-        debug_println!("[DEBUG] alloc() called: size={}, align={}", size, align);
-        
         let mut allocator = self.inner.lock();
 
         if let Some((region_start, region_end, region_size, alloc_start)) = allocator.find_region(size, align) {
-            debug_println!("[DEBUG] Found region: start={:#x}, end={:#x}, size={}, alloc_start={:#x}", 
-                          region_start.as_usize(), region_end.as_usize(), region_size.as_usize(), alloc_start);
-            
             // Prefixの処理
             let region_start_val = region_start.as_usize();
             if alloc_start > region_start_val {
                 let prefix_size = LayoutSize::new(alloc_start - region_start_val);
                 if prefix_size.as_usize() >= mem::size_of::<ListNode>() {
-                    debug_println!("[DEBUG] Adding prefix: addr={:#x}, size={}", 
-                                  region_start_val, prefix_size.as_usize());
                     unsafe {
                         allocator.add_free_region(region_start, prefix_size);
                     }
@@ -517,8 +488,6 @@ unsafe impl GlobalAlloc for LockedHeap {
                 let suffix_size = LayoutSize::new(region_end_val - alloc_end);
                 if suffix_size.as_usize() >= mem::size_of::<ListNode>() {
                     let suffix_addr = unsafe { VirtAddr::new_unchecked(alloc_end) };
-                    debug_println!("[DEBUG] Adding suffix: addr={:#x}, size={}", 
-                                  suffix_addr.as_usize(), suffix_size.as_usize());
                     unsafe {
                         allocator.add_free_region(suffix_addr, suffix_size);
                     }
@@ -526,10 +495,8 @@ unsafe impl GlobalAlloc for LockedHeap {
             }
             
             allocator.record_allocation(size);
-            debug_println!("[DEBUG] Returning allocation: {:#x}", alloc_start);
             alloc_start as *mut u8
         } else {
-            debug_println!("[DEBUG] No suitable region found");
             ptr::null_mut()
         }
     }

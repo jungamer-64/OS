@@ -94,19 +94,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     println!("  Tiny OS - Ideal Rust Kernel (UEFI)");
     println!("========================================");
 
-    // ハードウェアタイマー初期化
-    // SAFETY: PICの初期化はカーネル起動時に1回だけ実行される
-    unsafe {
-        tiny_os::arch::x86_64::pic::PICS.lock().initialize();
-        // Enable timer interrupt (IRQ0)
-        tiny_os::arch::x86_64::pic::PICS.lock().unmask_irq(0);
-    }
-    debug_println!("[OK] Hardware Timer initialized and enabled");
-
-    // 割り込み有効化
-    ArchCpu::enable_interrupts();
-    debug_println!("[OK] Interrupts enabled");
-    
     println!("[OK] Kernel initialized successfully!");
     
     // Syscall tests disabled - moving directly to process creation
@@ -114,8 +101,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // {
     //     tiny_os::kernel::syscall::test_syscall_mechanism();
     // }
-    
-    debug_println!("[DEBUG] About to create initial user process...");
     
     // Phase 2: Create initial user process
     // This is required for the scheduler to have something to run
@@ -132,6 +117,20 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     debug_println!("[Process] Set PID={} as Running", pid.as_u64());
                 }
             }
+            
+            // NOW enable timer and interrupts (after process is created)
+            // ハードウェアタイマー初期化
+            // SAFETY: PICの初期化はカーネル起動時に1回だけ実行される
+            unsafe {
+                tiny_os::arch::x86_64::pic::PICS.lock().initialize();
+                // Enable timer interrupt (IRQ0)
+                tiny_os::arch::x86_64::pic::PICS.lock().unmask_irq(0);
+            }
+            debug_println!("[OK] Hardware Timer initialized and enabled");
+
+            // 割り込み有効化
+            ArchCpu::enable_interrupts();
+            debug_println!("[OK] Interrupts enabled");
             
             debug_println!("[Kernel] Jumping to first user process...");
             

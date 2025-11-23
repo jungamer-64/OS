@@ -43,66 +43,146 @@ pub const SUCCESS: SyscallResult = 0;
 /// Error codes (Linux-compatible)
 pub const EPERM: SyscallResult = -1;     // Operation not permitted
 pub const ENOENT: SyscallResult = -2;    // No such file or directory
+pub const ESRCH: SyscallResult = -3;     // No such process
 pub const EINTR: SyscallResult = -4;     // Interrupted system call
 pub const EIO: SyscallResult = -5;       // I/O error
 pub const EBADF: SyscallResult = -9;     // Bad file descriptor
+pub const ECHILD: SyscallResult = -10;   // No child processes
+pub const EAGAIN: SyscallResult = -11;    // Try again
 pub const ENOMEM: SyscallResult = -12;   // Out of memory
 pub const EFAULT: SyscallResult = -14;   // Bad address (invalid pointer)
-pub const ECHILD: SyscallResult = -10;   // No child processes
-pub const ESRCH: SyscallResult = -3;     // No such process
 pub const EINVAL: SyscallResult = -22;   // Invalid argument
+pub const EPIPE: SyscallResult = -32;    // Broken pipe
 pub const ENOSYS: SyscallResult = -38;   // Function not implemented
 
-/// sys_write - Write to console
+/// sys_write - Write to file descriptor
 ///
 /// Arguments:
-/// - arg1: buffer pointer
-/// - arg2: length
+/// - arg1: fd (file descriptor)
+/// - arg2: buffer pointer
+/// - arg3: length
 /// 
 /// Returns:
 /// - Positive: Number of bytes written
-/// - Negative: Error code (EFAULT, EINVAL)
-pub fn sys_write(buf: u64, len: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    // 1. Validate pointer is in user space
-    if buf == 0 || !is_user_address(buf) {
-        debug_println!("[SYSCALL] sys_write: invalid buffer address 0x{:x}", buf);
+/// - Negative: Error code (EFAULT, EINVAL, EBADF)
+pub fn sys_write(fd: u64, buf: u64, len: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    // Special case: FD 1 = stdout (console)
+    if fd == 1 {
+        // 1. Validate pointer is in user space
+        if buf == 0 || !is_user_address(buf) {
+            debug_println!("[SYSCALL] sys_write: invalid buffer address 0x{:x}", buf);
+            return EFAULT;
+        }
+        
+        // 2. Validate length
+        if len > MAX_WRITE_LEN {
+            debug_println!("[SYSCALL] sys_write: length too large ({})", len);
+            return EINVAL;
+        }
+        
+        // 3. Validate memory range is in user space
+        if !is_user_range(buf, len) {
+            debug_println!("[SYSCALL] sys_write: buffer range crosses user/kernel boundary");
+            return EFAULT;
+        }
+        
+        // 4. Safely read user buffer
+        // SAFETY: We've validated that the pointer is in user space
+        let slice = unsafe {
+            core::slice::from_raw_parts(buf as *const u8, len as usize)
+        };
+        
+        // 5. Write to console
+        use crate::kernel::driver::serial::SERIAL1;
+        if let Some(mut serial) = SERIAL1.try_lock() {
+            for &byte in slice {
+                let _ = serial.write_byte(byte);
+            }
+        }
+        
+        return len as SyscallResult;
+    }
+    
+    // For other FDs, dispatch to file descriptor
+    use crate::kernel::process::PROCESS_TABLE;
+    
+    let table = PROCESS_TABLE.lock();
+    let process = match table.current_process() {
+        Some(p) => p,
+        None => return ESRCH,
+    };
+    
+    let fd_arc = match process.get_file_descriptor(fd) {
+        Some(fd) => fd,
+        None => return EBADF,
+    };
+    
+    // Validate buffer
+    if buf == 0 || !is_user_address(buf) || !is_user_range(buf, len) {
         return EFAULT;
     }
     
-    // 2. Validate length
-    if len > MAX_WRITE_LEN {
-        debug_println!("[SYSCALL] sys_write: length too large ({})", len);
-        return EINVAL;
-    }
-    
-    // 3. Validate memory range is in user space
-    if !is_user_range(buf, len) {
-        debug_println!("[SYSCALL] sys_write: buffer range crosses user/kernel boundary");
-        return EFAULT;
-    }
-    
-    // 4. Safely read user buffer
-    // SAFETY: We've validated that the pointer is in user space
-    // TODO: In Phase 2, also validate that the memory is mapped and readable
     let slice = unsafe {
         core::slice::from_raw_parts(buf as *const u8, len as usize)
     };
     
-    // 5. Write to console
-    use crate::kernel::driver::serial::SERIAL1;
-    if let Some(mut serial) = SERIAL1.try_lock() {
-        for &byte in slice {
-            let _ = serial.write_byte(byte);
-        }
+    let mut fd_lock = fd_arc.lock();
+    match fd_lock.write(slice) {
+        Ok(written) => written as SyscallResult,
+        Err(crate::kernel::fs::FileError::BrokenPipe) => EPIPE,
+        Err(crate::kernel::fs::FileError::WouldBlock) => EAGAIN,
+        Err(_) => EIO,
     }
-    
-    len as SyscallResult
 }
 
-/// sys_read - Read from keyboard
-pub fn sys_read(_buf: u64, _len: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    debug_println!("[SYSCALL] sys_read not implemented yet");
-    ENOSYS
+/// sys_read - Read from file descriptor
+///
+/// Arguments:
+/// - arg1: fd (file descriptor)
+/// - arg2: buffer pointer
+/// - arg3: length
+///
+/// Returns:
+/// - Positive: Number of bytes read
+/// - 0: EOF
+/// - Negative: Error code
+pub fn sys_read(fd: u64, buf: u64, len: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    // Special case: FD 0 = stdin (not implemented)
+    if fd == 0 {
+        debug_println!("[SYSCALL] sys_read from stdin not implemented yet");
+        return ENOSYS;
+    }
+    
+    // For other FDs, dispatch to file descriptor
+    use crate::kernel::process::PROCESS_TABLE;
+    
+    let table = PROCESS_TABLE.lock();
+    let process = match table.current_process() {
+        Some(p) => p,
+        None => return ESRCH,
+    };
+    
+    let fd_arc = match process.get_file_descriptor(fd) {
+        Some(fd) => fd,
+        None => return EBADF,
+    };
+    
+    // Validate buffer
+    if buf == 0 || !is_user_address(buf) || !is_user_range(buf, len) {
+        return EFAULT;
+    }
+    
+    let slice = unsafe {
+        core::slice::from_raw_parts_mut(buf as *mut u8, len as usize)
+    };
+    
+    let mut fd_lock = fd_arc.lock();
+    match fd_lock.read(slice) {
+        Ok(read) => read as SyscallResult,
+        Err(crate::kernel::fs::FileError::BrokenPipe) => 0, // EOF
+        Err(crate::kernel::fs::FileError::WouldBlock) => EAGAIN,
+        Err(_) => EIO,
+    }
 }
 
 /// sys_exit - Exit current process

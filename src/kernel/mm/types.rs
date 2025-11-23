@@ -12,24 +12,25 @@
 //! - コンパイル時の型チェックによるバグ防止
 
 use core::fmt;
+use core::convert::TryFrom;
 
 use crate::kernel::core::ErrorKind;
 
 /// メモリ関連のエラー
+///
+/// メモリアドレス、サイズ、アラインメントなどの操作で発生するエラー。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryError {
-    /// 無効なアドレス
+    /// 無効なアドレス（アドレス空間外、NULL等）
     InvalidAddress,
-    /// アラインメント違反
+    /// アラインメント違反（必要なアラインメントを満たさない）
     MisalignedAccess,
-    /// 領域が小さすぎる
+    /// 領域が小さすぎる（最小サイズ未満）
     RegionTooSmall,
-    /// アドレスオーバーフロー
+    /// アドレスオーバーフロー（演算結果がアドレス空間を超える）
     AddressOverflow,
-    /// 範囲外アクセス
+    /// 範囲外アクセス（割り当てられた範囲外）
     OutOfBounds,
-    /// アラインメントエラー
-    AlignmentError,
 }
 
 impl fmt::Display for MemoryError {
@@ -40,14 +41,21 @@ impl fmt::Display for MemoryError {
             Self::RegionTooSmall => write!(f, "Memory region too small"),
             Self::AddressOverflow => write!(f, "Address calculation overflow"),
             Self::OutOfBounds => write!(f, "Memory access out of bounds"),
-            Self::AlignmentError => write!(f, "Alignment error"),
         }
     }
 }
 
 impl From<MemoryError> for ErrorKind {
-    fn from(_err: MemoryError) -> Self {
-        ErrorKind::InvalidArgument
+    fn from(err: MemoryError) -> Self {
+        // types::MemoryError を ErrorKind にマッピング
+        // 注: ErrorKind::Memory() は別の core::result::MemoryError 用
+        match err {
+            MemoryError::InvalidAddress => Self::InvalidArgument,
+            MemoryError::MisalignedAccess => Self::InvalidArgument,
+            MemoryError::RegionTooSmall => Self::InvalidArgument,
+            MemoryError::AddressOverflow => Self::InvalidArgument,
+            MemoryError::OutOfBounds => Self::InvalidArgument,
+        }
     }
 }
 
@@ -130,8 +138,11 @@ impl PhysAddr {
 
     /// 指定されたアラインメントに切り下げ
     #[inline]
-    pub const fn align_down(&self, align: usize) -> Self {
-        Self(self.0 & !(align - 1))
+    pub const fn align_down(&self, align: usize) -> Option<Self> {
+        if align == 0 || (align & (align - 1)) != 0 {
+            return None;
+        }
+        Some(Self(self.0 & !(align - 1)))
     }
 
     /// オフセットを加算
@@ -146,24 +157,38 @@ impl PhysAddr {
         self.0.checked_sub(offset).map(Self)
     }
 
-    /// ミュータブルポインタへ変換（Strict Provenance準拠）
+    /// ミュータブルポインタへ変換（Strict Provenance推奨）
+    ///
+    /// # Note
+    ///
+    /// 現在は `core::ptr::with_exposed_provenance_mut` を使用しています。
+    /// 将来的に `core::ptr::from_exposed_addr_mut` (nightly) が stable 化されたら
+    /// そちらに移行することを推奨します。Strict Provenance API の方が
+    /// ツールの互換性が良く、より明示的です。
     ///
     /// # Safety
     ///
     /// - このアドレスが有効なメモリ領域を指していること
-    /// - 型Ｔのアラインメント要件を満たしていること
+    /// - 型 T のアラインメント要件を満たしていること
     /// - 排他的アクセスが保証されていること（必要な場合）
     #[inline]
     pub unsafe fn as_mut_ptr<T>(&self) -> *mut T {
         core::ptr::with_exposed_provenance_mut(self.0)
     }
 
-    /// 不変ポインタへ変換（Strict Provenance準拠）
+    /// 不変ポインタへ変換（Strict Provenance推奨）
+    ///
+    /// # Note
+    ///
+    /// 現在は `core::ptr::with_exposed_provenance` を使用しています。
+    /// 将来的に `core::ptr::from_exposed_addr` (nightly) が stable 化されたら
+    /// そちらに移行することを推奨します。Strict Provenance API の方が
+    /// ツールの互換性が良く、より明示的です。
     ///
     /// # Safety
     ///
     /// - このアドレスが有効なメモリ領域を指していること
-    /// - 型Ｔのアラインメント要件を満たしていること
+    /// - 型 T のアラインメント要件を満たしていること
     #[inline]
     pub unsafe fn as_ptr<T>(&self) -> *const T {
         core::ptr::with_exposed_provenance(self.0)
@@ -173,6 +198,26 @@ impl PhysAddr {
 impl fmt::Display for PhysAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "PhysAddr({:#x})", self.0)
+    }
+}
+
+/// `PhysAddr` からの明示的な変換
+impl From<PhysAddr> for usize {
+    #[inline]
+    fn from(p: PhysAddr) -> Self {
+        p.as_usize()
+    }
+}
+
+/// `usize` からの明示的な変換（検証付き）
+impl TryFrom<usize> for PhysAddr {
+    type Error = MemoryError;
+
+    #[inline]
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        // TODO: 実メモリ範囲に応じて値の妥当性チェックを追加する
+        // （例: 物理メモリ上限を超えていないかの検証）
+        Ok(Self::new(value))
     }
 }
 
@@ -254,8 +299,11 @@ impl VirtAddr {
 
     /// 指定されたアラインメントに切り下げ
     #[inline]
-    pub const fn align_down(&self, align: usize) -> Self {
-        Self(self.0 & !(align - 1))
+    pub const fn align_down(&self, align: usize) -> Option<Self> {
+        if align == 0 || (align & (align - 1)) != 0 {
+            return None;
+        }
+        Some(Self(self.0 & !(align - 1)))
     }
 
     /// オフセットを加算
@@ -270,7 +318,14 @@ impl VirtAddr {
         self.0.checked_sub(offset).map(Self)
     }
 
-    /// ミュータブルポインタへ変換（Strict Provenance準拠）
+    /// ミュータブルポインタへ変換（Strict Provenance推奨）
+    ///
+    /// # Note
+    ///
+    /// 現在は `core::ptr::with_exposed_provenance_mut` を使用しています。
+    /// 将来的に `core::ptr::from_exposed_addr_mut` (nightly) が stable 化されたら
+    /// そちらに移行することを推奨します。Strict Provenance API の方が
+    /// ツールの互換性が良く、より明示的です。
     ///
     /// # Safety
     ///
@@ -282,7 +337,14 @@ impl VirtAddr {
         core::ptr::with_exposed_provenance_mut(self.0)
     }
 
-    /// 不変ポインタへ変換（Strict Provenance準拠）
+    /// 不変ポインタへ変換（Strict Provenance推奨）
+    ///
+    /// # Note
+    ///
+    /// 現在は `core::ptr::with_exposed_provenance` を使用しています。
+    /// 将来的に `core::ptr::from_exposed_addr` (nightly) が stable 化されたら
+    /// そちらに移行することを推奨します。Strict Provenance API の方が
+    /// ツールの互換性が良く、より明示的です。
     ///
     /// # Safety
     ///
@@ -297,6 +359,27 @@ impl VirtAddr {
 impl fmt::Display for VirtAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "VirtAddr({:#x})", self.0)
+    }
+}
+
+/// `VirtAddr` からの明示的な変換
+impl From<VirtAddr> for usize {
+    #[inline]
+    fn from(v: VirtAddr) -> Self {
+        v.as_usize()
+    }
+}
+
+/// `usize` からの明示的な変換（検証付き）
+impl TryFrom<usize> for VirtAddr {
+    type Error = MemoryError;
+
+    #[inline]
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        // TODO: x86_64 canonical form チェックを追加する
+        // （bit 47～63 が bit 47 の符号拡張であることを検証）
+        // 現在は基本的な検証のみ
+        Ok(Self::new(value))
     }
 }
 
@@ -360,8 +443,11 @@ impl LayoutSize {
 
     /// 指定されたアラインメントに切り下げ
     #[inline]
-    pub const fn align_down(&self, align: usize) -> Self {
-        Self(self.0 & !(align - 1))
+    pub const fn align_down(&self, align: usize) -> Option<Self> {
+        if align == 0 || (align & (align - 1)) != 0 {
+            return None;
+        }
+        Some(Self(self.0 & !(align - 1)))
     }
 
     /// サイズを加算
@@ -395,6 +481,10 @@ impl fmt::Display for LayoutSize {
 ///
 /// - ページフレーム番号とアドレスの混同を防止
 /// - ページテーブル操作の型安全性を向上
+///
+/// # ターゲットアーキテクチャ
+///
+/// このコードは `x86_64` 専用で、`usize` は常に 64bit です。
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PageFrameNumber(u64);
@@ -413,15 +503,46 @@ impl PageFrameNumber {
     }
 
     /// ページフレームの物理アドレスを計算（4KiBページ想定）
+    ///
+    /// # Note
+    ///
+    /// `x86_64` ターゲット専用。`u64` 上でシフトしてから `usize` に変換するため、
+    /// オーバーフローの心配はありません。
     #[inline]
+    #[allow(clippy::cast_possible_truncation)] // x86_64 では usize は 64bit
     pub const fn to_phys_addr(&self) -> PhysAddr {
-        PhysAddr((self.0 as usize) << 12)
+        // u64 上でシフトしてから usize に変換（x86_64 では安全）
+        let addr64 = self.0 << 12;
+        PhysAddr(addr64 as usize)
     }
 
     /// ページフレームの物理アドレスを計算（カスタムページサイズ）
+    ///
+    /// # Note
+    ///
+    /// `x86_64` ターゲット専用。`u64` 上でシフトしてから `usize` に変換するため、
+    /// オーバーフローの心配はありません。
     #[inline]
+    #[allow(clippy::cast_possible_truncation)] // x86_64 では usize は 64bit
     pub const fn to_phys_addr_with_size(&self, page_size_bits: u32) -> PhysAddr {
-        PhysAddr((self.0 as usize) << page_size_bits)
+        // u64 上でシフトしてから usize に変換（x86_64 では安全）
+        let addr64 = self.0 << page_size_bits;
+        PhysAddr(addr64 as usize)
+    }
+
+    /// カスタムページサイズで物理アドレスを計算（境界チェック付き）
+    ///
+    /// `page_size_bits >= 64` の場合、オーバーフローが発生するため
+    /// エラーを返します。
+    pub const fn to_phys_addr_with_size_checked(
+        &self,
+        page_size_bits: u32,
+    ) -> Result<PhysAddr, MemoryError> {
+        if page_size_bits >= 64 {
+            return Err(MemoryError::AddressOverflow);
+        }
+        let addr64 = self.0 << page_size_bits;
+        Ok(PhysAddr(addr64 as usize))
     }
 
     /// 物理アドレスからページフレーム番号を計算（4KiBページ想定）
@@ -448,3 +569,39 @@ impl fmt::Display for PageFrameNumber {
         write!(f, "PFN({})", self.0)
     }
 }
+
+// TODO: テストを有効化するには、カスタムテストハーネスを設定する必要があります
+// 現在は no_std 環境のため、標準の #[test] が利用できません
+// 統合テスト (tests/) で実装することを推奨します
+/*
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // PageFrameNumber から物理アドレスへの変換（4KiB ページ）
+    #[test_case]
+    fn test_pfn_to_phys_4k() {
+        let pfn = PageFrameNumber::new(1);
+        let phys = pfn.to_phys_addr();
+        assert_eq!(phys.as_usize(), 4096);
+    }
+
+    // ページサイズビットが 64 以上の場合のエラーチェック
+    #[test_case]
+    fn test_pfn_to_phys_with_large_shift_rejects() {
+        let pfn = PageFrameNumber::new(1);
+        let result = pfn.to_phys_addr_with_size_checked(64);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), MemoryError::AddressOverflow);
+    }
+
+    // PhysAddr 変換のラウンドトリップテスト
+    #[test_case]
+    fn test_physaddr_conversion_roundtrip() {
+        let original = 0x1000_usize;
+        let phys = PhysAddr::try_from(original).unwrap();
+        let back: usize = phys.into();
+        assert_eq!(original, back);
+    }
+}
+*/

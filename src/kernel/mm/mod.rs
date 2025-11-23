@@ -24,10 +24,16 @@ pub static PHYS_MEM_OFFSET: AtomicU64 = AtomicU64::new(0);
 pub fn init_heap(regions: &MemoryRegions) -> Result<(PhysAddr, LayoutSize), &'static str> {
     // ヒープに必要な最小サイズ (例: 100 KiB)
     const MIN_HEAP_SIZE: u64 = 100 * 1024;
-
-    // 利用可能な領域を探す
+    
+    // IMPORTANT: Skip low memory regions (< 1MB) to avoid conflicts
+    // with legacy BIOS data structures, DMA zones, and potential unmapped regions
+    const SAFE_MEMORY_START: u64 = 0x100000; // 1MB
+    
+    // Find a suitable usable region that's above the safe threshold
     let heap_region = regions.iter()
-        .find(|r| r.kind == MemoryRegionKind::Usable && r.end - r.start >= MIN_HEAP_SIZE)
+        .filter(|r| r.kind == MemoryRegionKind::Usable)
+        .filter(|r| r.start >= SAFE_MEMORY_START) // Skip low memory
+        .find(|r| r.end - r.start >= MIN_HEAP_SIZE)
         .ok_or("No usable memory region found for heap")?;
 
     let heap_start = PhysAddr::new(heap_region.start as usize);
