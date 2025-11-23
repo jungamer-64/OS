@@ -29,11 +29,26 @@ pub fn init_heap(regions: &MemoryRegions) -> Result<(PhysAddr, LayoutSize), &'st
     // with legacy BIOS data structures, DMA zones, and potential unmapped regions
     const SAFE_MEMORY_START: u64 = 0x100000; // 1MB
     
-    // Find a suitable usable region that's above the safe threshold
-    let heap_region = regions.iter()
+    // CRITICAL: Use a region AFTER the first one to avoid conflicts with frame allocator
+    // Frame allocator starts from the first usable region, so we skip it
+    // We use an iterator with skip(1) to avoid heap allocation before heap initialization
+    let mut suitable_regions = regions.iter()
         .filter(|r| r.kind == MemoryRegionKind::Usable)
         .filter(|r| r.start >= SAFE_MEMORY_START) // Skip low memory
-        .find(|r| r.end - r.start >= MIN_HEAP_SIZE)
+        .filter(|r| r.end - r.start >= MIN_HEAP_SIZE);
+    
+    // Skip the first region (used by frame allocator)
+    let _ = suitable_regions.next();
+    
+    // Use the second region, or fall back to first if only one exists
+    let heap_region = suitable_regions.next()
+        .or_else(|| {
+            // Fall back: re-iterate to get the first one
+            regions.iter()
+                .filter(|r| r.kind == MemoryRegionKind::Usable)
+                .filter(|r| r.start >= SAFE_MEMORY_START)
+                .find(|r| r.end - r.start >= MIN_HEAP_SIZE)
+        })
         .ok_or("No usable memory region found for heap")?;
 
     let heap_start = PhysAddr::new(heap_region.start as usize);

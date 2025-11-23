@@ -24,17 +24,7 @@ pub enum LoadError {
 /// Phase 3 will implement proper ELF loading from disk.
 /// 
 /// Note: The shell binary is built in userland_shell/ and converted to .bin format
-// static USER_PROGRAM: &[u8] = include_bytes!("../../userland_shell/target/x86_64-unknown-none/release/shell.bin");
-
-// TEMPORARY: Simple test program - just infinite loop
-// This tests if we can successfully jump to user mode
-// Machine code: loop { nop; }
-// 0: 90        nop
-// 1: eb fd     jmp 0
-static USER_PROGRAM: &[u8] = &[
-    0x90,       // nop (safe in user mode)
-    0xeb, 0xfd, // jmp -3 (infinite loop)
-];
+static USER_PROGRAM: &[u8] = include_bytes!("../../userland_shell/target/x86_64-unknown-none/release/shell.bin");
 
 /// Load embedded user program into a new process
 ///

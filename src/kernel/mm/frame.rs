@@ -62,15 +62,26 @@ impl BootInfoFrameAllocator {
 
     /// 利用可能なフレームのイテレータを返す
     fn usable_frames(&self) -> impl Iterator<Item = PhysFrame> {
-        // 利用可能な領域（Usable）のみを抽出
+        // CRITICAL: Skip low memory (< 1MB) to avoid:
+        // - NULL pointer (0x0)
+        // - BIOS data area
+        // - Real mode IVT
+        // - Video memory
+        // - DMA zones
+        const SAFE_MEMORY_START: u64 = 0x100000; // 1MB
+        
+        // 利用可能な領域（Usable）のみを抽出し、低位メモリをスキップ
         let regions = self.memory_map.iter();
         let usable_regions = regions
-            .filter(|r| r.kind == MemoryRegionKind::Usable);
+            .filter(|r| r.kind == MemoryRegionKind::Usable)
+            .filter(|r| r.end > SAFE_MEMORY_START); // Skip regions entirely below 1MB
         
         // 各領域をフレームのアドレス範囲に変換
         let addr_ranges = usable_regions
             .map(|r| {
-                let start = PhysFrame::containing_address(PhysAddr::new(r.start));
+                // Clamp start address to SAFE_MEMORY_START
+                let start_addr = r.start.max(SAFE_MEMORY_START);
+                let start = PhysFrame::containing_address(PhysAddr::new(start_addr));
                 let end = PhysFrame::containing_address(PhysAddr::new(r.end - 1));
                 PhysFrame::range_inclusive(start, end)
             });

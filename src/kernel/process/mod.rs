@@ -842,21 +842,24 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr) -> !
     let rflags = (RFlags::INTERRUPT_FLAG).bits();
     
     // Use iretq instruction to return to user mode
-    // Stack layout for iretq:
+    // Stack layout for iretq (pushed in reverse order):
     // [SS, RSP, RFLAGS, CS, RIP]
     unsafe {
         core::arch::asm!(
             "cli",                    // Disable interrupts during transition
-            "mov ds, {0:x}",          // Set data segments
-            "mov es, {0:x}",
-            "mov fs, {0:x}",
-            "mov gs, {0:x}",
             
-            // Push iretq frame
-            "push {0}",               // SS (stack segment)
+            // Set segment registers (use 16-bit ax register for segment loads)
+            "mov ax, {0:x}",          // Load USER_DATA_SELECTOR into ax
+            "mov ds, ax",             // Set data segment
+            "mov es, ax",             // Set extra segment
+            "mov fs, ax",             // Set FS
+            "mov gs, ax",             // Set GS
+            
+            // Push iretq frame (in reverse order: SS, RSP, RFLAGS, CS, RIP)
+            "push {0}",               // SS (stack segment) - 64-bit push
             "push {1}",               // RSP (user stack pointer)
             "push {2}",               // RFLAGS
-            "push {3}",               // CS (code segment)
+            "push {3}",               // CS (code segment) - 64-bit push
             "push {4}",               // RIP (entry point)
             
             "iretq",                  // Return to user mode
