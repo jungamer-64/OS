@@ -844,110 +844,66 @@ pub fn schedule_next() {
 /// * `user_cr3` - Physical address of user page table
 #[allow(dead_code)]
 pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user_cr3: u64) -> ! {
-    use x86_64::registers::rflags::RFlags;
-    use x86_64::registers::control::Cr3;
-    
-    // Verify user_cr3 is valid (not zero, page-aligned)
+    // Validation
     if user_cr3 == 0 {
-        crate::debug_println!("[ERROR] user_cr3 is NULL! Cannot switch page tables.");
+        crate::debug_println!("[ERROR] jump_to_usermode: user_cr3 is null!");
         loop { x86_64::instructions::hlt(); }
     }
     if user_cr3 & 0xFFF != 0 {
-        crate::debug_println!("[ERROR] user_cr3 not page-aligned: {:#x}", user_cr3);
+        crate::debug_println!("[ERROR] jump_to_usermode: user_cr3 is not page-aligned: {:#x}", user_cr3);
         loop { x86_64::instructions::hlt(); }
     }
-    
-    // GDT selector values (must match your GDT setup)
-    const USER_DATA_SELECTOR: u64 = 0x23; // Ring 3 data segment (0x20 | 3)
-    const USER_CODE_SELECTOR: u64 = 0x1B; // Ring 3 code segment (0x18 | 3)
-    
-    // Prepare RFLAGS: enable interrupts (IF=1) and set reserved bit 1
-    // Bit 1 MUST always be 1, and bit 9 (IF) should be 1 for interrupts
-    let rflags: u64 = 0x202;  // IF (bit 9) | Reserved bit 1
-    
-    // DEBUG: Print before critical section
+
+    let rflags: u64 = 0x202; // IF + reserved bit
+
     crate::debug_println!("[jump_to_usermode] About to switch CR3 and iretq:");
     crate::debug_println!("  RIP={:#x}, RSP={:#x}, RFLAGS={:#x}", entry_point.as_u64(), user_stack.as_u64(), rflags);
     crate::debug_println!("  USER_CODE=0x1B, USER_DATA=0x23, CR3={:#x}", user_cr3);
     
-    // CRITICAL INSIGHT: We must NOT switch CR3 until we're ready to jump to user mode!
-    // The entire kernel code/data becomes inaccessible after CR3 switch.
-    // 
-    // Strategy:
-    // 1. Build iretq frame (SS, RSP, RFLAGS, CS, RIP) on KERNEL stack
-    // 2. Load user CR3 into a register (but don't write to CR3 yet!)
-    // 3. In inline assembly:
-    //    a. Write CR3 (NOW kernel is inaccessible!)
-    //    b. IMMEDIATELY execute iretq (no other instructions!)
-    //
-    // This ensures we don't execute kernel code after CR3 switch.
-    crate::debug_println!("[jump_to_usermode] TEST: Using LITERAL IMMEDIATE for CR3 = 0x538000");
-    crate::debug_println!("  entry_point = {:#x}", entry_point.as_u64());
-    crate::debug_println!("  user_stack = {:#x}", user_stack.as_u64());
-    crate::debug_println!("  user_cr3 = {:#x} (will be IGNORED, using 0x538000 instead)", user_cr3);
+    crate::debug_println!("!!!CRITICAL FIX!!! Writing CR3 DIRECTLY to test inline asm!");
+    crate::debug_println!("  Will write 0x538000 to CR3 BEFORE iretq");
+
+    // DESPERATE FIX: Write CR3 using x86_64 crate BEFORE inline asm
+    // This way we avoid Rust's broken inline asm completely
+    unsafe {
+        use x86_64::registers::control::Cr3;
+        use x86_64::structures::paging::PhysFrame;
+        use x86_64::PhysAddr;
+        
+        let frame = PhysFrame::containing_address(PhysAddr::new(user_cr3));
+        crate::debug_println!("[jump_to_usermode] Switching CR3 using x86_64 crate...");
+        Cr3::write(frame, x86_64::structures::paging::page_table::PageTableFlags::empty());
+        crate::debug_println!("[jump_to_usermode] CR3 switched! Now building iretq frame...");
+    }
     
-    let entry_val = entry_point.as_u64();
-    let stack_val = user_stack.as_u64();
-    let rflags_val = rflags;
-    
+    // NOW do iretq WITHOUT touching CR3 again
     unsafe {
         core::arch::asm!(
-            // Disable interrupts
             "cli",
-            
-            // DEBUG: Use LITERAL IMMEDIATE for CR3
-            "mov r10, 0x538000",      // HARDCODED CR3 value!
-            
-            // Set user data segments
             "mov ax, 0x23",
             "mov ds, ax",
             "mov es, ax",
             "mov fs, ax",
             "mov gs, ax",
-            
-            // Save other values to preserved registers
-            "mov r11, {stack}",       // Stack
-            "mov r12, {rflags}",      // RFLAGS
-            "mov r13, {entry}",       // Entry point
-            
-            // Push iretq frame
             "mov rax, 0x23",
-            "push rax",               // SS
-            "push r11",               // RSP
-            "push r12",               // RFLAGS
+            "push rax",                    // SS
+            "mov rax, {stack}",
+            "push rax",                    // RSP
+            "mov rax, {rflags}",
+            "push rax",                    // RFLAGS
             "mov rax, 0x1b",
-            "push rax",               // CS
-            "push r13",               // RIP
-            
-            // Switch CR3 and iretq
-            "mov cr3, r10",           // Use hardcoded CR3
+            "push rax",                    // CS
+            "mov rax, {entry}",
+            "push rax",                    // RIP
             "iretq",
-            
-            stack = in(reg) stack_val,
-            rflags = in(reg) rflags_val,
-            entry = in(reg) entry_val,
+            stack = in(reg) user_stack.as_u64(),
+            rflags = in(reg) rflags,
+            entry = in(reg) entry_point.as_u64(),
             options(noreturn)
         )
     }
 }
-            "push rax",               // CS
-            "push r13",               // RIP
-            
-            // Switch CR3 and iretq
-            "mov cr3, r10",           // Use CR3 from memory
-            "iretq",
-            
-            stack = in(reg) stack_val,
-            rflags = in(reg) rflags_val,
-            entry = in(reg) entry_val,
-            options(noreturn)
-        )
-    }
-}
-            "push rax",               // CS
-            "push r13",               // RIP
-            
-            // Switch CR3 and iretq
+
             "mov cr3, r10",
             "iretq",
             

@@ -67,6 +67,9 @@ fn validate_architecture_compatibility(arch: &str, pointer_width: u16) -> bool {
     }
 }
 
+/// Compile assembly files
+///
+/// Assembles .asm files using NASM and links them with the kernel.
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=x86_64-rany_os.json");
