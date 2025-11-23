@@ -881,35 +881,22 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
     //    b. IMMEDIATELY execute iretq (no other instructions!)
     //
     // This ensures we don't execute kernel code after CR3 switch.
-    crate::debug_println!("[jump_to_usermode] Loading parameters:");
+    crate::debug_println!("[jump_to_usermode] TEST: Using LITERAL IMMEDIATE for CR3 = 0x538000");
     crate::debug_println!("  entry_point = {:#x}", entry_point.as_u64());
     crate::debug_println!("  user_stack = {:#x}", user_stack.as_u64());
-    crate::debug_println!("  user_cr3 = {:#x}", user_cr3);
-    
-    // TEMPORARY: Write CR3 value to a known memory location for debugging
-    unsafe {
-        let debug_ptr = 0xFFFFFFFF80090000 as *mut u64;
-        core::ptr::write_volatile(debug_ptr, user_cr3);
-        crate::debug_println!("[jump_to_usermode] Wrote CR3 to debug location: {:#x}", user_cr3);
-        let read_back = core::ptr::read_volatile(debug_ptr);
-        crate::debug_println!("[jump_to_usermode] Read back from debug location: {:#x}", read_back);
-    }
+    crate::debug_println!("  user_cr3 = {:#x} (will be IGNORED, using 0x538000 instead)", user_cr3);
     
     let entry_val = entry_point.as_u64();
     let stack_val = user_stack.as_u64();
-    let cr3_val = user_cr3;
     let rflags_val = rflags;
-    
-    crate::debug_println!("[jump_to_usermode] Values: entry={:#x}, stack={:#x}, cr3={:#x}, rflags={:#x}", 
-        entry_val, stack_val, cr3_val, rflags_val);
     
     unsafe {
         core::arch::asm!(
             // Disable interrupts
             "cli",
             
-            // DEBUG: Load CR3 from known memory location instead of register
-            "mov r10, qword ptr [0xFFFFFFFF80090000]",  // Load from debug location
+            // DEBUG: Use LITERAL IMMEDIATE for CR3
+            "mov r10, 0x538000",      // HARDCODED CR3 value!
             
             // Set user data segments
             "mov ax, 0x23",
@@ -929,6 +916,20 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
             "push r11",               // RSP
             "push r12",               // RFLAGS
             "mov rax, 0x1b",
+            "push rax",               // CS
+            "push r13",               // RIP
+            
+            // Switch CR3 and iretq
+            "mov cr3, r10",           // Use hardcoded CR3
+            "iretq",
+            
+            stack = in(reg) stack_val,
+            rflags = in(reg) rflags_val,
+            entry = in(reg) entry_val,
+            options(noreturn)
+        )
+    }
+}
             "push rax",               // CS
             "push r13",               // RIP
             
