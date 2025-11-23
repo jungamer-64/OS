@@ -881,34 +881,68 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
     //    b. IMMEDIATELY execute iretq (no other instructions!)
     //
     // This ensures we don't execute kernel code after CR3 switch.
+    crate::debug_println!("[jump_to_usermode] Loading parameters:");
+    crate::debug_println!("  CR3 (user_cr3) = {:#x}", user_cr3);
+    crate::debug_println!("  RSP (user_stack) = {:#x}", user_stack.as_u64());
+    crate::debug_println!("  RFLAGS = {:#x}", rflags);
+    crate::debug_println!("  RIP (entry_point) = {:#x}", entry_point.as_u64());
+    
+    crate::debug_println!("[jump_to_usermode] Calling jump_to_usermode_asm");
+    
+    // Call the assembly function
+    jump_to_usermode_asm(user_cr3, user_stack.as_u64(), rflags, entry_point.as_u64())
+}
+
+/// Assembly helper for jumping to user mode
+/// Parameters (System V ABI):
+///   rdi = user_cr3
+///   rsi = user_rsp
+///   rdx = rflags
+///   rcx = entry_point
+#[naked]
+unsafe extern "C" fn jump_to_usermode_asm(
+    _user_cr3: u64,
+    _user_rsp: u64,
+    _rflags: u64,
+    _entry_point: u64
+) -> ! {
     unsafe {
         core::arch::asm!(
+            // Parameters are already in the correct registers:
+            //   rdi = user_cr3
+            //   rsi = user_rsp
+            //   rdx = rflags
+            //   rcx = entry_point
+            
             // Disable interrupts during transition
             "cli",
             
+            // Save parameters to safe registers
+            "mov r10, rdi",           // user_cr3 -> r10
+            "mov r11, rsi",           // user_rsp -> r11
+            "mov r12, rdx",           // rflags -> r12
+            "mov r13, rcx",           // entry_point -> r13
+            
             // Set segment registers to user data segment
-            // (This must be done BEFORE CR3 switch, as these instructions are in kernel code)
             "mov ax, 0x23",           // USER_DATA_SELECTOR
-            "mov ds, ax",             // Set data segment
-            "mov es, ax",             // Set extra segment
-            "mov fs, ax",             // Set FS
-            "mov gs, ax",             // Set GS
+            "mov ds, ax",
+            "mov es, ax",
+            "mov fs, ax",
+            "mov gs, ax",
             
-            // Push iretq frame (in reverse order: SS, RSP, RFLAGS, CS, RIP)
-            "push 0x23",              // SS - USER_DATA_SELECTOR (immediate)
-            "push {rsp}",             // RSP (user stack pointer)
-            "push {rflags}",          // RFLAGS
-            "push 0x1b",              // CS - USER_CODE_SELECTOR (immediate)
-            "push {rip}",             // RIP (entry point)
+            // Push iretq frame (SS, RSP, RFLAGS, CS, RIP)
+            "mov rax, 0x23",          // USER_DATA_SELECTOR
+            "push rax",               // SS
+            "push r11",               // RSP
+            "push r12",               // RFLAGS
+            "mov rax, 0x1b",          // USER_CODE_SELECTOR
+            "push rax",               // CS
+            "push r13",               // RIP
             
-            // **CRITICAL**: Switch CR3 and IMMEDIATELY iretq (NO instructions between!)
-            "mov cr3, {cr3}",         // Switch to user page table
-            "iretq",                  // Jump to user mode (this pops the frame we pushed)
+            // Switch CR3 and immediately iretq
+            "mov cr3, r10",
+            "iretq",
             
-            cr3 = in(reg) user_cr3,
-            rsp = in(reg) user_stack.as_u64(),
-            rflags = in(reg) rflags,
-            rip = in(reg) entry_point.as_u64(),
             options(noreturn)
         )
     }
