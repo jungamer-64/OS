@@ -130,7 +130,7 @@ pub fn spawn(path: &str) -> SyscallResult<u64> {
     match fork()? {
         0 => {
             // Child process
-            let err = exec(path);
+            let _err = exec(path);
             // If exec returns, it failed
             crate::io::println("exec failed");
             exit(1);

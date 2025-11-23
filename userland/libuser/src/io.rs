@@ -5,8 +5,11 @@
 use crate::syscall::{self, SyscallResult};
 
 /// Standard file descriptors
+/// Standard input file descriptor
 pub const STDIN: u64 = 0;
+/// Standard output file descriptor
 pub const STDOUT: u64 = 1;
+/// Standard error file descriptor
 pub const STDERR: u64 = 2;
 
 /// Write a byte slice to a file descriptor

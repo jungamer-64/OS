@@ -591,6 +591,15 @@ where
     
     crate::debug_println!("[create_user_page_table] Copy completed, frame={:#x}", frame.start_address().as_u64());
     
+    // DEBUG: Verify what's in the user page table before returning
+    crate::debug_println!("[create_user_page_table] Verifying user page table entries...");
+    for i in 0..512 {
+        if !page_table[i].is_unused() {
+            crate::debug_println!("  User PT entry {}: addr={:#x}, flags={:?}", 
+                i, page_table[i].addr().as_u64(), page_table[i].flags());
+        }
+    }
+    
     Ok(frame)
 }
 

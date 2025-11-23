@@ -1,27 +1,170 @@
 // src/kernel/syscall/mod.rs
 //! System call implementation module
 //!
-//! This module provides the actual implementations of system calls
-//! and the dispatch mechanism.
+//! This module provides the kernel-side implementations of all system calls
+//! and the dispatch mechanism that routes system call numbers to their handlers.
+//!
+//! # Architecture
+//!
+//! System calls are the **only** way for user-mode programs (Ring 3) to interact
+//! with the kernel (Ring 0). This module implements:
+//!
+//! - **System call handlers** - Actual implementation of each syscall
+//! - **Dispatch table** - Maps syscall numbers to handler functions
+//! - **Security validation** - Checks user pointers and arguments
+//! - **Error handling** - Returns Linux-compatible error codes
+//!
+//! # System Call Mechanism
+//!
+//! When a user program executes the `syscall` instruction:
+//!
+//! 1. CPU switches to Ring 0 (kernel mode)
+//! 2. [`crate::arch::x86_64::syscall::syscall_entry`] is called
+//! 3. Kernel stack is switched
+//! 4. [`dispatch()`] is called with syscall number and arguments
+//! 5. Handler function is executed
+//! 6. Result is returned via RAX
+//! 7. CPU returns to Ring 3 via `sysret`
+//!
+//! # Security Model
+//!
+//! All system calls follow strict security principles:
+//!
+//! ## Pointer Validation
+//!
+//! User-provided pointers are **always** validated before use:
+//!
+//! - **Address range check**: Must be in user space (< 0x8000_0000_0000)
+//! - **Mapping check**: Should verify page is mapped (TODO: Phase 3)
+//! - **Permission check**: Should verify page has correct permissions (TODO: Phase 3)
+//!
+//! Invalid pointers result in [`EFAULT`] error.
+//!
+//! ## Argument Validation
+//!
+//! All arguments are validated before use:
+//!
+//! - Length limits (e.g., max 1MB for write)
+//! - Resource existence (e.g., valid file descriptor)
+//! - Value ranges (e.g., non-zero sizes)
+//!
+//! Invalid arguments result in [`EINVAL`] error.
+//!
+//! ## Resource Limits
+//!
+//! System calls enforce resource limits:
+//!
+//! - Maximum write size: 1MB ([`MAX_WRITE_LEN`])
+//! - Process limits (TODO: Phase 4)
+//! - Memory limits (TODO: Phase 4)
+//!
+//! # Error Handling
+//!
+//! All system calls return [`SyscallResult`] (i64):
+//!
+//! - **Positive or zero**: Success (often a count or ID)
+//! - **Negative**: Error code (Linux-compatible)
+//!
+//! Error codes are defined as constants and match Linux errno values
+//! for compatibility and familiarity.
+//!
+//! # Implementation Guidelines
+//!
+//! When adding new system calls:
+//!
+//! 1. **Add to [`SYSCALL_TABLE`]** - Append to end for ABI stability
+//! 2. **Document thoroughly** - Include security considerations
+//! 3. **Validate all inputs** - Never trust user-provided data
+//! 4. **Return proper errors** - Use existing error codes
+//! 5. **Test extensively** - Include security tests
+//!
+//! # Example: Adding a System Call
+//!
+//! ```rust,ignore
+//! /// sys_new_feature - Brief description
+//! ///
+//! /// # Arguments
+//! /// * `arg1` - Description
+//! ///
+//! /// # Returns
+//! /// * Success: Description
+//! /// * Error: EINVAL, EFAULT, etc.
+//! ///
+//! /// # Security
+//! /// - Validates arg1 is in user space
+//! /// - Checks permissions (TODO)
+//! pub fn sys_new_feature(arg1: u64, ...) -> SyscallResult {
+//!     // 1. Validate arguments
+//!     if !is_user_address(arg1) {
+//!         return EFAULT;
+//!     }
+//!     
+//!     // 2. Perform operation
+//!     // ...
+//!     
+//!     // 3. Return result
+//!     SUCCESS
+//! }
+//! ```
+//!
+//! # See Also
+//!
+//! - [`crate::arch::x86_64::syscall`] - Low-level syscall entry/exit
+//! - `docs/syscall_interface.md` - Complete syscall specification
+//! - `userland/libuser/src/syscall.rs` - User-space wrappers
 
 use crate::arch::Cpu;
 use crate::debug_println;
 
 use crate::kernel::core::traits::CharDevice;
 
+// ============================================================================
+// Constants
+// ============================================================================
+
 /// Maximum length for sys_write (1MB)
+///
+/// This limit prevents:
+/// - Excessive kernel memory usage
+/// - Long-running kernel operations
+/// - Potential DoS attacks
 const MAX_WRITE_LEN: u64 = 1024 * 1024;
+
+// ============================================================================
+// Security Utilities
+// ============================================================================
 
 /// Check if an address is in user space
 /// 
-/// User space: 0x0000_0000_0000_0000 ~ 0x0000_7FFF_FFFF_FFFF
-/// Kernel space: 0xFFFF_8000_0000_0000 ~ 0xFFFF_FFFF_FFFF_FFFF
+/// # Memory Layout
+///
+/// - User space: `0x0000_0000_0000_0000` ~ `0x0000_7FFF_FFFF_FFFF`
+/// - Kernel space: `0xFFFF_8000_0000_0000` ~ `0xFFFF_FFFF_FFFF_FFFF`
+///
+/// # Security
+///
+/// This is the **first line of defense** against kernel memory access.
+/// All user-provided pointers MUST be validated with this function.
 #[inline]
 fn is_user_address(addr: u64) -> bool {
     addr < 0x0000_8000_0000_0000
 }
 
 /// Check if a memory range is in user space
+///
+/// # Arguments
+/// * `addr` - Start address
+/// * `len` - Length in bytes
+///
+/// # Returns
+/// `true` if the entire range [addr, addr+len) is in user space
+///
+/// # Security
+///
+/// This function prevents:
+/// - Integer overflow attacks (checks for `addr + len` overflow)
+/// - Partial kernel memory access (checks end address)
+/// - Zero-length accesses (implicitly handled)
 #[inline]
 fn is_user_range(addr: u64, len: u64) -> bool {
     // Check for overflow
@@ -34,13 +177,20 @@ fn is_user_range(addr: u64, len: u64) -> bool {
     is_user_address(addr) && is_user_address(end.saturating_sub(1))
 }
 
+// ============================================================================
+// Error Codes (Linux-compatible)
+// ============================================================================
+
 /// System call result type
+///
+/// Positive or zero values indicate success.
+/// Negative values indicate errors (see constants below).
 pub type SyscallResult = i64;
 
 /// Success code
 pub const SUCCESS: SyscallResult = 0;
 
-/// Error codes (Linux-compatible)
+// Error codes match Linux errno values for compatibility
 
 /// Operation not permitted
 pub const EPERM: SyscallResult = -1;
@@ -56,7 +206,7 @@ pub const EIO: SyscallResult = -5;
 pub const EBADF: SyscallResult = -9;
 /// No child processes
 pub const ECHILD: SyscallResult = -10;
-/// Try again
+/// Try again (resource temporarily unavailable)
 pub const EAGAIN: SyscallResult = -11;
 /// Out of memory
 pub const ENOMEM: SyscallResult = -12;
@@ -68,6 +218,10 @@ pub const EINVAL: SyscallResult = -22;
 pub const EPIPE: SyscallResult = -32;
 /// Function not implemented
 pub const ENOSYS: SyscallResult = -38;
+
+// ============================================================================
+// System Call Implementations
+// ============================================================================
 
 /// sys_write - Write to file descriptor
 ///

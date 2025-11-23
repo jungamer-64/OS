@@ -4,17 +4,29 @@
 //! For higher-level APIs, see the parent modules (io, process, mem).
 
 /// System call numbers
+/// System call number for write operation
 pub const SYS_WRITE: u64 = 0;
+/// System call number for read operation
 pub const SYS_READ: u64 = 1;
+/// System call number for exit operation
 pub const SYS_EXIT: u64 = 2;
+/// System call number for getpid operation
 pub const SYS_GETPID: u64 = 3;
+/// System call number for alloc operation (deprecated - use MMAP)
 pub const SYS_ALLOC: u64 = 4;     // Deprecated - use MMAP
+/// System call number for dealloc operation (deprecated - use MUNMAP)
 pub const SYS_DEALLOC: u64 = 5;   // Deprecated - use MUNMAP
+/// System call number for fork operation
 pub const SYS_FORK: u64 = 6;
+/// System call number for exec operation
 pub const SYS_EXEC: u64 = 7;
+/// System call number for wait operation
 pub const SYS_WAIT: u64 = 8;
+/// System call number for mmap operation
 pub const SYS_MMAP: u64 = 9;
+/// System call number for munmap operation
 pub const SYS_MUNMAP: u64 = 10;
+/// System call number for pipe operation
 pub const SYS_PIPE: u64 = 11;
 
 /// System call error codes (Linux-compatible)

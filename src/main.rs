@@ -131,6 +131,21 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             
             debug_println!("[Kernel] Entry: {:#x}, Stack: {:#x}, CR3: {:#x}", entry_point.as_u64(), user_stack.as_u64(), user_cr3);
             
+            // DEBUG: Verify user page table contents
+            {
+                use x86_64::structures::paging::PageTable;
+                let phys_mem_offset = tiny_os::kernel::mm::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+                let user_pt_ptr = (phys_mem_offset + user_cr3) as *const PageTable;
+                let user_pt = unsafe { &*user_pt_ptr };
+                debug_println!("[DEBUG] User page table entries:");
+                for i in 0..512 {
+                    if !user_pt[i].is_unused() {
+                        debug_println!("  Entry {}: addr={:#x}, flags={:?}", 
+                            i, user_pt[i].addr().as_u64(), user_pt[i].flags());
+                    }
+                }
+            }
+            
             // TEMP: Disable timer and interrupts for testing User mode transition
             // This helps isolate the problem (timer interrupt vs user code)
             // TODO: Re-enable after User mode works

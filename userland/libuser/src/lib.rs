@@ -110,8 +110,28 @@
 //! - `alloc()`, `dealloc()` - Simple allocation
 //! - `mmap()` - Flexible memory mapping
 //! - `MemoryRegion` - RAII memory handle
+//!
+//! ## [`alloc`]
+//!
+//! Global allocator for userland programs:
+//! - `MmapAllocator` - Uses mmap/munmap for heap allocation
+//! - Automatic integration with Rust's `alloc` crate
+//!
+//! ## [`constants`]
+//!
+//! System-wide constants:
+//! - `PAGE_SIZE` - Standard page size (4KB)
+//! - Address range constants
+//! - Exit codes
+//!
+//! ## [`util`]
+//!
+//! Utility functions:
+//! - Error handling helpers
+//! - Convenient macros for syscall results
 
 #![no_std]
+#![feature(alloc_error_handler)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 #![doc(html_root_url = "https://docs.rs/libuser/0.1.0")]
@@ -120,8 +140,12 @@ pub mod syscall;
 pub mod io;
 pub mod process;
 pub mod mem;
+pub mod alloc;
+pub mod constants;
+pub mod util;
 
 // Re-export commonly used items for convenience
 pub use io::{print, println};
 pub use process::{exit, getpid};
 pub use syscall::{SyscallResult, SyscallError};
+pub use constants::PAGE_SIZE;

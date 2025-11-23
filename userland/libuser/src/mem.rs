@@ -5,14 +5,21 @@
 use crate::syscall::{self, SyscallResult};
 
 /// Memory protection flags
+/// No memory protection
 pub const PROT_NONE: u64 = 0;
+/// Memory can be read
 pub const PROT_READ: u64 = 1;
+/// Memory can be written
 pub const PROT_WRITE: u64 = 2;
+/// Memory can be executed
 pub const PROT_EXEC: u64 = 4;
 
 /// Memory mapping flags
+/// Create a private copy-on-write mapping
 pub const MAP_PRIVATE: u64 = 1;
+/// Map anonymous memory (not backed by a file)
 pub const MAP_ANONYMOUS: u64 = 2;
+/// Share mapping with other processes
 pub const MAP_SHARED: u64 = 4;
 
 /// Allocate memory using mmap
