@@ -643,6 +643,9 @@ where
     // Create user page table
     let page_table_frame = create_user_page_table(frame_allocator, physical_memory_offset)?;
     
+    crate::debug_println!("[create_process] PID={}, page_table_frame={:#x}", 
+        pid.as_u64(), page_table_frame.start_address().as_u64());
+    
     // Allocate stacks (16-byte aligned as verified by syscall.rs)
     let kernel_stack = allocate_kernel_stack();
     let user_stack = allocate_user_stack();
@@ -808,6 +811,8 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr) -> !
     use x86_64::registers::rflags::RFlags;
     use x86_64::registers::control::Cr3;
     
+    crate::debug_println!("[jump_to_usermode] ENTRY: rip={:#x}, rsp={:#x}", entry_point.as_u64(), user_stack.as_u64());
+    
     // CRITICAL: Switch to user page table BEFORE jumping to user space!
     // Get current process and load its page table
     let user_cr3 = {
@@ -816,6 +821,8 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr) -> !
         process.page_table_phys_addr()
     };
     
+    crate::debug_println!("[jump_to_usermode] CR3 will be set to: {:#x}", user_cr3);
+    
     // Switch to user page table
     unsafe {
         Cr3::write(
@@ -823,6 +830,8 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr) -> !
             Cr3Flags::empty(),
         );
     }
+    
+    crate::debug_println!("[jump_to_usermode] CR3 switched, about to iretq...");
     
     // GDT selector values (must match your GDT setup)
     // Typically: USER_DATA_SELECTOR = 0x20 | 3, USER_CODE_SELECTOR = 0x18 | 3
