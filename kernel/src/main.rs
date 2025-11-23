@@ -125,10 +125,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             
             debug_println!("[Kernel] Entry: {:#x}, Stack: {:#x}, CR3: {:#x}", entry_point.as_u64(), user_stack.as_u64(), user_cr3);
             
-            // NOTE: User code is already accessible in kernel CR3!
-            // Both kernel and user CR3 share Entry 0 (low memory range where user code is mapped)
-            // This is because we copy ALL kernel entries (0-511) to user page table
-            debug_println!("[NOTE] User code is already accessible in kernel CR3 (Entry 0 shared)");
+            // NOTE: We skip CR3 switch in jump_to_usermode_asm (Phase 2.5 workaround)
+            // User code (Entry 0) is NOT accessible in kernel CR3
+            // This is expected to cause a page fault at 0x400000
+            debug_println!("[PHASE 2.5] User mode transition test (CR3 switch skipped)");
             
             // TEMP: Disable timer and interrupts for testing User mode transition
             // This helps isolate the problem (timer interrupt vs user code)

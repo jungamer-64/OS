@@ -13,12 +13,12 @@ global jump_to_usermode_asm
 
 jump_to_usermode_asm:
     ; WORKAROUND for Phase 2.5: Skip CR3 switch
-    ; Use kernel CR3 for now (security issue, but allows testing User mode)
-    ; TODO Phase 3: Implement proper page table setup
+    ; This allows us to test User mode transition without solving the CR3 switch issue
+    ; TODO Phase 3: Fix CR3 switching (requires kernel page table redesign)
     cli
     
     ; Save arguments to preserved registers
-    ; mov r10, rdx      ; CR3 (NOT USED for now)
+    ; mov r10, rdx      ; CR3 (NOT USED - causes Double Fault)
     mov r11, rsi      ; Stack
     mov r12, rcx      ; RFLAGS
     mov r13, rdi      ; Entry point
@@ -39,10 +39,12 @@ jump_to_usermode_asm:
     mov fs, ax
     mov gs, ax
     
-    ; WORKAROUND: Skip CR3 switch for Phase 2.5
-    ; mov cr3, r10  ; COMMENTED OUT
+    ; WORKAROUND: Skip CR3 switch (causes Double Fault)
+    ; mov cr3, r10
     
-    ; iretq will transition to user mode
+    ; iretq will transition to user mode (CPL=3)
+    ; SUCCESS: We reach User mode, but get Page Fault at 0x400000
+    ; because user code is not mapped in kernel CR3
     iretq
     ; 
     ; ; CRITICAL FIX: Push iretq frame BEFORE setting user segments!
