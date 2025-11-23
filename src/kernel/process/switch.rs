@@ -47,12 +47,13 @@ pub unsafe extern "C" fn switch_context_asm(prev_ctx: *mut u64, next_ctx: u64) {
 /// It performs the final transition to user mode.
 unsafe extern "C" fn process_entry_trampoline() -> ! {
     // 1. Get current process information
-    let (entry_point, user_stack) = {
+    let (entry_point, user_stack, user_cr3) = {
         let table = crate::kernel::process::PROCESS_TABLE.lock();
-        let process = table.current_process().expect("No current process running");
+        let process = table.current_process().expect("[Trampoline] No current process");
         (
             x86_64::VirtAddr::new(process.registers().rip),
-            x86_64::VirtAddr::new(process.registers().rsp)
+            x86_64::VirtAddr::new(process.registers().rsp),
+            process.page_table_phys_addr()
         )
     }; // Lock released here
     
@@ -60,7 +61,7 @@ unsafe extern "C" fn process_entry_trampoline() -> ! {
     
     // 2. Jump to user mode
     unsafe {
-        crate::kernel::process::jump_to_usermode(entry_point, user_stack);
+        crate::kernel::process::jump_to_usermode(entry_point, user_stack, user_cr3);
     }
 }
 

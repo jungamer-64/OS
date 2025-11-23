@@ -109,16 +109,29 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             debug_println!("[Process] Created initial user process: PID={}", pid.as_u64());
             
             // Set it as current and mark as Running
-            {
+            // CRITICAL: Get entry_point, user_stack, and user_cr3 BEFORE enabling interrupts
+            // to avoid deadlock when timer interrupt tries to acquire PROCESS_TABLE lock
+            let (entry_point, user_stack, user_cr3) = {
                 let mut table = tiny_os::kernel::process::PROCESS_TABLE.lock();
                 table.set_current(pid);
                 if let Some(process) = table.get_process_mut(pid) {
                     process.set_state(tiny_os::kernel::process::ProcessState::Running);
                     debug_println!("[Process] Set PID={} as Running", pid.as_u64());
+                    
+                    // Get entry point, stack, and CR3 while we have the lock
+                    let entry = x86_64::VirtAddr::new(process.registers().rip);
+                    let stack = x86_64::VirtAddr::new(process.registers().rsp);
+                    let cr3 = process.page_table_phys_addr();
+                    (entry, stack, cr3)
+                } else {
+                    panic!("Failed to get process after creation");
                 }
-            }
+            };
+            // Lock released here
             
-            // NOW enable timer and interrupts (after process is created)
+            debug_println!("[Kernel] Entry: {:#x}, Stack: {:#x}, CR3: {:#x}", entry_point.as_u64(), user_stack.as_u64(), user_cr3);
+            
+            // NOW enable timer and interrupts (after releasing PROCESS_TABLE lock)
             // ハードウェアタイマー初期化
             // SAFETY: PICの初期化はカーネル起動時に1回だけ実行される
             unsafe {
@@ -136,17 +149,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             
             // Jump to user mode (this should not return)
             unsafe {
-                let (entry_point, user_stack) = {
-                    let table = tiny_os::kernel::process::PROCESS_TABLE.lock();
-                    let process = table.current_process().expect("No current process");
-                    (
-                        x86_64::VirtAddr::new(process.registers().rip),
-                        x86_64::VirtAddr::new(process.registers().rsp)
-                    )
-                };
-                
-                debug_println!("[Kernel] Entry: {:#x}, Stack: {:#x}", entry_point.as_u64(), user_stack.as_u64());
-                tiny_os::kernel::process::jump_to_usermode(entry_point, user_stack);
+                tiny_os::kernel::process::jump_to_usermode(entry_point, user_stack, user_cr3);
             }
         }
         Err(e) => {

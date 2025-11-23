@@ -578,10 +578,10 @@ where
     // CRITICAL: Copy ALL kernel entries (0-511), not just upper half!
     // The kernel may have essential mappings in lower entries too
     // (e.g., physical memory offset, UEFI runtime services)
+    // 
+    // Copy unconditionally to ensure all mappings are preserved
     for i in 0..512 {
-        if !kernel_pt[i].is_unused() {
-            page_table[i] = kernel_pt[i].clone();
-        }
+        page_table[i] = kernel_pt[i].clone();
     }
     
     Ok(frame)
@@ -744,8 +744,9 @@ pub unsafe fn jump_to_usermode_with_process(process: &Process) -> ! {
     
     // Jump to user mode
     let entry = VirtAddr::new(process.registers().rip);
+    let user_cr3 = process.page_table_phys_addr();
     unsafe {
-        jump_to_usermode(entry, process.user_stack())
+        jump_to_usermode(entry, process.user_stack(), user_cr3)
     }
 }
 
@@ -824,27 +825,11 @@ pub fn schedule_next() {
 /// # Arguments
 /// * `entry_point` - Virtual address of user code to execute
 /// * `user_stack` - Virtual address of the top of user stack
+/// * `user_cr3` - Physical address of user page table
 #[allow(dead_code)]
-pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr) -> ! {
+pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user_cr3: u64) -> ! {
     use x86_64::registers::rflags::RFlags;
     use x86_64::registers::control::Cr3;
-    
-    crate::debug_println!("[jump_to_usermode] ENTRY: rip={:#x}, rsp={:#x}", entry_point.as_u64(), user_stack.as_u64());
-    
-    // CRITICAL: Switch to user page table BEFORE jumping to user space!
-    // Get current process and load its page table
-    crate::debug_println!("[jump_to_usermode] About to acquire PROCESS_TABLE lock...");
-    let user_cr3 = {
-        let table = PROCESS_TABLE.lock();
-        crate::debug_println!("[jump_to_usermode] PROCESS_TABLE lock acquired");
-        let process = table.current_process().expect("No current process for jump_to_usermode");
-        let cr3 = process.page_table_phys_addr();
-        crate::debug_println!("[jump_to_usermode] Process PID={:?}, CR3={:#x}", process.pid(), cr3);
-        cr3
-    };
-    crate::debug_println!("[jump_to_usermode] PROCESS_TABLE lock released");
-    
-    crate::debug_println!("[jump_to_usermode] CR3 will be set to: {:#x}", user_cr3);
     
     // Verify user_cr3 is valid (not zero, page-aligned)
     if user_cr3 == 0 {
@@ -877,7 +862,8 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr) -> !
     unsafe {
         core::arch::asm!(
             // Step 1: Switch to user page table
-            "mov cr3, {cr3}",
+            // TEMPORARILY DISABLED FOR DEBUGGING
+            // "mov cr3, {cr3}",
             
             // Step 2: Disable interrupts during transition
             "cli",
@@ -903,7 +889,7 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr) -> !
             // Step 5: Execute iretq to jump to user mode
             "iretq",
             
-            cr3 = in(reg) user_cr3,
+            // cr3 = in(reg) user_cr3,  // TEMPORARILY DISABLED
             rsp = in(reg) user_stack.as_u64(),
             rflags = in(reg) rflags,
             rip = in(reg) entry_point.as_u64(),

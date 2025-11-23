@@ -41,20 +41,27 @@ extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) 
 }
 
 extern "x86-interrupt" fn double_fault_handler(
-    _stack_frame: InterruptStackFrame, _error_code: u64) -> !
+    stack_frame: InterruptStackFrame, error_code: u64) -> !
 {
     use crate::arch::{Cpu, ArchCpu};
-    use crate::arch::x86_64::port::PortWriteOnly;
     
     ArchCpu::disable_interrupts();
     
-    // シリアル出力
+    // Read CR3 to see which page table was active
+    let cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
+    let rsp: u64;
     unsafe {
-        let mut serial = PortWriteOnly::<u8>::new(0x3F8);
-        for byte in b"[EXCEPTION] DOUBLE FAULT\n" {
-            serial.write(*byte);
-        }
+        core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack));
     }
+    
+    // シリアル出力 - 詳細情報付き
+    crate::debug_println!("[EXCEPTION] DOUBLE FAULT");
+    crate::debug_println!("  Error code: {:#x}", error_code);
+    crate::debug_println!("  RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+    crate::debug_println!("  RSP: {:#x}", rsp);
+    crate::debug_println!("  CR3: {:#x}", cr3);
+    crate::debug_println!("  CS: {:?}", stack_frame.code_segment);
+    crate::debug_println!("  Flags: {:#x}", stack_frame.cpu_flags);
     
     loop {
         ArchCpu::halt();
