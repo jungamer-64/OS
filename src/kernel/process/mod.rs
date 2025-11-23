@@ -579,10 +579,28 @@ where
     // The kernel may have essential mappings in lower entries too
     // (e.g., physical memory offset, UEFI runtime services)
     // 
-    // Copy unconditionally to ensure all mappings are preserved
+    // Copy all entries and add USER_ACCESSIBLE flag
+    // NOTE: This makes kernel memory accessible from user mode (Ring 3)
+    // This is a security risk in production, but necessary for Phase 2.5
+    // where we switch CR3 while still in kernel code
+    crate::debug_println!("[create_user_page_table] Copying ALL 512 entries with USER_ACCESSIBLE flag");
     for i in 0..512 {
         page_table[i] = kernel_pt[i].clone();
+        
+        // Add USER_ACCESSIBLE flag to all present entries
+        if !page_table[i].is_unused() {
+            let mut flags = page_table[i].flags();
+            flags |= PageTableFlags::USER_ACCESSIBLE;
+            page_table[i].set_flags(flags);
+        }
+        
+        if (i < 10 || i >= 256) && !page_table[i].is_unused() {
+            // Log first 10 and all higher-half entries
+            crate::debug_println!("  Entry {}: addr={:#x}, flags={:?}", i, page_table[i].addr().as_u64(), page_table[i].flags());
+        }
     }
+    
+    crate::debug_println!("[create_user_page_table] Copy completed, frame={:#x}", frame.start_address().as_u64());
     
     Ok(frame)
 }
@@ -862,8 +880,7 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
     unsafe {
         core::arch::asm!(
             // Step 1: Switch to user page table
-            // TEMPORARILY DISABLED FOR DEBUGGING
-            // "mov cr3, {cr3}",
+            "mov cr3, {cr3}",
             
             // Step 2: Disable interrupts during transition
             "cli",
@@ -889,7 +906,7 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
             // Step 5: Execute iretq to jump to user mode
             "iretq",
             
-            // cr3 = in(reg) user_cr3,  // TEMPORARILY DISABLED
+            cr3 = in(reg) user_cr3,
             rsp = in(reg) user_stack.as_u64(),
             rflags = in(reg) rflags,
             rip = in(reg) entry_point.as_u64(),
