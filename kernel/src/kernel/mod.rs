@@ -15,5 +15,6 @@ pub mod syscall;
 pub mod fs;
 pub mod process;
 pub mod scheduler;
+pub mod security;  // Phase 3: Security module
 // pub mod usermode;
 pub mod loader;

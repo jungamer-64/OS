@@ -882,72 +882,89 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
     //
     // This ensures we don't execute kernel code after CR3 switch.
     crate::debug_println!("[jump_to_usermode] Loading parameters:");
-    crate::debug_println!("  CR3 (user_cr3) = {:#x}", user_cr3);
-    crate::debug_println!("  RSP (user_stack) = {:#x}", user_stack.as_u64());
-    crate::debug_println!("  RFLAGS = {:#x}", rflags);
-    crate::debug_println!("  RIP (entry_point) = {:#x}", entry_point.as_u64());
+    crate::debug_println!("  entry_point = {:#x}", entry_point.as_u64());
+    crate::debug_println!("  user_stack = {:#x}", user_stack.as_u64());
+    crate::debug_println!("  user_cr3 = {:#x}", user_cr3);
     
-    crate::debug_println!("[jump_to_usermode] Calling jump_to_usermode_asm");
+    // TEMPORARY: Write CR3 value to a known memory location for debugging
+    unsafe {
+        let debug_ptr = 0xFFFFFFFF80090000 as *mut u64;
+        core::ptr::write_volatile(debug_ptr, user_cr3);
+        crate::debug_println!("[jump_to_usermode] Wrote CR3 to debug location: {:#x}", user_cr3);
+        let read_back = core::ptr::read_volatile(debug_ptr);
+        crate::debug_println!("[jump_to_usermode] Read back from debug location: {:#x}", read_back);
+    }
     
-    // Call the assembly function
-    jump_to_usermode_asm(user_cr3, user_stack.as_u64(), rflags, entry_point.as_u64())
-}
-
-/// Assembly helper for jumping to user mode
-/// Parameters (System V ABI):
-///   rdi = user_cr3
-///   rsi = user_rsp
-///   rdx = rflags
-///   rcx = entry_point
-#[naked]
-unsafe extern "C" fn jump_to_usermode_asm(
-    _user_cr3: u64,
-    _user_rsp: u64,
-    _rflags: u64,
-    _entry_point: u64
-) -> ! {
+    let entry_val = entry_point.as_u64();
+    let stack_val = user_stack.as_u64();
+    let cr3_val = user_cr3;
+    let rflags_val = rflags;
+    
+    crate::debug_println!("[jump_to_usermode] Values: entry={:#x}, stack={:#x}, cr3={:#x}, rflags={:#x}", 
+        entry_val, stack_val, cr3_val, rflags_val);
+    
     unsafe {
         core::arch::asm!(
-            // Parameters are already in the correct registers:
-            //   rdi = user_cr3
-            //   rsi = user_rsp
-            //   rdx = rflags
-            //   rcx = entry_point
-            
-            // Disable interrupts during transition
+            // Disable interrupts
             "cli",
             
-            // Save parameters to safe registers
-            "mov r10, rdi",           // user_cr3 -> r10
-            "mov r11, rsi",           // user_rsp -> r11
-            "mov r12, rdx",           // rflags -> r12
-            "mov r13, rcx",           // entry_point -> r13
+            // DEBUG: Load CR3 from known memory location instead of register
+            "mov r10, qword ptr [0xFFFFFFFF80090000]",  // Load from debug location
             
-            // Set segment registers to user data segment
-            "mov ax, 0x23",           // USER_DATA_SELECTOR
+            // Set user data segments
+            "mov ax, 0x23",
             "mov ds, ax",
             "mov es, ax",
             "mov fs, ax",
             "mov gs, ax",
             
-            // Push iretq frame (SS, RSP, RFLAGS, CS, RIP)
-            "mov rax, 0x23",          // USER_DATA_SELECTOR
+            // Save other values to preserved registers
+            "mov r11, {stack}",       // Stack
+            "mov r12, {rflags}",      // RFLAGS
+            "mov r13, {entry}",       // Entry point
+            
+            // Push iretq frame
+            "mov rax, 0x23",
             "push rax",               // SS
             "push r11",               // RSP
             "push r12",               // RFLAGS
-            "mov rax, 0x1b",          // USER_CODE_SELECTOR
+            "mov rax, 0x1b",
             "push rax",               // CS
             "push r13",               // RIP
             
-            // Switch CR3 and immediately iretq
+            // Switch CR3 and iretq
+            "mov cr3, r10",           // Use CR3 from memory
+            "iretq",
+            
+            stack = in(reg) stack_val,
+            rflags = in(reg) rflags_val,
+            entry = in(reg) entry_val,
+            options(noreturn)
+        )
+    }
+}
+            "push rax",               // CS
+            "push r13",               // RIP
+            
+            // Switch CR3 and iretq
             "mov cr3, r10",
             "iretq",
             
+            cr3 = in(reg) cr3_val,
+            stack = in(reg) stack_val,
+            rflags = in(reg) rflags_val,
+            entry = in(reg) entry_val,
             options(noreturn)
         )
     }
 }
 
+/// Assembly helper for jumping to user mode
+/// Parameters (System V ABI):
+///   rdi = entry_point (RIP)
+///   rsi = user_stack (RSP)
+///   rdx = user_cr3 (CR3)
+///   rcx = rflags (RFLAGS)
 /// Get the current process ID
 #[must_use]
 pub fn current_pid() -> Option<ProcessId> {

@@ -2,6 +2,8 @@
 name = "builder"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+license-file = "LICENSE"
 
 [dependencies]
 bootloader = "0.11.10"

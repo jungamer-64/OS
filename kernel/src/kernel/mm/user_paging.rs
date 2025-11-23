@@ -134,6 +134,12 @@ where
 /// This function allocates and maps a user stack starting from `USER_STACK_TOP`
 /// and growing downward. The stack is mapped with NO_EXECUTE for security.
 ///
+/// **Security Feature: Stack Guard Page**
+/// 
+/// A guard page (unmapped page) is placed at the bottom of the stack to detect
+/// stack overflow. If the stack grows too large and touches the guard page,
+/// a page fault will occur, preventing silent memory corruption.
+///
 /// # Arguments
 /// * `mapper` - Page table mapper for the user address space
 /// * `stack_size` - Size of stack in bytes (will be rounded up to page boundary)
@@ -159,18 +165,28 @@ pub unsafe fn map_user_stack<A>(
 where
     A: FrameAllocator<Size4KiB>,
 {
-    let stack_bottom = USER_STACK_TOP - stack_size as u64;
+    // Add one extra page for the guard page
+    let guard_page_size = 4096;
+    let total_size = stack_size + guard_page_size;
+    
+    let stack_bottom = USER_STACK_TOP - total_size as u64;
     let num_pages = (stack_size + 4095) / 4096;
     
     crate::debug_println!(
         "[User Paging] Mapping stack: {} bytes ({} pages) at 0x{:x}",
         stack_size,
         num_pages,
+        stack_bottom + guard_page_size as u64
+    );
+    crate::debug_println!(
+        "[User Paging] Guard page at 0x{:x} (unmapped)",
         stack_bottom
     );
     
+    // Map stack pages (skip the first page - that's the guard page)
     for i in 0..num_pages {
-        let page_addr = VirtAddr::new(stack_bottom + (i * 4096) as u64);
+        // Start mapping from guard_page_size offset
+        let page_addr = VirtAddr::new(stack_bottom + guard_page_size as u64 + (i * 4096) as u64);
         let page: Page<Size4KiB> = Page::containing_address(page_addr);
         
         let frame = frame_allocator
@@ -198,6 +214,9 @@ where
             core::ptr::write_bytes(frame_ptr, 0, 4096);
         }
     }
+    
+    // Note: The guard page (at stack_bottom) is intentionally left UNMAPPED
+    // Any access to it will cause a page fault, catching stack overflow
     
     crate::debug_println!(
         "[User Paging] Stack mapped successfully, top=0x{:x}",
