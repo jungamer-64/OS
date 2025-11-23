@@ -131,13 +131,28 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             
             debug_println!("[Kernel] Entry: {:#x}, Stack: {:#x}, CR3: {:#x}", entry_point.as_u64(), user_stack.as_u64(), user_cr3);
             
-            // DEBUG: Verify user page table contents
+            // DEBUG: Verify kernel and user page table contents
             {
                 use x86_64::structures::paging::PageTable;
+                use x86_64::registers::control::Cr3;
                 let phys_mem_offset = tiny_os::kernel::mm::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+                
+                // First, show kernel page table
+                let kernel_cr3 = Cr3::read().0.start_address().as_u64();
+                let kernel_pt_ptr = (phys_mem_offset + kernel_cr3) as *const PageTable;
+                let kernel_pt = unsafe { &*kernel_pt_ptr };
+                debug_println!("[DEBUG] Kernel page table entries (CR3={:#x}):", kernel_cr3);
+                for i in 0..512 {
+                    if !kernel_pt[i].is_unused() {
+                        debug_println!("  Entry {}: addr={:#x}, flags={:?}", 
+                            i, kernel_pt[i].addr().as_u64(), kernel_pt[i].flags());
+                    }
+                }
+                
+                // Now show user page table
                 let user_pt_ptr = (phys_mem_offset + user_cr3) as *const PageTable;
                 let user_pt = unsafe { &*user_pt_ptr };
-                debug_println!("[DEBUG] User page table entries:");
+                debug_println!("[DEBUG] User page table entries (CR3={:#x}):", user_cr3);
                 for i in 0..512 {
                     if !user_pt[i].is_unused() {
                         debug_println!("  Entry {}: addr={:#x}, flags={:?}", 

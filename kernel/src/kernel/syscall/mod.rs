@@ -35,8 +35,8 @@
 //! User-provided pointers are **always** validated before use:
 //!
 //! - **Address range check**: Must be in user space (< 0x8000_0000_0000)
-//! - **Mapping check**: Should verify page is mapped (TODO: Phase 3)
-//! - **Permission check**: Should verify page has correct permissions (TODO: Phase 3)
+//! - **Mapping check**: Verifies page is mapped (implemented via security module)
+//! - **Permission check**: Verifies page has correct permissions (implemented via security module)
 //!
 //! Invalid pointers result in [`EFAULT`] error.
 //!
@@ -117,8 +117,7 @@ use crate::arch::Cpu;
 use crate::debug_println;
 
 use crate::kernel::core::traits::CharDevice;
-// TODO: Re-enable security validation
-// use crate::kernel::security::{validate_user_write, validate_user_read};
+use crate::kernel::security::{validate_user_write, validate_user_read};
 
 // ============================================================================
 // Constants
@@ -136,48 +135,8 @@ const MAX_WRITE_LEN: u64 = 1024 * 1024;
 // Security Utilities
 // ============================================================================
 
-/// Check if an address is in user space
-/// 
-/// # Memory Layout
-///
-/// - User space: `0x0000_0000_0000_0000` ~ `0x0000_7FFF_FFFF_FFFF`
-/// - Kernel space: `0xFFFF_8000_0000_0000` ~ `0xFFFF_FFFF_FFFF_FFFF`
-///
-/// # Security
-///
-/// This is the **first line of defense** against kernel memory access.
-/// All user-provided pointers MUST be validated with this function.
-#[inline]
-fn is_user_address(addr: u64) -> bool {
-    addr < 0x0000_8000_0000_0000
-}
-
-/// Check if a memory range is in user space
-///
-/// # Arguments
-/// * `addr` - Start address
-/// * `len` - Length in bytes
-///
-/// # Returns
-/// `true` if the entire range [addr, addr+len) is in user space
-///
-/// # Security
-///
-/// This function prevents:
-/// - Integer overflow attacks (checks for `addr + len` overflow)
-/// - Partial kernel memory access (checks end address)
-/// - Zero-length accesses (implicitly handled)
-#[inline]
-fn is_user_range(addr: u64, len: u64) -> bool {
-    // Check for overflow
-    let end = addr.checked_add(len);
-    if end.is_none() {
-        return false;
-    }
-    
-    let end = end.unwrap();
-    is_user_address(addr) && is_user_address(end.saturating_sub(1))
-}
+// Note: Security validation functions are now in crate::kernel::security module
+// (is_user_address, is_user_range, validate_user_read, validate_user_write)
 
 // ============================================================================
 // Error Codes (Linux-compatible)
@@ -238,22 +197,16 @@ pub const ENOSYS: SyscallResult = -38;
 pub fn sys_write(fd: u64, buf: u64, len: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
     // Special case: FD 1 = stdout (console)
     if fd == 1 {
-        // 1. Validate pointer is in user space
-        if buf == 0 || !is_user_address(buf) {
-            debug_println!("[SYSCALL] sys_write: invalid buffer address 0x{:x}", buf);
-            return EFAULT;
-        }
-        
-        // 2. Validate length
+        // 1. Validate length
         if len > MAX_WRITE_LEN {
             debug_println!("[SYSCALL] sys_write: length too large ({})", len);
             return EINVAL;
         }
         
-        // 3. Validate memory range is in user space
-        if !is_user_range(buf, len) {
-            debug_println!("[SYSCALL] sys_write: buffer range crosses user/kernel boundary");
-            return EFAULT;
+        // 2. Validate buffer is readable (includes address range, mapping, and permission checks)
+        if let Err(e) = validate_user_read(buf, len) {
+            debug_println!("[SYSCALL] sys_write: invalid buffer at 0x{:x}, len={}", buf, len);
+            return e;
         }
         
         // 4. Safely read user buffer
@@ -287,9 +240,9 @@ pub fn sys_write(fd: u64, buf: u64, len: u64, _arg4: u64, _arg5: u64, _arg6: u64
         None => return EBADF,
     };
     
-    // Validate buffer
-    if buf == 0 || !is_user_address(buf) || !is_user_range(buf, len) {
-        return EFAULT;
+    // Validate buffer is readable
+    if let Err(e) = validate_user_read(buf, len) {
+        return e;
     }
     
     let slice = unsafe {
@@ -337,9 +290,9 @@ pub fn sys_read(fd: u64, buf: u64, len: u64, _arg4: u64, _arg5: u64, _arg6: u64)
         None => return EBADF,
     };
     
-    // Validate buffer
-    if buf == 0 || !is_user_address(buf) || !is_user_range(buf, len) {
-        return EFAULT;
+    // Validate buffer is writable
+    if let Err(e) = validate_user_write(buf, len) {
+        return e;
     }
     
     let slice = unsafe {
@@ -428,12 +381,11 @@ pub fn sys_wait(_pid: u64, status_ptr: u64, _options: u64, _arg4: u64, _arg5: u6
                 
                 // Write exit code to user pointer if provided
                 if status_ptr != 0 {
-                    // TODO: Re-enable security validation
                     // Check validity of status_ptr (mapped and writable)
-                    // if let Err(e) = validate_user_write(status_ptr, core::mem::size_of::<i32>() as u64) {
-                    //     debug_println!("[SYSCALL] sys_wait: invalid status_ptr 0x{:x}", status_ptr);
-                    //     return e;
-                    // }
+                    if let Err(e) = validate_user_write(status_ptr, core::mem::size_of::<i32>() as u64) {
+                        debug_println!("[SYSCALL] sys_wait: invalid status_ptr 0x{:x}", status_ptr);
+                        return e;
+                    }
                     
                     // Safe to write exit code
                     unsafe {
@@ -622,11 +574,10 @@ pub fn sys_pipe(pipefd: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _ar
     use alloc::sync::Arc;
     use spin::Mutex;
 
-    // TODO: Re-enable security validation
     // Validate that pipefd is writable (needs 2 * u64)
-    // if let Err(e) = validate_user_write(pipefd, 2 * core::mem::size_of::<u64>() as u64) {
-    //     return e;
-    // }
+    if let Err(e) = validate_user_write(pipefd, 2 * core::mem::size_of::<u64>() as u64) {
+        return e;
+    }
 
     // Create pipe
     let pipe = Arc::new(Mutex::new(Pipe::new()));
@@ -649,8 +600,7 @@ pub fn sys_pipe(pipefd: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _ar
     let read_fd = process.add_file_descriptor(reader);
     let write_fd = process.add_file_descriptor(writer);
 
-    // Write FDs to user memory
-    // TODO: Validate that pipefd is writable
+    // Write FDs to user memory (already validated above)
     unsafe {
         let pipefd_ptr = pipefd as *mut u64;
         *pipefd_ptr = read_fd;

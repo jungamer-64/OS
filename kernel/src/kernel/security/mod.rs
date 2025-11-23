@@ -257,8 +257,8 @@ fn get_page_flags(_mapper: &OffsetPageTable, page: Page<Size4KiB>) -> SyscallRes
 /// Checks:
 /// 1. Pointer is in user space
 /// 2. Range doesn't overflow
-/// 3. TODO: Verify pages are mapped
-/// 4. TODO: Verify pages have read permission
+/// 3. Verify pages are mapped
+/// 4. Verify pages have read permission
 pub fn validate_user_read(ptr: u64, len: u64) -> SyscallResult<()> {
     // Check for zero-length (allowed, no-op)
     if len == 0 {
@@ -297,8 +297,8 @@ pub fn validate_user_read(ptr: u64, len: u64) -> SyscallResult<()> {
 /// Checks:
 /// 1. Pointer is in user space
 /// 2. Range doesn't overflow
-/// 3. TODO: Verify pages are mapped
-/// 4. TODO: Verify pages have write permission
+/// 3. Verify pages are mapped
+/// 4. Verify pages have write permission
 pub fn validate_user_write(ptr: u64, len: u64) -> SyscallResult<()> {
     // Check for zero-length (allowed, no-op)
     if len == 0 {

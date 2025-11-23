@@ -117,7 +117,8 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
             }
         }
         
-        // TODO: Free process resources (page table, stacks, etc.)
+        // Note: Resource cleanup is deferred until the process is reaped by the parent
+        // The zombie process remains in the process table until wait() is called
     }
 }
 

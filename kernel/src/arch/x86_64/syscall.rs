@@ -512,25 +512,28 @@ pub mod validation {
     /// Returns `None` if:
     /// - Address is invalid (not in user space)
     /// - Address is not readable (page fault would occur)
+    /// - Page is not mapped or lacks read permission
     /// 
     /// # Safety
     /// 
     /// This is still unsafe because:
-    /// - We don't check if the page is actually mapped
     /// - TOCTOU issues (page could be unmapped after check)
     /// 
-    /// For Phase 2, this should be replaced with proper page table checks.
+    /// # Phase 2 Implementation
+    /// 
+    /// This now properly checks if pages are mapped and readable.
     #[must_use]
     #[allow(dead_code)]
     #[allow(clippy::missing_const_for_fn)] // Unsafe fn cannot be const
     pub unsafe fn copy_from_user<T: Copy>(user_ptr: u64) -> Option<T> {
-        if !is_user_range(user_ptr, core::mem::size_of::<T>() as u64) {
+        use crate::kernel::security::validate_user_read;
+        
+        // Validate that the pointer is in user space and the page is mapped/readable
+        if validate_user_read(user_ptr, core::mem::size_of::<T>() as u64).is_err() {
             return None;
         }
         
-        // TODO (Phase 2): Check if page is mapped and readable
-        // For now, assume it's valid if in user address space
-        
+        // Safe to read from user space (validated above)
         #[allow(clippy::cast_ptr_alignment)] // Caller ensures alignment
         Some(*(user_ptr as *const T))
     }

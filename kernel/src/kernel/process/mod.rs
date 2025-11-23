@@ -904,7 +904,7 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
     crate::debug_println!("  This bypasses Rust's broken inline asm with options(noreturn)");
     
     // Declare external assembly function (compiled from src/arch/x86_64/jump_to_usermode.asm)
-    extern "C" {
+    unsafe extern "C" {
         fn jump_to_usermode_asm(entry_point: u64, user_stack: u64, user_cr3: u64, rflags: u64) -> !;
     }
     

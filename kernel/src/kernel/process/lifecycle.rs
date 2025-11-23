@@ -6,7 +6,8 @@ use crate::kernel::loader::load_user_program;
 use crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR;
 use crate::kernel::mm::PHYS_MEM_OFFSET;
 use x86_64::VirtAddr;
-use x86_64::structures::paging::{OffsetPageTable, PageTable};
+use x86_64::structures::paging::{OffsetPageTable, PageTable, PhysFrame, PageTableFlags};
+use x86_64::structures::paging::page::Size4KiB;
 
 
 /// Error types for process creation
@@ -164,47 +165,140 @@ fn free_process_resources(process: &mut crate::kernel::process::Process) {
     let phys_mem_offset = VirtAddr::new(PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed));
     
     // 1. Free user page table and all mapped user pages
-    // We need to walk through the page table and free all user-space mappings
     let page_table_frame = process.page_table_frame();
     
     unsafe {
-        // Access the page table
+        // Access the L4 page table
         let l4_table_ptr = (phys_mem_offset + page_table_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
         let l4_table = &mut *l4_table_ptr;
         
-        // Free all user-space entries (indices 0-255)
-        // Note: We should recursively free all page table levels and mapped frames
-        // For now, we'll do a simple implementation that frees the page table itself
-        // A complete implementation would walk all levels and free all frames
+        // Recursively free all user-space entries (indices 0-255)
+        // This walks through all levels (L4 -> L3 -> L2 -> L1) and frees both
+        // the page table frames and the actual data frames
+        for l4_index in 0..256 {
+            if !l4_table[l4_index].is_unused() {
+                let l3_frame = l4_table[l4_index].frame().unwrap();
+                free_l3_table(l3_frame, phys_mem_offset);
+                l4_table[l4_index].set_unused();
+                
+                // Free the L3 table frame itself
+                if let Some(mut allocator) = BOOT_INFO_ALLOCATOR.try_lock() {
+                    if let Some(ref mut alloc) = *allocator {
+                        unsafe {
+                            alloc.deallocate_frame(l3_frame);
+                        }
+                    }
+                }
+            }
+        }
         
-        // TODO: Implement recursive page table freeing
-        // This would require walking through all levels (L4 -> L3 -> L2 -> L1)
-        // and freeing both the page table frames and the actual data frames
-        
-        // For now, we mark entries as unused but don't actually free frames
-        // This prevents reuse but avoids double-free issues
-        for i in 0..256 {
-            l4_table[i].set_unused();
+        // Free the L4 table frame itself
+        if let Some(mut allocator) = BOOT_INFO_ALLOCATOR.try_lock() {
+            if let Some(ref mut alloc) = *allocator {
+                unsafe {
+                    alloc.deallocate_frame(page_table_frame);
+                }
+            }
         }
     }
     
     // 2. Free kernel stack
-    // Note: The kernel stack is allocated using the global allocator
-    // We need to properly deallocate it
+    // Note: The kernel stack was allocated from the global allocator
     let kernel_stack_top = process.kernel_stack;
-    let kernel_stack_bottom = kernel_stack_top.as_u64() - 16 * 1024;
+    let kernel_stack_size = 16 * 1024; // 16KB stack
+    let kernel_stack_bottom = kernel_stack_top.as_u64() - kernel_stack_size;
     
     unsafe {
         use alloc::alloc::{dealloc, Layout};
-        let kernel_stack_layout = Layout::from_size_align_unchecked(16 * 1024, 16);
-        dealloc(kernel_stack_bottom as *mut u8, kernel_stack_layout);
+        if let Ok(kernel_stack_layout) = Layout::from_size_align(kernel_stack_size as usize, 16) {
+            dealloc(kernel_stack_bottom as *mut u8, kernel_stack_layout);
+        }
     }
     
     // 3. Close all open file descriptors
-    // This is handled by the Process destructor or explicitly here
     process.close_all_fds();
     
     crate::debug_println!("[Process] Freed resources for PID={}", process.pid().as_u64());
+}
+
+/// Recursively free an L3 page table and all its children
+unsafe fn free_l3_table(l3_frame: PhysFrame<Size4KiB>, phys_mem_offset: VirtAddr) {
+    unsafe {
+        let l3_table_ptr = (phys_mem_offset + l3_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+        let l3_table = &mut *l3_table_ptr;
+        
+        for l3_index in 0..512 {
+            if !l3_table[l3_index].is_unused() {
+                let l2_frame = l3_table[l3_index].frame().unwrap();
+                free_l2_table(l2_frame, phys_mem_offset);
+                l3_table[l3_index].set_unused();
+                
+                // Free the L2 table frame itself
+                if let Some(mut allocator) = BOOT_INFO_ALLOCATOR.try_lock() {
+                    if let Some(ref mut alloc) = *allocator {
+                        alloc.deallocate_frame(l2_frame);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Recursively free an L2 page table and all its children
+unsafe fn free_l2_table(l2_frame: PhysFrame<Size4KiB>, phys_mem_offset: VirtAddr) {
+    unsafe {
+        let l2_table_ptr = (phys_mem_offset + l2_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+        let l2_table = &mut *l2_table_ptr;
+        
+        for l2_index in 0..512 {
+            if !l2_table[l2_index].is_unused() {
+                // Check if this is a huge page (2MB)
+                let flags = l2_table[l2_index].flags();
+                if flags.contains(PageTableFlags::HUGE_PAGE) {
+                    // This is a 2MB huge page, free it directly
+                    let frame = l2_table[l2_index].frame().unwrap();
+                    if let Some(mut allocator) = BOOT_INFO_ALLOCATOR.try_lock() {
+                        if let Some(ref mut alloc) = *allocator {
+                            alloc.deallocate_frame(frame);
+                        }
+                    }
+                } else {
+                    // This is a pointer to an L1 table
+                    let l1_frame = l2_table[l2_index].frame().unwrap();
+                    free_l1_table(l1_frame, phys_mem_offset);
+                    
+                    // Free the L1 table frame itself
+                    if let Some(mut allocator) = BOOT_INFO_ALLOCATOR.try_lock() {
+                        if let Some(ref mut alloc) = *allocator {
+                            alloc.deallocate_frame(l1_frame);
+                        }
+                    }
+                }
+                l2_table[l2_index].set_unused();
+            }
+        }
+    }
+}
+
+/// Free an L1 page table and all mapped pages
+unsafe fn free_l1_table(l1_frame: PhysFrame<Size4KiB>, phys_mem_offset: VirtAddr) {
+    unsafe {
+        let l1_table_ptr = (phys_mem_offset + l1_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+        let l1_table = &mut *l1_table_ptr;
+        
+        for l1_index in 0..512 {
+            if !l1_table[l1_index].is_unused() {
+                // This is an actual data page, free it
+                let frame = l1_table[l1_index].frame().unwrap();
+                if let Some(mut allocator) = BOOT_INFO_ALLOCATOR.try_lock() {
+                    if let Some(ref mut alloc) = *allocator {
+                        alloc.deallocate_frame(frame);
+                    }
+                }
+                l1_table[l1_index].set_unused();
+            }
+        }
+    }
 }
 
 /// Fork the current process
