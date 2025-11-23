@@ -860,42 +860,41 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
     crate::debug_println!("  RIP={:#x}, RSP={:#x}, RFLAGS={:#x}", entry_point.as_u64(), user_stack.as_u64(), rflags);
     crate::debug_println!("  USER_CODE=0x1B, USER_DATA=0x23, CR3={:#x}", user_cr3);
     
-    crate::debug_println!("!!!CRITICAL FIX!!! Writing CR3 DIRECTLY to test inline asm!");
-    crate::debug_println!("  Will write 0x538000 to CR3 BEFORE iretq");
-
-    // DESPERATE FIX: Write CR3 using x86_64 crate BEFORE inline asm
-    // This way we avoid Rust's broken inline asm completely
-    unsafe {
-        use x86_64::registers::control::Cr3;
-        use x86_64::structures::paging::PhysFrame;
-        use x86_64::PhysAddr;
-        
-        let frame = PhysFrame::containing_address(PhysAddr::new(user_cr3));
-        crate::debug_println!("[jump_to_usermode] Switching CR3 using x86_64 crate...");
-        Cr3::write(frame, x86_64::structures::paging::page_table::PageTableFlags::empty());
-        crate::debug_println!("[jump_to_usermode] CR3 switched! Now building iretq frame...");
-    }
+    crate::debug_println!("!!!FINAL FIX!!! Using pure assembly without ANY Rust control flow");
     
-    // NOW do iretq WITHOUT touching CR3 again
+    // ABSOLUTE LAST RESORT: Inline assembly with NO Rust code before iretq
+    // We MUST ensure that CR3 write and iretq happen atomically
     unsafe {
         core::arch::asm!(
+            // Save arguments to avoid register clobbering
+            "mov r10, {cr3}",           // Save CR3
+            "mov r11, {stack}",         // Save stack
+            "mov r12, {rflags}",        // Save RFLAGS
+            "mov r13, {entry}",         // Save entry point
+            
             "cli",
+            
+            // Set user data segments
             "mov ax, 0x23",
             "mov ds, ax",
             "mov es, ax",
             "mov fs, ax",
             "mov gs, ax",
+            
+            // Build iretq stack frame
             "mov rax, 0x23",
-            "push rax",                    // SS
-            "mov rax, {stack}",
-            "push rax",                    // RSP
-            "mov rax, {rflags}",
-            "push rax",                    // RFLAGS
+            "push rax",                 // SS
+            "push r11",                 // RSP
+            "push r12",                 // RFLAGS
             "mov rax, 0x1b",
-            "push rax",                    // CS
-            "mov rax, {entry}",
-            "push rax",                    // RIP
+            "push rax",                 // CS
+            "push r13",                 // RIP
+            
+            // CRITICAL: Write CR3 and IMMEDIATELY iretq (no other instructions!)
+            "mov cr3, r10",
             "iretq",
+            
+            cr3 = in(reg) user_cr3,
             stack = in(reg) user_stack.as_u64(),
             rflags = in(reg) rflags,
             entry = in(reg) entry_point.as_u64(),

@@ -17,6 +17,7 @@ use crate::kernel::fs::FileDescriptor;
 pub mod lifecycle;
 pub mod switch;
 pub mod elf_loader;  // Phase 4: ELF loader
+pub mod elf_impl;  // Phase 4: ELF loading implementation  
 pub mod binary_reader;  // Phase 4: Binary reading utilities
 
 pub use lifecycle::{create_user_process, terminate_process};

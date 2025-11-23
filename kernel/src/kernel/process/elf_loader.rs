@@ -200,7 +200,7 @@ impl Elf64Header {
             return Err(ElfError::FileTooSmall);
         }
         
-        let header = &*(data.as_ptr() as *const Elf64Header);
+        let header = unsafe { &*(data.as_ptr() as *const Elf64Header) };
         
         // Validate magic number
         if header.e_ident[0..4] != ELF_MAGIC {
@@ -243,8 +243,8 @@ impl Elf64Header {
             return Err(ElfError::FileTooSmall);
         }
         
-        let ptr = data.as_ptr().add(phoff) as *const Elf64ProgramHeader;
-        Ok(core::slice::from_raw_parts(ptr, phnum))
+        let ptr = unsafe { data.as_ptr().add(phoff) as *const Elf64ProgramHeader };
+        Ok(unsafe { core::slice::from_raw_parts(ptr, phnum) })
     }
 }
 
@@ -294,7 +294,7 @@ pub unsafe fn read_struct<T>(data: &[u8]) -> Result<&T, ElfError> {
         return Err(ElfError::FileTooSmall);
     }
     
-    Ok(&*(data.as_ptr() as *const T))
+    Ok(unsafe { &*(data.as_ptr() as *const T) })
 }
 
 #[cfg(test)]
