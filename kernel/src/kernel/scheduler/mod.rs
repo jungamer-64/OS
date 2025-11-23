@@ -54,8 +54,8 @@ impl RoundRobinScheduler {
     }
 }
 
-/// Global round-robin scheduler instance.
 lazy_static! {
+    /// Global round-robin scheduler instance.
     pub static ref SCHEDULER: Mutex<RoundRobinScheduler> = 
         Mutex::new(RoundRobinScheduler::new());
 }

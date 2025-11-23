@@ -41,32 +41,33 @@ pub type SyscallResult = i64;
 pub const SUCCESS: SyscallResult = 0;
 
 /// Error codes (Linux-compatible)
+
 /// Operation not permitted
-pub const EPERM: SyscallResult = -1;     // Operation not permitted
+pub const EPERM: SyscallResult = -1;
 /// No such file or directory
-pub const ENOENT: SyscallResult = -2;    // No such file or directory
+pub const ENOENT: SyscallResult = -2;
 /// No such process
-pub const ESRCH: SyscallResult = -3;     // No such process
+pub const ESRCH: SyscallResult = -3;
 /// Interrupted system call
-pub const EINTR: SyscallResult = -4;     // Interrupted system call
+pub const EINTR: SyscallResult = -4;
 /// I/O error
-pub const EIO: SyscallResult = -5;       // I/O error
+pub const EIO: SyscallResult = -5;
 /// Bad file descriptor
-pub const EBADF: SyscallResult = -9;     // Bad file descriptor
+pub const EBADF: SyscallResult = -9;
 /// No child processes
-pub const ECHILD: SyscallResult = -10;   // No child processes
+pub const ECHILD: SyscallResult = -10;
 /// Try again
-pub const EAGAIN: SyscallResult = -11;    // Try again
+pub const EAGAIN: SyscallResult = -11;
 /// Out of memory
-pub const ENOMEM: SyscallResult = -12;   // Out of memory
+pub const ENOMEM: SyscallResult = -12;
 /// Bad address (invalid pointer)
-pub const EFAULT: SyscallResult = -14;   // Bad address (invalid pointer)
+pub const EFAULT: SyscallResult = -14;
 /// Invalid argument
-pub const EINVAL: SyscallResult = -22;   // Invalid argument
+pub const EINVAL: SyscallResult = -22;
 /// Broken pipe
-pub const EPIPE: SyscallResult = -32;    // Broken pipe
+pub const EPIPE: SyscallResult = -32;
 /// Function not implemented
-pub const ENOSYS: SyscallResult = -38;   // Function not implemented
+pub const ENOSYS: SyscallResult = -38;
 
 /// sys_write - Write to file descriptor
 ///

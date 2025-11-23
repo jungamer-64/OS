@@ -62,6 +62,7 @@ pub struct Framebuffer {
 }
 
 impl Framebuffer {
+    /// Creates a new framebuffer instance and clears it.
     pub fn new(info: FrameBufferInfo, buffer: &'static mut [u8]) -> Self {
         let mut fb = Self {
             info,
