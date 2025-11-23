@@ -4,7 +4,7 @@
 //! This module provides process structure and lifecycle management
 //! for user-mode processes.
 
-use x86_64::structures::paging::{PhysFrame, PageTable, FrameAllocator, Size4KiB};
+use x86_64::structures::paging::{PhysFrame, PageTable, FrameAllocator, Size4KiB, PageTableFlags};
 use x86_64::{VirtAddr, PhysAddr};
 use x86_64::registers::control::Cr3Flags;
 use alloc::vec::Vec;
