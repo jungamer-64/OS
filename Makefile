@@ -16,7 +16,7 @@ ARCH ?= x86_64
 
 # Target architecture specification
 # Can be overridden via environment variable for future multi-arch support
-TARGET ?= $(ARCH)-blog_os.json
+TARGET ?= kernel/x86_64-rany_os.json
 BUILD_MODE ?= debug
 
 # Directories
@@ -79,14 +79,14 @@ all: build
 ## build: Build the kernel (debug mode)
 build:
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Building kernel (debug)...$(COLOR_RESET)"
-	@cargo build
+	@cargo build -p tiny_os --target $(TARGET)
 	@echo "$(COLOR_GREEN)✓ Build complete$(COLOR_RESET)"
 	@echo "Binary: $(KERNEL_BIN)"
 
 ## build-release: Build the kernel (release mode)
 build-release:
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Building kernel (release)...$(COLOR_RESET)"
-	@cargo build --release
+	@cargo build --release -p tiny_os --target $(TARGET)
 	@echo "$(COLOR_GREEN)✓ Build complete$(COLOR_RESET)"
 	@echo "Binary: $(KERNEL_BIN)"
 

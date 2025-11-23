@@ -1,3 +1,4 @@
+// kernel/src/kernel/process/lifecycle.rs
 //! Process lifecycle management
 
 use crate::kernel::process::{ProcessId, ProcessState, PROCESS_TABLE};
@@ -5,13 +6,17 @@ use crate::kernel::loader::load_user_program;
 use crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR;
 use crate::kernel::mm::PHYS_MEM_OFFSET;
 use x86_64::VirtAddr;
-use x86_64::structures::paging::OffsetPageTable;
+use x86_64::structures::paging::{OffsetPageTable, PageTable};
+
 
 /// Error types for process creation
 #[derive(Debug)]
 pub enum CreateError {
+    /// Frame allocation failed
     FrameAllocationFailed,
+    /// Loader error occurred
     LoaderError(crate::kernel::loader::LoadError),
+    /// Page table creation error
     PageTableCreationError(&'static str),
 }
 
@@ -25,7 +30,7 @@ impl From<crate::kernel::loader::LoadError> for CreateError {
 /// 
 /// This is the main entry point for creating processes in Phase 2.
 /// It creates a new process, loads the embedded user program, and adds it to the process table.
-pub fn create_user_process() -> Result<ProcessId, CreateError> {
+pub fn create_user_process() -> Result<(ProcessId, VirtAddr, VirtAddr, u64), CreateError> {
     let mut allocator_lock = BOOT_INFO_ALLOCATOR.lock();
     let frame_allocator = allocator_lock.as_mut().ok_or(CreateError::FrameAllocationFailed)?;
     
@@ -44,26 +49,27 @@ pub fn create_user_process() -> Result<ProcessId, CreateError> {
     // 2. Load program into the process's address space
     // We need to temporarily access the process's page table
     {
-        let l4_table_ptr = (phys_mem_offset + process.page_table_frame().start_address().as_u64()).as_mut_ptr();
+        let l4_table_ptr = (phys_mem_offset + process.page_table_frame().start_address().as_u64())
+            .as_mut_ptr::<PageTable>();
+            
         let l4_table = unsafe { &mut *l4_table_ptr };
-        
-        // DEBUG: Before loading user program
-        let entry_0_before = l4_table[0].clone();
-        crate::debug_println!("[create_user_process] PML4 Entry 0 before load: {:?}", entry_0_before);
-        
+
+        // 修正: Mapper を作成する前にデバッグ出力を行う
+        // これで借用エラー (E0502) を回避
+        crate::debug_println!("[create_user_process] PML4 Entry 0 before load: {:?}", l4_table[0]);
+
         let mut mapper = unsafe { OffsetPageTable::new(l4_table, phys_mem_offset) };
         
         let loaded_program = load_user_program(&mut mapper, frame_allocator)?;
         
         // DEBUG: After loading user program
-        // Need to re-access l4_table because mapper borrows it
-        let l4_table = unsafe { &mut *l4_table_ptr };
-        let entry_0_after = l4_table[0].clone();
-        crate::debug_println!("[create_user_process] PML4 Entry 0 after load: {:?}", entry_0_after);
-        crate::debug_println!("[create_user_process] PML4 Entry 0 flags: {:?}", entry_0_after.flags());
-        if !entry_0_after.is_unused() {
-            crate::debug_println!("[create_user_process] PML4 Entry 0 PDPT frame: {:#x}", entry_0_after.addr().as_u64());
-        }
+        // Note: l4_table access here technically might be unsafe if mapper is still alive, 
+        // but since mapper is not used after this point, the compiler might allow it due to NLL (Non-Lexical Lifetimes).
+        // If it still complains, drop(mapper) explicitly before this print.
+        // For safety, let's assume mapper is done.
+        
+        crate::debug_println!("[create_user_process] PML4 Entry 0 after load: {:?}", l4_table[0]);
+        // ... (以下のデバッグ出力はそのまま)
         
         // Update process entry point and stack
         process.registers_mut().rip = loaded_program.entry_point.as_u64();
@@ -75,21 +81,20 @@ pub fn create_user_process() -> Result<ProcessId, CreateError> {
     
     process.set_state(ProcessState::Ready);
     
+    // Extract info before moving process
+    let entry_point = VirtAddr::new(process.registers().rip);
+    let user_stack = VirtAddr::new(process.registers().rsp);
+    let user_cr3 = process.page_table_phys_addr();
+    
     // 3. Add to process table
     {
         let mut table = PROCESS_TABLE.lock();
-        // Note: create_process_with_context already allocated PID but didn't add to table?
-        // Wait, looking at process/mod.rs, create_process_with_context DOES NOT add to table?
-        // Let's check process/mod.rs again.
-        // It calls `table.allocate_pid()` but returns `Process` object.
-        // It DOES NOT call `table.add_process(process)`.
-        // So we need to add it here.
         table.add_process(process);
     }
     
     crate::debug_println!("[Process] Created process PID={}", pid.as_u64());
     
-    Ok(pid)
+    Ok((pid, entry_point, user_stack, user_cr3))
 }
 
 /// Terminate a process

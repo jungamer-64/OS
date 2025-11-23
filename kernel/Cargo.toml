@@ -1,0 +1,64 @@
+[package]
+name = "tiny_os"
+version = "0.4.0"
+authors = ["jungamer-64 <your.email@example.com>"]
+edition = "2024"
+default-run = "tiny_os"
+description = "Minimal x86_64 no_std Rust kernel with robust hardware support"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/jungamer-64/OS"
+keywords = ["os", "kernel", "no-std", "bare-metal", "x86_64"]
+categories = ["no-std", "embedded", "os"]
+
+[lib]
+name = "tiny_os"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tiny_os"
+path = "src/main.rs"
+
+[features]
+# Feature to enable standard library unit tests (not compatible with no_std kernel)
+# These tests require std features like Vec, String, and the test crate
+std-tests = []
+
+# Feature to enable syscall tracing in debug builds
+# Usage: cargo build --features syscall_trace
+syscall_trace = []
+
+# Feature to enable usermode execution test (Phase 1)
+# Usage: cargo build --features test_usermode
+test_usermode = []
+
+[dependencies]
+# Bootloader API for kernel (v0.11)
+bootloader_api = "=0.11.10"
+
+# x86_64 specific types and instructions
+x86_64 = "0.15.2"
+
+# Spin-based synchronization primitives (no_std compatible)
+spin = "0.9.8"
+
+# Lazy static initialization with spin locks
+lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
+
+# Heap allocator
+linked_list_allocator = "0.10.5"
+
+# Keyboard scancode decoder
+pc-keyboard = "0.7.0"
+
+# Bootloader (for bootimage compatibility)
+bootloader = { version = "0.9.23", features = ["map_physical_memory"] }
+
+[build-dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# ============================================================================
+# Linting Configuration
+# ============================================================================
+
+# Note: These settings are enforced via #![deny(...)] in source files

@@ -9,12 +9,3 @@ path = "src/lib.rs"
 
 [dependencies]
 # No external dependencies - pure no_std library
-
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
-opt-level = "z"  # Optimize for size
-lto = true
-codegen-units = 1

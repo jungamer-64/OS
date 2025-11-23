@@ -52,7 +52,7 @@ pub extern "C" fn _start() -> ! {
             println("[Parent] Read bytes from pipe");
             
             // Print as string
-            if let Ok(s) = core::str::from_utf8(&buffer[..read_count as usize]) {
+            if let Ok(_s) = core::str::from_utf8(&buffer[..read_count as usize]) {
                 println("[Parent] Message received from child");
             }
         } else {
@@ -71,7 +71,7 @@ pub extern "C" fn _start() -> ! {
 }
 
 #[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
+fn panic(_info: &PanicInfo) -> ! {
     println("Shell Panic!");
     exit(1);
 }

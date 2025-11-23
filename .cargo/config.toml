@@ -1,5 +1,5 @@
 [build]
-target = "x86_64-rany_os.json"
+target = "kernel/x86_64-rany_os.json"
 
 # build-stdをカスタムターゲットにのみ適用
 [target.x86_64-rany_os]
