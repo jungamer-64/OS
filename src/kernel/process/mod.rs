@@ -860,47 +860,16 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
     crate::debug_println!("  RIP={:#x}, RSP={:#x}, RFLAGS={:#x}", entry_point.as_u64(), user_stack.as_u64(), rflags);
     crate::debug_println!("  USER_CODE=0x1B, USER_DATA=0x23, CR3={:#x}", user_cr3);
     
-    crate::debug_println!("!!!FINAL FIX!!! Using pure assembly without ANY Rust control flow");
+    crate::debug_println!("[jump_to_usermode] Calling external NASM assembly function...");
+    crate::debug_println!("  This bypasses Rust's broken inline asm with options(noreturn)");
     
-    // ABSOLUTE LAST RESORT: Inline assembly with NO Rust code before iretq
-    // We MUST ensure that CR3 write and iretq happen atomically
-    unsafe {
-        core::arch::asm!(
-            // Save arguments to avoid register clobbering
-            "mov r10, {cr3}",           // Save CR3
-            "mov r11, {stack}",         // Save stack
-            "mov r12, {rflags}",        // Save RFLAGS
-            "mov r13, {entry}",         // Save entry point
-            
-            "cli",
-            
-            // Set user data segments
-            "mov ax, 0x23",
-            "mov ds, ax",
-            "mov es, ax",
-            "mov fs, ax",
-            "mov gs, ax",
-            
-            // Build iretq stack frame
-            "mov rax, 0x23",
-            "push rax",                 // SS
-            "push r11",                 // RSP
-            "push r12",                 // RFLAGS
-            "mov rax, 0x1b",
-            "push rax",                 // CS
-            "push r13",                 // RIP
-            
-            // CRITICAL: Write CR3 and IMMEDIATELY iretq (no other instructions!)
-            "mov cr3, r10",
-            "iretq",
-            
-            cr3 = in(reg) user_cr3,
-            stack = in(reg) user_stack.as_u64(),
-            rflags = in(reg) rflags,
-            entry = in(reg) entry_point.as_u64(),
-            options(noreturn)
-        )
+    // FINAL SOLUTION: External assembly function compiled with NASM
+    // This is the ONLY way to avoid Rust compiler generating wrong code
+    extern "C" {
+        fn jump_to_usermode_asm(entry_point: u64, user_stack: u64, user_cr3: u64, rflags: u64) -> !;
     }
+
+    jump_to_usermode_asm(entry_point.as_u64(), user_stack.as_u64(), user_cr3, rflags)
 }
 
             "mov cr3, r10",

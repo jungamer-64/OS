@@ -16,33 +16,6 @@
 
 extern crate alloc;
 
-// Include inline assembly for jump_to_usermode
-// Using global_asm! to bypass Rust inline asm compiler issues
-core::arch::global_asm!(
-    ".global jump_to_usermode_asm",
-    ".type jump_to_usermode_asm, @function",
-    "jump_to_usermode_asm:",
-    "cli",
-    "mov r10, rdx",      // CR3 (3rd argument, rdx)
-    "mov r11, rsi",      // Stack (2nd argument, rsi)
-    "mov r12, rcx",      // RFLAGS (4th argument, rcx)
-    "mov r13, rdi",      // Entry point (1st argument, rdi)
-    "mov ax, 0x23",
-    "mov ds, ax",
-    "mov es, ax",
-    "mov fs, ax",
-    "mov gs, ax",
-    "mov rax, 0x23",
-    "push rax",          // SS
-    "push r11",          // RSP
-    "push r12",          // RFLAGS
-    "mov rax, 0x1b",
-    "push rax",          // CS
-    "push r13",          // RIP
-    "mov cr3, r10",      // Switch CR3
-    "iretq",
-);
-
 pub mod errors;
 pub mod qemu;
 pub mod arch;

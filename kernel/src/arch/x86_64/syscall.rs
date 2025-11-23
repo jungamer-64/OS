@@ -7,7 +7,7 @@
 #![allow(unsafe_op_in_unsafe_fn)] // naked_asm! requires this
 
 use x86_64::VirtAddr;
-use x86_64::registers::model_specific::{Efer, EferFlags, LStar, Star, SFMask};
+use x86_64::registers::model_specific::{Efer, EferFlags, LStar, SFMask};
 use x86_64::registers::rflags::RFlags;
 use crate::arch::x86_64::gdt;
 use crate::debug_println;
@@ -42,34 +42,35 @@ pub fn init() {
         let user_code_base = SegmentSelector(selectors.user_code.0 & !0x03);
         let user_data_base = SegmentSelector(selectors.user_data.0 & !0x03);
         
-        // Use the Star::write method to set up segment selectors
-        match Star::write(
-            selectors.kernel_code,
-            selectors.kernel_data,
-            user_code_base,
-            user_data_base,
-        ) {
-            Ok(()) => {},
-            Err(e) => {
-                debug_println!("[ERROR] Star::write failed: {:?}", e);
-                debug_println!("  kernel_code: 0x{:X}", selectors.kernel_code.0);
-                debug_println!("  kernel_data: 0x{:X}", selectors.kernel_data.0);
-                debug_println!("  user_code_base: 0x{:X}", user_code_base.0);
-                debug_println!("  user_data_base: 0x{:X}", user_data_base.0);
-                debug_println!("  Expected: user_code = kernel_code + 16 = 0x{:X}", selectors.kernel_code.0 + 16);
-                debug_println!("  Expected: user_data = kernel_code + 24 = 0x{:X}", selectors.kernel_code.0 + 24);
-                // Try manual STAR MSR write as workaround
-                debug_println!("[WARN] Attempting manual STAR MSR write...");
-                    use x86_64::registers::model_specific::Msr;
-                    let mut star = Msr::new(0xC0000081);
-                    // STAR format: [63:48] user32_cs, [47:32] kernel_cs, [31:0] reserved
-                    // For 64-bit: user_cs = kernel_cs + 16
-                    let star_value = (u64::from(user_code_base.0) << 48) 
-                                   | (u64::from(selectors.kernel_code.0) << 32);
-                    star.write(star_value);
-                    debug_println!("[OK] Manual STAR MSR write completed: 0x{:X}", star_value);
-            }
-        }
+        // STAR MSR format (Intel SDM Vol. 2B, SYSCALL/SYSRET):
+        // Bits [63:48]: SYSRET CS selector (user_code_base)
+        // Bits [47:32]: SYSCALL CS selector (kernel_code)
+        // Bits [31:0]:  Reserved
+        //
+        // SYSRET behavior:
+        //   CS = STAR[63:48] + 16     (user code with RPL=3)
+        //   SS = STAR[63:48] + 8      (user data with RPL=3)
+        //
+        // Therefore: STAR[63:48] must be set to (user_code_base - 16)
+        // In our case: user_code_base = 0x18, so STAR[63:48] = 0x08
+        
+        debug_println!("[DEBUG] Setting up STAR MSR:");
+        debug_println!("  kernel_code: 0x{:X}", selectors.kernel_code.0);
+        debug_println!("  kernel_data: 0x{:X}", selectors.kernel_data.0);
+        debug_println!("  user_code: 0x{:X} (base: 0x{:X})", selectors.user_code.0, user_code_base.0);
+        debug_println!("  user_data: 0x{:X} (base: 0x{:X})", selectors.user_data.0, user_data_base.0);
+        
+        // Write STAR MSR manually
+        use x86_64::registers::model_specific::Msr;
+        let mut star = Msr::new(0xC0000081);
+        
+        // STAR[63:48] = kernel_code (SYSRET will add 16 for user CS, 8 for user SS)
+        // STAR[47:32] = kernel_code (SYSCALL entry CS)
+        let star_value = (u64::from(selectors.kernel_code.0) << 48) 
+                       | (u64::from(selectors.kernel_code.0) << 32);
+        
+        star.write(star_value);
+        debug_println!("[OK] STAR MSR written: 0x{:X}", star_value);
         
         // Set up LSTAR register (syscall entry point)
         LStar::write(VirtAddr::new(syscall_entry as *const () as u64));
@@ -159,7 +160,7 @@ fn dump_registers(context: &str) {
 /// 5. Switch back to user stack
 /// 6. Return to user mode with sysret
 #[unsafe(naked)]
-pub unsafe extern "C" fn syscall_entry() -> ! {
+pub unsafe extern "C" fn syscall_entry() {
     core::arch::naked_asm!(
         // At this point:
         // - CS/SS have been switched to kernel segments by CPU

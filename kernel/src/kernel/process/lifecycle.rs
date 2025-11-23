@@ -54,22 +54,36 @@ pub fn create_user_process() -> Result<(ProcessId, VirtAddr, VirtAddr, u64), Cre
             
         let l4_table = unsafe { &mut *l4_table_ptr };
 
-        // 修正: Mapper を作成する前にデバッグ出力を行う
-        // これで借用エラー (E0502) を回避
         crate::debug_println!("[create_user_process] PML4 Entry 0 before load: {:?}", l4_table[0]);
 
         let mut mapper = unsafe { OffsetPageTable::new(l4_table, phys_mem_offset) };
         
-        let loaded_program = load_user_program(&mut mapper, frame_allocator)?;
+        // Get embedded program binary
+        let program_data = include_bytes!("../../shell.bin");
         
-        // DEBUG: After loading user program
-        // Note: l4_table access here technically might be unsafe if mapper is still alive, 
-        // but since mapper is not used after this point, the compiler might allow it due to NLL (Non-Lexical Lifetimes).
-        // If it still complains, drop(mapper) explicitly before this print.
-        // For safety, let's assume mapper is done.
+        // Try ELF loader first, fallback to legacy loader
+        let loaded_program = match crate::kernel::process::elf_impl::validate_elf(program_data) {
+            Ok(_) => {
+                crate::debug_println!("[create] Using ELF loader");
+                let loaded = crate::kernel::process::elf_impl::load_elf(
+                    program_data,
+                    &mut mapper,
+                    frame_allocator,
+                ).map_err(|_| CreateError::PageTableCreationError("ELF load failed"))?;
+                
+                // Convert to LoadedProgram format
+                crate::kernel::loader::LoadedProgram {
+                    entry_point: loaded.entry,
+                    stack_top: loaded.stack_top,
+                }
+            },
+            Err(_) => {
+                crate::debug_println!("[create] Using legacy flat binary loader");
+                load_user_program(&mut mapper, frame_allocator)?
+            }
+        };
         
         crate::debug_println!("[create_user_process] PML4 Entry 0 after load: {:?}", l4_table[0]);
-        // ... (以下のデバッグ出力はそのまま)
         
         // Update process entry point and stack
         process.registers_mut().rip = loaded_program.entry_point.as_u64();
@@ -99,31 +113,98 @@ pub fn create_user_process() -> Result<(ProcessId, VirtAddr, VirtAddr, u64), Cre
 
 /// Terminate a process
 pub fn terminate_process(pid: ProcessId, exit_code: i32) {
-    let mut table = PROCESS_TABLE.lock();
+    // First, update process state and notify parent
+    let parent_pid = {
+        let mut table = PROCESS_TABLE.lock();
+        
+        if let Some(process) = table.get_process_mut(pid) {
+            process.set_state(ProcessState::Terminated);
+            process.set_exit_code(exit_code);
+            
+            let parent_pid = process.parent_pid();
+            
+            crate::debug_println!(
+                "[Process] Terminated PID={} with code={}",
+                pid.as_u64(),
+                exit_code
+            );
+            
+            parent_pid
+        } else {
+            return;
+        }
+    };
     
-    if let Some(process) = table.get_process_mut(pid) {
-        process.set_state(ProcessState::Terminated);
-        process.set_exit_code(exit_code);
-        
-        let parent_pid = process.parent_pid();
-        
-        crate::debug_println!(
-            "[Process] Terminated PID={} with code={}",
-            pid.as_u64(),
-            exit_code
-        );
-        
-        // Wake up parent if it's blocked
-        if let Some(ppid) = parent_pid {
-            if let Some(parent) = table.get_process_mut(ppid) {
-                if parent.state() == ProcessState::Blocked {
-                    parent.set_state(ProcessState::Ready);
-                }
+    // Wake up parent if it's blocked (in a separate scope to avoid double borrow)
+    if let Some(ppid) = parent_pid {
+        let mut table = PROCESS_TABLE.lock();
+        if let Some(parent) = table.get_process_mut(ppid) {
+            if parent.state() == ProcessState::Blocked {
+                parent.set_state(ProcessState::Ready);
             }
         }
-        
-        // TODO: Free process resources (page table, stacks, etc.)
     }
+    
+    // Free process resources
+    {
+        let mut table = PROCESS_TABLE.lock();
+        if let Some(process) = table.get_process_mut(pid) {
+            free_process_resources(process);
+        }
+    }
+}
+
+/// Free resources associated with a terminated process
+///
+/// This includes:
+/// - User page table and all user-space pages
+/// - Kernel stack
+/// - File descriptors
+fn free_process_resources(process: &mut crate::kernel::process::Process) {
+    let phys_mem_offset = VirtAddr::new(PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed));
+    
+    // 1. Free user page table and all mapped user pages
+    // We need to walk through the page table and free all user-space mappings
+    let page_table_frame = process.page_table_frame();
+    
+    unsafe {
+        // Access the page table
+        let l4_table_ptr = (phys_mem_offset + page_table_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+        let l4_table = &mut *l4_table_ptr;
+        
+        // Free all user-space entries (indices 0-255)
+        // Note: We should recursively free all page table levels and mapped frames
+        // For now, we'll do a simple implementation that frees the page table itself
+        // A complete implementation would walk all levels and free all frames
+        
+        // TODO: Implement recursive page table freeing
+        // This would require walking through all levels (L4 -> L3 -> L2 -> L1)
+        // and freeing both the page table frames and the actual data frames
+        
+        // For now, we mark entries as unused but don't actually free frames
+        // This prevents reuse but avoids double-free issues
+        for i in 0..256 {
+            l4_table[i].set_unused();
+        }
+    }
+    
+    // 2. Free kernel stack
+    // Note: The kernel stack is allocated using the global allocator
+    // We need to properly deallocate it
+    let kernel_stack_top = process.kernel_stack;
+    let kernel_stack_bottom = kernel_stack_top.as_u64() - 16 * 1024;
+    
+    unsafe {
+        use alloc::alloc::{dealloc, Layout};
+        let kernel_stack_layout = Layout::from_size_align_unchecked(16 * 1024, 16);
+        dealloc(kernel_stack_bottom as *mut u8, kernel_stack_layout);
+    }
+    
+    // 3. Close all open file descriptors
+    // This is handled by the Process destructor or explicitly here
+    process.close_all_fds();
+    
+    crate::debug_println!("[Process] Freed resources for PID={}", process.pid().as_u64());
 }
 
 /// Fork the current process
@@ -253,14 +334,32 @@ pub fn exec_process() -> Result<u64, CreateError> {
         frame
     };
     
-    // 2. Load program into new page table
+    // 2. Load program using ELF loader
     let (entry_point, stack_top) = {
         let l4_table_ptr = (phys_mem_offset + new_page_table_frame.start_address().as_u64()).as_mut_ptr();
         let l4_table = unsafe { &mut *l4_table_ptr };
         let mut mapper = unsafe { OffsetPageTable::new(l4_table, phys_mem_offset) };
         
-        let loaded_program = load_user_program(&mut mapper, frame_allocator)?;
-        (loaded_program.entry_point, loaded_program.stack_top)
+        // Get embedded program binary
+        let program_data = include_bytes!("../../shell.bin");
+        
+        // Try ELF loader first, fallback to legacy loader
+        match crate::kernel::process::elf_impl::validate_elf(program_data) {
+            Ok(_) => {
+                crate::debug_println!("[exec] Using ELF loader");
+                let loaded = crate::kernel::process::elf_impl::load_elf(
+                    program_data,
+                    &mut mapper,
+                    frame_allocator,
+                ).map_err(|_| CreateError::PageTableCreationError("ELF load failed"))?;
+                (loaded.entry, loaded.stack_top)
+            },
+            Err(_) => {
+                crate::debug_println!("[exec] Using legacy flat binary loader");
+                let loaded_program = load_user_program(&mut mapper, frame_allocator)?;
+                (loaded_program.entry_point, loaded_program.stack_top)
+            }
+        }
     };
     
     // 3. Update process structure and switch

@@ -29,6 +29,11 @@
 //! }
 //! ```
 
+use x86_64::structures::paging::{OffsetPageTable, PageTableFlags, Mapper, Page, Size4KiB, PageTable};
+use x86_64::{VirtAddr, registers::control::Cr3};
+use core::sync::atomic::Ordering;
+use crate::kernel::mm::PHYS_MEM_OFFSET;
+
 // Type alias for syscall results
 type SyscallResult<T> = Result<T, i64>;
 
@@ -101,6 +106,141 @@ pub fn is_user_range(addr: u64, len: u64) -> bool {
     is_user_address(addr) && is_user_address(end.saturating_sub(1))
 }
 
+/// Verify that a memory range is mapped with the required permissions
+///
+/// # Arguments
+/// * `ptr` - Start address
+/// * `len` - Length in bytes
+/// * `_check_read` - Whether to check read permission
+/// * `check_write` - Whether to check write permission
+///
+/// # Returns
+/// * `Ok(())` - All pages are mapped with required permissions
+/// * `Err(EFAULT)` - At least one page is not mapped or lacks permissions
+///
+/// # Safety
+///
+/// This function accesses page tables which requires proper synchronization.
+/// It should only be called with valid user-space addresses.
+fn verify_page_mapping(ptr: u64, len: u64, _check_read: bool, check_write: bool) -> SyscallResult<()> {
+    if len == 0 {
+        return Ok(());
+    }
+    
+    // Get physical memory offset
+    let phys_mem_offset = VirtAddr::new(PHYS_MEM_OFFSET.load(Ordering::Relaxed));
+    
+    // Get current page table
+    let (level_4_table_frame, _) = Cr3::read();
+    let phys = level_4_table_frame.start_address();
+    let virt = phys_mem_offset + phys.as_u64();
+    let page_table_ptr = virt.as_mut_ptr();
+    
+    // Safety: We're reading from the active page table pointed to by CR3
+    let level_4_table = unsafe { &mut *page_table_ptr };
+    let mapper = unsafe { OffsetPageTable::new(level_4_table, phys_mem_offset) };
+    
+    // Check each page in the range
+    let start_page = Page::<Size4KiB>::containing_address(VirtAddr::new(ptr));
+    let end_addr = ptr + len - 1;
+    let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(end_addr));
+    
+    let page_range = Page::range_inclusive(start_page, end_page);
+    
+    for page in page_range {
+        // Try to translate the page
+        match mapper.translate_page(page) {
+            Ok(_frame) => {
+                // Page is mapped, now check permissions
+                // We need to get the flags for this page
+                let flags = get_page_flags(&mapper, page)?;
+                
+                // Check if page is present and user-accessible
+                if !flags.contains(PageTableFlags::PRESENT) {
+                    return Err(EFAULT);
+                }
+                
+                if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                    return Err(EFAULT);
+                }
+                
+                // Check read permission (on x86_64, if page is present and user-accessible, it's readable)
+                // No additional check needed for read
+                
+                // Check write permission if required
+                if check_write && !flags.contains(PageTableFlags::WRITABLE) {
+                    return Err(EFAULT);
+                }
+            }
+            Err(_) => {
+                // Page is not mapped
+                return Err(EFAULT);
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+/// Get page table flags for a specific page
+///
+/// # Arguments
+/// * `mapper` - Page table mapper
+/// * `page` - Page to get flags for
+///
+/// # Returns
+/// * `Ok(flags)` - Page table flags
+/// * `Err(EFAULT)` - Failed to get flags
+fn get_page_flags(_mapper: &OffsetPageTable, page: Page<Size4KiB>) -> SyscallResult<PageTableFlags> {
+    // Walk page table manually to get flags
+    let addr = page.start_address();
+    unsafe {
+        let (l4_table_frame, _) = Cr3::read();
+        let phys_mem_offset = VirtAddr::new(PHYS_MEM_OFFSET.load(Ordering::Relaxed));
+        let l4_table_ptr = (phys_mem_offset + l4_table_frame.start_address().as_u64()).as_mut_ptr();
+        let l4_table = &*(l4_table_ptr as *const PageTable);
+        
+        let l4_index = (addr.as_u64() >> 39) & 0o777;
+        let l3_index = (addr.as_u64() >> 30) & 0o777;
+        let l2_index = (addr.as_u64() >> 21) & 0o777;
+        let l1_index = (addr.as_u64() >> 12) & 0o777;
+        
+        let l4_entry = &l4_table[l4_index as usize];
+        if l4_entry.is_unused() {
+            return Err(EFAULT);
+        }
+        let l4_flags = l4_entry.flags();
+        
+        let l3_table_ptr = (phys_mem_offset + l4_entry.addr().as_u64()).as_ptr();
+        let l3_table = &*(l3_table_ptr as *const PageTable);
+        let l3_entry = &l3_table[l3_index as usize];
+        if l3_entry.is_unused() {
+            return Err(EFAULT);
+        }
+        let l3_flags = l3_entry.flags();
+        
+        let l2_table_ptr = (phys_mem_offset + l3_entry.addr().as_u64()).as_ptr();
+        let l2_table = &*(l2_table_ptr as *const PageTable);
+        let l2_entry = &l2_table[l2_index as usize];
+        if l2_entry.is_unused() {
+            return Err(EFAULT);
+        }
+        let l2_flags = l2_entry.flags();
+        
+        let l1_table_ptr = (phys_mem_offset + l2_entry.addr().as_u64()).as_ptr();
+        let l1_table = &*(l1_table_ptr as *const PageTable);
+        let l1_entry = &l1_table[l1_index as usize];
+        if l1_entry.is_unused() {
+            return Err(EFAULT);
+        }
+        let l1_flags = l1_entry.flags();
+        
+        // Combine flags from all levels (AND operation for restrictive flags)
+        let combined_flags = l4_flags & l3_flags & l2_flags & l1_flags;
+        Ok(combined_flags)
+    }
+}
+
 /// Validate that a user pointer can be read from
 ///
 /// # Arguments
@@ -135,8 +275,8 @@ pub fn validate_user_read(ptr: u64, len: u64) -> SyscallResult<()> {
         return Err(EFAULT);
     }
     
-    // TODO: Phase 3 - Verify pages are actually mapped
-    // TODO: Phase 3 - Verify pages have read permission
+    // Verify pages are actually mapped and have read permission
+    verify_page_mapping(ptr, len, true, false)?;
     
     Ok(())
 }
@@ -175,8 +315,8 @@ pub fn validate_user_write(ptr: u64, len: u64) -> SyscallResult<()> {
         return Err(EFAULT);
     }
     
-    // TODO: Phase 3 - Verify pages are actually mapped
-    // TODO: Phase 3 - Verify pages have write permission
+    // Verify pages are actually mapped and have write permission
+    verify_page_mapping(ptr, len, true, true)?;
     
     Ok(())
 }
@@ -207,13 +347,32 @@ pub fn validate_user_string(ptr: u64, max_len: usize) -> SyscallResult<usize> {
         return Err(EFAULT);
     }
     
-    // TODO: Implement actual string scanning
-    // For now, just validate the maximum possible range
-    validate_user_read(ptr, max_len as u64)?;
+    // Scan user memory for null terminator
+    let mut len = 0;
+    while len < max_len {
+        let current_ptr = ptr + len as u64;
+        
+        // Check if we can still read this byte
+        if !is_user_address(current_ptr) {
+            return Err(EFAULT);
+        }
+        
+        // Validate current byte is readable
+        validate_user_read(current_ptr, 1)?;
+        
+        // Read the byte
+        let byte = unsafe { *(current_ptr as *const u8) };
+        
+        // Check for null terminator
+        if byte == 0 {
+            return Ok(len);
+        }
+        
+        len += 1;
+    }
     
-    // Placeholder: assume string is valid
-    // Real implementation would scan for null terminator
-    Ok(0)
+    // String too long or not null-terminated
+    Err(EINVAL)
 }
 
 /// Validate an array of user pointers

@@ -215,8 +215,15 @@ impl TryFrom<usize> for PhysAddr {
 
     #[inline]
     fn try_from(value: usize) -> Result<Self, Self::Error> {
-        // TODO: 実メモリ範囲に応じて値の妥当性チェックを追加する
-        // （例: 物理メモリ上限を超えていないかの検証）
+        // 実メモリ範囲チェック
+        // x86_64では物理アドレスは最大52ビット（MAXPHYADDR）
+        // 一般的なシステムでは46ビット（64 TiB）が上限
+        const MAX_PHYS_ADDR: usize = (1 << 46) - 1;
+        
+        if value > MAX_PHYS_ADDR {
+            return Err(MemoryError::InvalidAddress);
+        }
+        
         Ok(Self::new(value))
     }
 }
@@ -376,9 +383,25 @@ impl TryFrom<usize> for VirtAddr {
 
     #[inline]
     fn try_from(value: usize) -> Result<Self, Self::Error> {
-        // TODO: x86_64 canonical form チェックを追加する
-        // （bit 47～63 が bit 47 の符号拡張であることを検証）
-        // 現在は基本的な検証のみ
+        // x86_64 canonical form チェック
+        // 仮想アドレスは48ビット（一部システムでは57ビット）
+        // bit 47以上は全てbit 47と同じ値でなければならない（符号拡張）
+        
+        // bit 47をチェック
+        let bit_47 = (value >> 47) & 1;
+        
+        if bit_47 == 0 {
+            // bit 47が0の場合、bit 48-63も全て0でなければならない
+            if value & 0xFFFF_8000_0000_0000 != 0 {
+                return Err(MemoryError::InvalidAddress);
+            }
+        } else {
+            // bit 47が1の場合、bit 48-63も全て1でなければならない
+            if value & 0xFFFF_8000_0000_0000 != 0xFFFF_8000_0000_0000 {
+                return Err(MemoryError::InvalidAddress);
+            }
+        }
+        
         Ok(Self::new(value))
     }
 }

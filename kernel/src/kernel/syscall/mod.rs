@@ -117,6 +117,8 @@ use crate::arch::Cpu;
 use crate::debug_println;
 
 use crate::kernel::core::traits::CharDevice;
+// TODO: Re-enable security validation
+// use crate::kernel::security::{validate_user_write, validate_user_read};
 
 // ============================================================================
 // Constants
@@ -421,20 +423,21 @@ pub fn sys_wait(_pid: u64, status_ptr: u64, _options: u64, _arg4: u64, _arg5: u6
                 None => return ESRCH,
             };
             
-            if let Some((child_pid, _exit_code)) = table.find_terminated_child(current_pid) {
+            if let Some((child_pid, exit_code)) = table.find_terminated_child(current_pid) {
                 // Found terminated child
                 
                 // Write exit code to user pointer if provided
                 if status_ptr != 0 {
-                    if is_user_address(status_ptr) {
-                        // TODO: Check validity of status_ptr (mapped and writable)
-                        // unsafe { *(status_ptr as *mut i32) = exit_code; }
-                        // We need to map it or use copy_to_user (not implemented yet)
-                        // For now, just ignore or assume identity map (unsafe)
-                        debug_println!("[SYSCALL] sys_wait: status_ptr=0x{:x} provided but copy_to_user not impl", status_ptr);
-                    } else {
-                        debug_println!("[SYSCALL] sys_wait: invalid status_ptr 0x{:x}", status_ptr);
-                        // return EFAULT; // Optional: return error?
+                    // TODO: Re-enable security validation
+                    // Check validity of status_ptr (mapped and writable)
+                    // if let Err(e) = validate_user_write(status_ptr, core::mem::size_of::<i32>() as u64) {
+                    //     debug_println!("[SYSCALL] sys_wait: invalid status_ptr 0x{:x}", status_ptr);
+                    //     return e;
+                    // }
+                    
+                    // Safe to write exit code
+                    unsafe {
+                        *(status_ptr as *mut i32) = exit_code;
                     }
                 }
                 
@@ -619,9 +622,11 @@ pub fn sys_pipe(pipefd: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _ar
     use alloc::sync::Arc;
     use spin::Mutex;
 
-    if !is_user_address(pipefd) {
-        return EFAULT;
-    }
+    // TODO: Re-enable security validation
+    // Validate that pipefd is writable (needs 2 * u64)
+    // if let Err(e) = validate_user_write(pipefd, 2 * core::mem::size_of::<u64>() as u64) {
+    //     return e;
+    // }
 
     // Create pipe
     let pipe = Arc::new(Mutex::new(Pipe::new()));

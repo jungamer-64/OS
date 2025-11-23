@@ -406,6 +406,17 @@ impl Process {
         self.file_descriptors = fds;
         self.next_fd = next_fd;
     }
+
+    /// Close all file descriptors
+    pub fn close_all_fds(&mut self) {
+        let fd_keys: alloc::vec::Vec<u64> = self.file_descriptors.keys().copied().collect();
+        for fd_num in fd_keys {
+            if let Some(fd) = self.file_descriptors.remove(&fd_num) {
+                let mut fd_lock = fd.lock();
+                let _ = fd_lock.close();
+            }
+        }
+    }
 }
 
 /// Process table - manages all processes in the system
@@ -888,40 +899,18 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
     //    b. IMMEDIATELY execute iretq (no other instructions!)
     //
     // This ensures we don't execute kernel code after CR3 switch.
+    
+    crate::debug_println!("[jump_to_usermode] Calling external NASM assembly function...");
+    crate::debug_println!("  This bypasses Rust's broken inline asm with options(noreturn)");
+    
+    // Declare external assembly function (compiled from src/arch/x86_64/jump_to_usermode.asm)
+    extern "C" {
+        fn jump_to_usermode_asm(entry_point: u64, user_stack: u64, user_cr3: u64, rflags: u64) -> !;
+    }
+    
+    // Call the external assembly function
     unsafe {
-        core::arch::asm!(
-            // Disable interrupts during transition
-            "cli",
-            
-            // Set segment registers to user data segment
-            // (This must be done BEFORE CR3 switch, as these instructions are in kernel code)
-            "mov ax, 0x23",           // USER_DATA_SELECTOR
-            "mov ds, ax",             // Set data segment
-            "mov es, ax",             // Set extra segment
-            "mov fs, ax",             // Set FS
-            "mov gs, ax",             // Set GS
-            
-            // Push iretq frame (in reverse order: SS, RSP, RFLAGS, CS, RIP)
-            "xor rax, rax",           // Clear rax completely
-            "mov ax, 0x23",           // SS - USER_DATA_SELECTOR
-            "push rax",
-            "push {rsp}",             // RSP (user stack pointer)
-            "push {rflags}",          // RFLAGS
-            "xor rax, rax",           // Clear rax again
-            "mov ax, 0x1b",           // CS - USER_CODE_SELECTOR
-            "push rax",
-            "push {rip}",             // RIP (entry point)
-            
-            // **CRITICAL**: Switch CR3 and IMMEDIATELY iretq (NO instructions between!)
-            "mov cr3, {cr3}",         // Switch to user page table
-            "iretq",                  // Jump to user mode (this pops the frame we pushed)
-            
-            cr3 = in(reg) user_cr3,
-            rsp = in(reg) user_stack.as_u64(),
-            rflags = in(reg) rflags,
-            rip = in(reg) entry_point.as_u64(),
-            options(noreturn)
-        )
+        jump_to_usermode_asm(entry_point.as_u64(), user_stack.as_u64(), user_cr3, rflags)
     }
 }
 

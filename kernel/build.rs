@@ -70,6 +70,35 @@ fn validate_architecture_compatibility(arch: &str, pointer_width: u16) -> bool {
 /// Compile assembly files
 ///
 /// Assembles .asm files using NASM and links them with the kernel.
+/// Compile assembly files with NASM
+fn compile_assembly() {
+    use std::process::Command;
+    use std::path::PathBuf;
+    
+    let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
+    // Path is relative to kernel directory (where Cargo.toml is)
+    let asm_file = PathBuf::from("../src/arch/x86_64/jump_to_usermode.asm");
+    let obj_file = PathBuf::from(&out_dir).join("jump_to_usermode.o");
+    
+    println!("cargo:rerun-if-changed=../src/arch/x86_64/jump_to_usermode.asm");
+    
+    // Compile assembly with NASM
+    // Use ELF64 format for rust-lld (GNU flavor)
+    let status = Command::new("nasm")
+        .args([
+            "-f", "elf64",           // ELF 64-bit format (for rust-lld)
+            "-o", obj_file.to_str().unwrap(),
+            asm_file.to_str().unwrap(),
+        ])
+        .status()
+        .expect("Failed to run NASM");
+    
+    assert!(status.success(), "NASM compilation failed!");
+    
+    // Link the object file directly
+    println!("cargo:rustc-link-arg={}", obj_file.display());
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=x86_64-rany_os.json");
@@ -83,6 +112,9 @@ fn main() {
 
     // Print build information
     print_build_info();
+
+    // Compile assembly files
+    compile_assembly();
 
     // Setup linker configuration (NEW: ここを変更)
     // リンカースクリプトの絶対パスを解決して cargo に伝えます
