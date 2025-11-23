@@ -562,8 +562,26 @@ where
     // Copy entries 256-511 (kernel space in canonical addressing)
     // Entry 256 maps: 0xFFFF_8000_0000_0000 - 0xFFFF_807F_FFFF_FFFF (512 GiB)
     // Entry 511 maps: 0xFFFF_FF80_0000_0000 - 0xFFFF_FFFF_FFFF_FFFF (512 GiB)
-    for i in 256..512 {
-        page_table[i] = kernel_pt[i].clone();
+    
+    // DEBUG: Check which kernel entries are actually present
+    let mut present_count = 0;
+    for i in 0..512 {
+        if !kernel_pt[i].is_unused() {
+            if i < 256 {
+                crate::debug_println!("[create_user_page_table] Kernel entry {}: flags={:?}", i, kernel_pt[i].flags());
+            }
+            present_count += 1;
+        }
+    }
+    crate::debug_println!("[create_user_page_table] Kernel has {} present entries", present_count);
+    
+    // CRITICAL: Copy ALL kernel entries (0-511), not just upper half!
+    // The kernel may have essential mappings in lower entries too
+    // (e.g., physical memory offset, UEFI runtime services)
+    for i in 0..512 {
+        if !kernel_pt[i].is_unused() {
+            page_table[i] = kernel_pt[i].clone();
+        }
     }
     
     Ok(frame)
@@ -815,60 +833,79 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr) -> !
     
     // CRITICAL: Switch to user page table BEFORE jumping to user space!
     // Get current process and load its page table
+    crate::debug_println!("[jump_to_usermode] About to acquire PROCESS_TABLE lock...");
     let user_cr3 = {
         let table = PROCESS_TABLE.lock();
+        crate::debug_println!("[jump_to_usermode] PROCESS_TABLE lock acquired");
         let process = table.current_process().expect("No current process for jump_to_usermode");
-        process.page_table_phys_addr()
+        let cr3 = process.page_table_phys_addr();
+        crate::debug_println!("[jump_to_usermode] Process PID={:?}, CR3={:#x}", process.pid(), cr3);
+        cr3
     };
+    crate::debug_println!("[jump_to_usermode] PROCESS_TABLE lock released");
     
     crate::debug_println!("[jump_to_usermode] CR3 will be set to: {:#x}", user_cr3);
     
-    // Switch to user page table
-    unsafe {
-        Cr3::write(
-            PhysFrame::containing_address(PhysAddr::new(user_cr3)),
-            Cr3Flags::empty(),
-        );
+    // Verify user_cr3 is valid (not zero, page-aligned)
+    if user_cr3 == 0 {
+        crate::debug_println!("[ERROR] user_cr3 is NULL! Cannot switch page tables.");
+        loop { x86_64::instructions::hlt(); }
+    }
+    if user_cr3 & 0xFFF != 0 {
+        crate::debug_println!("[ERROR] user_cr3 not page-aligned: {:#x}", user_cr3);
+        loop { x86_64::instructions::hlt(); }
     }
     
-    crate::debug_println!("[jump_to_usermode] CR3 switched, about to iretq...");
-    
     // GDT selector values (must match your GDT setup)
-    // Typically: USER_DATA_SELECTOR = 0x20 | 3, USER_CODE_SELECTOR = 0x18 | 3
     const USER_DATA_SELECTOR: u64 = 0x23; // Ring 3 data segment (0x20 | 3)
     const USER_CODE_SELECTOR: u64 = 0x1B; // Ring 3 code segment (0x18 | 3)
     
-    // Prepare RFLAGS: enable interrupts (IF=1)
-    let rflags = (RFlags::INTERRUPT_FLAG).bits();
+    // Prepare RFLAGS: enable interrupts (IF=1) and set reserved bit 1
+    // Bit 1 MUST always be 1, and bit 9 (IF) should be 1 for interrupts
+    let rflags: u64 = 0x202;  // IF (bit 9) | Reserved bit 1
     
-    // Use iretq instruction to return to user mode
-    // Stack layout for iretq (pushed in reverse order):
-    // [SS, RSP, RFLAGS, CS, RIP]
+    crate::debug_println!("[jump_to_usermode] About to switch CR3 and iretq: RIP={:#x}, RSP={:#x}, RFLAGS={:#x}",
+        entry_point.as_u64(), user_stack.as_u64(), rflags);
+    
+    // CRITICAL: After CR3 switch, we can no longer safely access kernel data/code
+    // We must perform the entire transition in one atomic assembly block:
+    // 1. Switch CR3 to user page table
+    // 2. Set up segment registers
+    // 3. Push iretq frame
+    // 4. Execute iretq to jump to user mode
     unsafe {
         core::arch::asm!(
-            "cli",                    // Disable interrupts during transition
+            // Step 1: Switch to user page table
+            "mov cr3, {cr3}",
             
-            // Set segment registers (use 16-bit ax register for segment loads)
-            "mov ax, {0:x}",          // Load USER_DATA_SELECTOR into ax
+            // Step 2: Disable interrupts during transition
+            "cli",
+            
+            // Step 3: Set segment registers to user data segment
+            "mov ax, 0x23",           // USER_DATA_SELECTOR
             "mov ds, ax",             // Set data segment
             "mov es, ax",             // Set extra segment
             "mov fs, ax",             // Set FS
             "mov gs, ax",             // Set GS
             
-            // Push iretq frame (in reverse order: SS, RSP, RFLAGS, CS, RIP)
-            "push {0}",               // SS (stack segment) - 64-bit push
-            "push {1}",               // RSP (user stack pointer)
-            "push {2}",               // RFLAGS
-            "push {3}",               // CS (code segment) - 64-bit push
-            "push {4}",               // RIP (entry point)
+            // Step 4: Push iretq frame (in reverse order: SS, RSP, RFLAGS, CS, RIP)
+            "xor rax, rax",           // Clear rax completely
+            "mov ax, 0x23",           // SS - USER_DATA_SELECTOR
+            "push rax",
+            "push {rsp}",             // RSP (user stack pointer)
+            "push {rflags}",          // RFLAGS
+            "xor rax, rax",           // Clear rax again
+            "mov ax, 0x1b",           // CS - USER_CODE_SELECTOR
+            "push rax",
+            "push {rip}",             // RIP (entry point)
             
-            "iretq",                  // Return to user mode
+            // Step 5: Execute iretq to jump to user mode
+            "iretq",
             
-            in(reg) USER_DATA_SELECTOR,
-            in(reg) user_stack.as_u64(),
-            in(reg) rflags,
-            in(reg) USER_CODE_SELECTOR,
-            in(reg) entry_point.as_u64(),
+            cr3 = in(reg) user_cr3,
+            rsp = in(reg) user_stack.as_u64(),
+            rflags = in(reg) rflags,
+            rip = in(reg) entry_point.as_u64(),
             options(noreturn)
         )
     }

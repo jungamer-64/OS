@@ -23,8 +23,8 @@ pub enum LoadError {
 /// In Phase 2, we embed the compiled user program directly into the kernel.
 /// Phase 3 will implement proper ELF loading from disk.
 /// 
-/// Note: The shell binary is built in userland_shell/ and converted to .bin format
-static USER_PROGRAM: &[u8] = include_bytes!("../../userland_shell/target/x86_64-unknown-none/release/shell.bin");
+/// Note: The shell binary is built in userland/programs/shell/ and converted to .bin format
+static USER_PROGRAM: &[u8] = include_bytes!("../../userland/programs/shell/target/x86_64-unknown-none/debug/shell.bin");
 
 /// Load embedded user program into a new process
 ///
@@ -42,7 +42,10 @@ where
     A: FrameAllocator<Size4KiB>,
 {
     let code = USER_PROGRAM;
-    let entry_point = VirtAddr::new(USER_CODE_BASE);
+    // TEMPORARY FIX: shell.bin has .rodata before .text in ELF layout
+    // The actual _start function is at offset 0x5b50 in the binary
+    // TODO: Fix build process to produce correct binary layout
+    let entry_point = VirtAddr::new(USER_CODE_BASE + 0x5b50);
     
     // Map code into user space
     // We need to pass physical_memory_offset? 

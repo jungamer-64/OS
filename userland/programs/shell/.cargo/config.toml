@@ -1,8 +1,10 @@
 [build]
-target = "x86_64-unknown-none"
+target = "x86_64-rany_os.json"
 
-[target.x86_64-unknown-none]
+[target.x86_64-rany_os]
 rustflags = [
-    "-C", "link-arg=-Tlink.ld",
+    "-C", "link-arg=-T../../userland/programs/shell/link.ld",
     "-C", "relocation-model=static",
+    "-C", "link-arg=-no-pie",
+    "-C", "link-arg=--no-dynamic-linker",
 ]
