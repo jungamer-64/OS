@@ -1,8 +1,30 @@
+# ============================================================================
+# Workspace Configuration
+# ============================================================================
+#
+# This workspace contains the Tiny OS kernel and userland programs.
+# The workspace is organized as follows:
+#
+# - kernel/              - The OS kernel (Ring 0, no_std)
+# - userland/libuser/    - Standard library for userland programs
+# - userland/programs/   - Userland programs (Ring 3, no_std)
+#
+# IMPORTANT: Kernel and userland are strictly separated:
+# - Kernel MUST NOT depend on userland crates
+# - Userland MUST NOT depend on kernel internals
+# - Communication is ONLY through system calls
+#
+# Build order:
+# 1. libuser        - User standard library
+# 2. userland programs - Shell, init, etc.
+# 3. kernel         - OS kernel (embeds userland programs)
+
 [workspace]
 members = [
-    "kernel",
-    "userland/libuser",
-    "userland/programs/shell",
+    "kernel",                     # OS kernel
+    "userland/libuser",           # Userland standard library
+    "userland/programs/shell",    # Interactive shell
+    # "userland/programs/init",   # TODO: Phase 5 - Init process
 ]
 resolver = "2"
 

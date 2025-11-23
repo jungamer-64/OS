@@ -28,7 +28,7 @@
 //! A more sophisticated allocator will be implemented in Phase 5.
 
 use crate::syscall;
-use crate::mem::{PROT_READ, PR OT_WRITE, MAP_PRIVATE, MAP_ANONYMOUS};
+use crate::mem::{PROT_READ, PROT_WRITE, MAP_PRIVATE, MAP_ANONYMOUS};
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 

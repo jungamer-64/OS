@@ -895,14 +895,10 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
             "mov gs, ax",             // Set GS
             
             // Push iretq frame (in reverse order: SS, RSP, RFLAGS, CS, RIP)
-            "xor rax, rax",           // Clear rax completely
-            "mov ax, 0x23",           // SS - USER_DATA_SELECTOR
-            "push rax",
+            "push 0x23",              // SS - USER_DATA_SELECTOR (immediate)
             "push {rsp}",             // RSP (user stack pointer)
             "push {rflags}",          // RFLAGS
-            "xor rax, rax",           // Clear rax again
-            "mov ax, 0x1b",           // CS - USER_CODE_SELECTOR
-            "push rax",
+            "push 0x1b",              // CS - USER_CODE_SELECTOR (immediate)
             "push {rip}",             // RIP (entry point)
             
             // **CRITICAL**: Switch CR3 and IMMEDIATELY iretq (NO instructions between!)

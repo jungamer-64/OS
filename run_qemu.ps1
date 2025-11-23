@@ -59,10 +59,13 @@ try {
     # 1) Build kernel (uses nightly to match the repository's build config)
     if (-not $SkipBuild) {
         Write-Host "Building kernel (rustup run nightly cargo build --target x86_64-rany_os.json) ..." -ForegroundColor Cyan
+        Push-Location (Join-Path $scriptDir "kernel")
         & rustup run nightly cargo build --target x86_64-rany_os.json
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "Kernel build failed (exit $LASTEXITCODE). Aborting." -ForegroundColor Red
-            Pop-Location; exit $LASTEXITCODE
+        $buildExit = $LASTEXITCODE
+        Pop-Location
+        if ($buildExit -ne 0) {
+            Write-Host "Kernel build failed (exit $buildExit). Aborting." -ForegroundColor Red
+            Pop-Location; exit $buildExit
         }
     } else {
         Write-Host "Skipping kernel build ( -SkipBuild was provided )." -ForegroundColor Yellow
@@ -120,6 +123,10 @@ try {
     $qemuArgs += "128M"
     $qemuArgs += "-no-reboot"
     $qemuArgs += "-no-shutdown"
+    $qemuArgs += "-d"
+    $qemuArgs += "int,cpu_reset"
+    $qemuArgs += "-D"
+    $qemuArgs += "qemu.log"
 
     if ($ExtraQemuArgs -ne "") {
         # Split extra args by spaces (simple handling); advanced parsing is left to the caller
