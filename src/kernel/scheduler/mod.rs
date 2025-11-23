@@ -10,6 +10,12 @@ pub struct RoundRobinScheduler {
     current_pid: Option<ProcessId>,
 }
 
+impl Default for RoundRobinScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RoundRobinScheduler {
     pub const fn new() -> Self {
         Self { current_pid: None }

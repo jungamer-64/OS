@@ -234,6 +234,7 @@ pub fn sys_mmap(addr: u64, len: u64, _prot: u64, _flags: u64, _fd: u64, _offset:
     
     // Align length to page size
     let len_aligned = (len + 4095) & !4095;
+    let num_pages = (len_aligned / 4096) as usize;
     
     let mut table = PROCESS_TABLE.lock();
     let process = match table.current_process_mut() {
@@ -287,15 +288,46 @@ pub fn sys_mmap(addr: u64, len: u64, _prot: u64, _flags: u64, _fd: u64, _offset:
     
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
     
-    for page in page_range {
+    // Track allocated pages for rollback
+    // Since we don't have a Vec, we can't easily store them all if the count is large.
+    // However, we are mapping a contiguous range.
+    // If we fail at index i, we need to unmap pages 0 to i-1.
+    
+    for i in 0..num_pages {
+        let page = page_range.start + i as u64;
         let frame = match frame_allocator.allocate_frame() {
             Some(f) => f,
-            None => return ENOMEM,
+            None => {
+                // Rollback: Unmap previously mapped pages
+                for j in 0..i {
+                    let page_to_unmap = page_range.start + j as u64;
+                    if let Ok((frame, _)) = mapper.unmap(page_to_unmap) {
+                        x86_64::instructions::tlb::flush(page_to_unmap.start_address());
+                        unsafe {
+                            frame_allocator.deallocate_frame(frame);
+                        }
+                    }
+                }
+                return ENOMEM;
+            }
         };
+        
         unsafe {
             match mapper.map_to(page, frame, flags, frame_allocator) {
                 Ok(tlb) => tlb.flush(),
-                Err(_) => return ENOMEM, // TODO: Cleanup on failure
+                Err(_) => {
+                    // Rollback this frame and previous pages
+                    frame_allocator.deallocate_frame(frame);
+                    
+                    for j in 0..i {
+                        let page_to_unmap = page_range.start + j as u64;
+                        if let Ok((frame, _)) = mapper.unmap(page_to_unmap) {
+                            x86_64::instructions::tlb::flush(page_to_unmap.start_address());
+                            frame_allocator.deallocate_frame(frame);
+                        }
+                    }
+                    return ENOMEM;
+                }
             }
         }
     }
@@ -361,12 +393,18 @@ pub fn sys_munmap(addr: u64, len: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6
     for page in page_range {
         // Unmap
         // We ignore errors (e.g. page not mapped)
-        if let Ok((_frame, _flags)) = mapper.unmap(page) {
+        if let Ok((frame, _flags)) = mapper.unmap(page) {
             // Flush TLB
             x86_64::instructions::tlb::flush(page.start_address());
             
-            // TODO: Free frame
-            // We can't free frames yet.
+            // Free the physical frame
+            let mut allocator_lock = crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR.lock();
+            if let Some(frame_allocator) = allocator_lock.as_mut() {
+                // SAFETY: Frame was allocated by this allocator and is no longer in use
+                unsafe {
+                    frame_allocator.deallocate_frame(frame);
+                }
+            }
         }
     }
     

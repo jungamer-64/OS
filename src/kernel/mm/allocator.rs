@@ -68,11 +68,11 @@ impl HeapStats {
 struct ListNode {
     size: LayoutSize,
     next: Option<&'static mut ListNode>,
-    #[cfg(debug_assertions)]
-    magic: u32, // ヒープ破損検出用マジックナンバー
+    // Always include magic number for heap corruption detection
+    // (not just in debug builds to maintain consistent size)
+    magic: u32,
 }
 
-#[cfg(debug_assertions)]
 const HEAP_MAGIC: u32 = 0xDEADBEEF;
 
 impl ListNode {
@@ -80,7 +80,6 @@ impl ListNode {
         Self {
             size,
             next: None,
-            #[cfg(debug_assertions)]
             magic: HEAP_MAGIC,
         }
     }
@@ -94,7 +93,6 @@ impl ListNode {
             .expect("ListNode end address overflow")
     }
     
-    #[cfg(debug_assertions)]
     fn verify_magic(&self) -> bool {
         self.magic == HEAP_MAGIC
     }
@@ -131,11 +129,20 @@ impl LinkedListAllocator {
         // ListNode のアラインメントを考慮して、実際に使える開始アドレスとサイズを計算する
         let node_align = mem::align_of::<ListNode>();
 
+        use crate::debug_println;
+        debug_println!("[HEAP] init: heap_start={:#x}, heap_size={}", heap_start.as_usize(), heap_size.as_usize());
+        debug_println!("[HEAP] ListNode: size={}, align={}", core::mem::size_of::<ListNode>(), node_align);
+
         // PhysAddr::align_up を使用（車輪の再発明を削除）
         let aligned_start = match heap_start.align_up(node_align) {
             Some(a) => a,
-            None => return, // アラインメント計算不可
+            None => {
+                debug_println!("[HEAP] ERROR: Failed to align heap_start");
+                return; // アラインメント計算不可
+            }
         };
+
+        debug_println!("[HEAP] aligned_start={:#x}", aligned_start.as_usize());
 
         // 切り上げで減った先頭分
         let head_shrink = aligned_start.as_usize().saturating_sub(heap_start.as_usize());
@@ -144,23 +151,29 @@ impl LinkedListAllocator {
         let heap_size_val = heap_size.as_usize();
         if heap_size_val <= head_shrink {
             // 元サイズが小さすぎて使える領域がない
+            debug_println!("[HEAP] ERROR: heap too small after alignment");
             return;
         }
         let usable_size = LayoutSize::new(heap_size_val - head_shrink);
 
+        debug_println!("[HEAP] usable_size={}, min_size={}", usable_size.as_usize(), mem::size_of::<ListNode>());
+
         // usable_size が ListNode を置ける最小サイズより小さいなら初期化失敗扱い
         if usable_size.as_usize() < mem::size_of::<ListNode>() {
+            debug_println!("[HEAP] ERROR: usable_size too small for ListNode");
             return;
         }
 
         // stats.heap_capacity は実際に使えるサイズを記録する
         self.stats.heap_capacity = usable_size;
 
+        debug_println!("[HEAP] Calling add_free_region...");
         // 実際に free リージョンを追加（aligned_start, usable_size）
         // Safety: aligned_start は align_up によって ListNode のアラインに整えられている
         unsafe {
             self.add_free_region(aligned_start, usable_size);
         }
+        debug_println!("[HEAP] init complete");
     }
 
     /// 指定された領域を空きリストに追加し、隣接ブロックと結合
@@ -283,13 +296,18 @@ impl LinkedListAllocator {
     /// 指定されたサイズとアラインメントに適した領域を見つける
     fn find_region(&mut self, size: usize, align: usize) -> Option<(&'static mut ListNode, usize)> {
         let mut current = &mut self.head;
+        let mut count = 0;
 
         while let Some(ref mut region) = current.next {
-            #[cfg(debug_assertions)]
-            {
-                if !region.verify_magic() {
-                    panic!("Heap corruption detected: invalid magic number in ListNode");
-                }
+            count += 1;
+            use crate::debug_println;
+            debug_println!("[DEBUG] find_region: checking node #{}, addr={:#x}, size={}, magic={:#x}",
+                count, region.start_addr().as_usize(), region.size.as_usize(), region.magic);
+            
+            if !region.verify_magic() {
+                debug_println!("[ERROR] Invalid magic at node #{}: expected {:#x}, got {:#x}",
+                    count, HEAP_MAGIC, region.magic);
+                panic!("Heap corruption detected: invalid magic number in ListNode");
             }
 
             if let Ok(alloc_start) = Self::alloc_from_region(region, size, align) {

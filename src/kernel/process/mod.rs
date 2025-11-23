@@ -138,6 +138,26 @@ pub struct Process {
     mmap_top: VirtAddr,
 }
 
+impl Drop for Process {
+    fn drop(&mut self) {
+        use crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR;
+        // use x86_64::structures::paging::FrameDeallocator; // Trait imported but not used? Wait, deallocate_frame needs it.
+
+        // Free page table frame
+        let mut allocator_lock = BOOT_INFO_ALLOCATOR.lock();
+        if let Some(frame_allocator) = allocator_lock.as_mut() {
+            unsafe {
+                frame_allocator.deallocate_frame(self.page_table_frame);
+            }
+        }
+        
+        // TODO: Free kernel stack
+        // TODO: Free all user pages (requires walking the page table)
+        
+        crate::debug_println!("[Process] Dropped PID={} (Freed page table frame)", self.pid.as_u64());
+    }
+}
+
 impl Process {
     /// Create a new process from a loaded program
     ///

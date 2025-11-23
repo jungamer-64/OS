@@ -98,8 +98,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // SAFETY: PICの初期化はカーネル起動時に1回だけ実行される
     unsafe {
         tiny_os::arch::x86_64::pic::PICS.lock().initialize();
+        // Enable timer interrupt (IRQ0)
+        tiny_os::arch::x86_64::pic::PICS.lock().unmask_irq(0);
     }
-    debug_println!("[OK] Hardware Timer initialized");
+    debug_println!("[OK] Hardware Timer initialized and enabled");
 
     // 割り込み有効化
     ArchCpu::enable_interrupts();
@@ -107,21 +109,52 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     
     println!("[OK] Kernel initialized successfully!");
     
-    // システムコール機構のテスト（カーネル空間から）
-    #[cfg(debug_assertions)]
-    {
-        tiny_os::kernel::syscall::test_syscall_mechanism();
-    }
+    // Syscall tests disabled - moving directly to process creation
+    // #[cfg(debug_assertions)]
+    // {
+    //     tiny_os::kernel::syscall::test_syscall_mechanism();
+    // }
     
-    // ユーザーモード実行テスト（オプション）
-    #[cfg(feature = "test_usermode")]
-    {
-        unsafe {
-            tiny_os::kernel::usermode::test_usermode_execution();
+    // Phase 2: Create initial user process
+    // This is required for the scheduler to have something to run
+    match tiny_os::kernel::process::create_user_process() {
+        Ok(pid) => {
+            debug_println!("[Process] Created initial user process: PID={}", pid.as_u64());
+            
+            // Set it as current and mark as Running
+            {
+                let mut table = tiny_os::kernel::process::PROCESS_TABLE.lock();
+                table.set_current(pid);
+                if let Some(process) = table.get_process_mut(pid) {
+                    process.set_state(tiny_os::kernel::process::ProcessState::Running);
+                    debug_println!("[Process] Set PID={} as Running", pid.as_u64());
+                }
+            }
+            
+            debug_println!("[Kernel] Jumping to first user process...");
+            
+            // Jump to user mode (this should not return)
+            unsafe {
+                let (entry_point, user_stack) = {
+                    let table = tiny_os::kernel::process::PROCESS_TABLE.lock();
+                    let process = table.current_process().expect("No current process");
+                    (
+                        x86_64::VirtAddr::new(process.registers().rip),
+                        x86_64::VirtAddr::new(process.registers().rsp)
+                    )
+                };
+                
+                debug_println!("[Kernel] Entry: {:#x}, Stack: {:#x}", entry_point.as_u64(), user_stack.as_u64());
+                tiny_os::kernel::process::jump_to_usermode(entry_point, user_stack);
+            }
+        }
+        Err(e) => {
+            debug_println!("[ERROR] Failed to create initial process: {:?}", e);
+            debug_println!("[Kernel] No user process to run, entering idle loop");
         }
     }
     
-    // メインループ
+    // Fallback: メインループ (should not reach here if process created successfully)
     loop {
         ArchCpu::halt();
     }

@@ -23,19 +23,8 @@ pub enum LoadError {
 /// In Phase 2, we embed the compiled user program directly into the kernel.
 /// Phase 3 will implement proper ELF loading from disk.
 /// 
-/// Note: We use a dummy array for now until we have a real user program.
-#[repr(C, align(4096))]
-struct EmbeddedProgram {
-    // data: [u8; include_bytes!("../../target/userland/user_program.bin").len()],
-    // Temporary placeholder: infinite loop
-    // eb fe (jmp $)
-    data: [u8; 2], 
-}
-
-static USER_PROGRAM: EmbeddedProgram = EmbeddedProgram {
-    // data: *include_bytes!("../../target/userland/user_program.bin"),
-    data: [0xeb, 0xfe], // jmp $
-};
+/// Note: The shell binary is built in userland_shell/ and converted to .bin format
+static USER_PROGRAM: &[u8] = include_bytes!("../../userland_shell/target/x86_64-unknown-none/release/shell.bin");
 
 /// Load embedded user program into a new process
 ///
@@ -52,7 +41,7 @@ pub fn load_user_program<A>(
 where
     A: FrameAllocator<Size4KiB>,
 {
-    let code = &USER_PROGRAM.data;
+    let code = USER_PROGRAM;
     let entry_point = VirtAddr::new(USER_CODE_BASE);
     
     // Map code into user space

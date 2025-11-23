@@ -157,7 +157,20 @@ extern "x86-interrupt" fn page_fault_handler(
 
 #[allow(clippy::missing_const_for_fn)]
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // 何もしない - EOIさえ送らずリターン
+    use crate::arch::x86_64::pic::PICS;
+    
+    // Timer tick - trigger process scheduler
+    // Note: We should only schedule if we're in user mode (not in kernel critical sections)
+    // For now, we'll just trigger scheduling unconditionally
+    
+    // Send EOI first to allow nested interrupts if needed
+    unsafe {
+        PICS.lock().notify_end_of_interrupt(32);
+    }
+    
+    // Trigger process scheduler
+    // This will pick the next ready process and switch to it
+    crate::kernel::process::schedule_next();
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {

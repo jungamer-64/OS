@@ -3,16 +3,19 @@
 //! ブートローダから渡されたメモリマップに基づいて、物理メモリフレームを管理します。
 
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
-use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
+use x86_64::structures::paging::{FrameAllocator, FrameDeallocator, PhysFrame, Size4KiB};
 use x86_64::PhysAddr;
+use alloc::collections::VecDeque;
 
 /// ブート情報（メモリマップ）に基づくフレームアロケータ
 ///
-/// 単純なバンプアロケータとして実装されており、一度割り当てたフレームは再利用しません。
-/// OS起動時の初期化段階で使用することを想定しています。
+/// バンプアロケータ + フリーリストのハイブリッド実装。
+/// 解放されたフレームはフリーリストで再利用されます。
 pub struct BootInfoFrameAllocator {
     memory_map: &'static MemoryRegions,
     next: usize,
+    /// 解放されたフレームのリスト（再利用可能）
+    free_frames: VecDeque<PhysFrame<Size4KiB>>,
 }
 
 impl BootInfoFrameAllocator {
@@ -50,6 +53,7 @@ impl BootInfoFrameAllocator {
         BootInfoFrameAllocator {
             memory_map,
             next: 0,
+            free_frames: VecDeque::new(),
         }
     }
 
@@ -71,13 +75,42 @@ impl BootInfoFrameAllocator {
         // 範囲をフラットなフレーム列に変換
         addr_ranges.flatten()
     }
+    
+    /// フレームを解放してフリーリストに追加
+    ///
+    /// # Safety
+    ///
+    /// 呼び出し側は以下を保証する必要があります:
+    /// - `frame` がこのアロケータから割り当てられたものであること
+    /// - `frame` が他の場所で使用されていないこと
+    /// - `frame` が二重解放されないこと
+    pub unsafe fn deallocate_frame(&mut self, frame: PhysFrame<Size4KiB>) {
+        // フリーリストに追加
+        self.free_frames.push_back(frame);
+    }
 }
 
 unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        // まずフリーリストから取得を試みる
+        if let Some(frame) = self.free_frames.pop_front() {
+            return Some(frame);
+        }
+        
+        // フリーリストが空の場合は通常の割り当て
         let frame = self.usable_frames().nth(self.next);
         self.next += 1;
         frame
+    }
+}
+
+impl FrameDeallocator<Size4KiB> for BootInfoFrameAllocator {
+    unsafe fn deallocate_frame(&mut self, frame: PhysFrame<Size4KiB>) {
+        // 内部実装を呼び出し
+        // SAFETY: Caller guarantees frame is valid and not in use
+        unsafe {
+            self.deallocate_frame(frame);
+        }
     }
 }
 
@@ -85,3 +118,4 @@ unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
 // Access to the allocator itself is synchronized via Mutex in BOOT_INFO_ALLOCATOR.
 unsafe impl Send for BootInfoFrameAllocator {}
 unsafe impl Sync for BootInfoFrameAllocator {}
+
