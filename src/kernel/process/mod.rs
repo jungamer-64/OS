@@ -864,8 +864,9 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr) -> !
     // Bit 1 MUST always be 1, and bit 9 (IF) should be 1 for interrupts
     let rflags: u64 = 0x202;  // IF (bit 9) | Reserved bit 1
     
-    crate::debug_println!("[jump_to_usermode] About to switch CR3 and iretq: RIP={:#x}, RSP={:#x}, RFLAGS={:#x}",
-        entry_point.as_u64(), user_stack.as_u64(), rflags);
+    // Note: debug_println! commented out to avoid potential issues before CR3 switch
+    // crate::debug_println!("[jump_to_usermode] About to switch CR3 and iretq: RIP={:#x}, RSP={:#x}, RFLAGS={:#x}",
+    //     entry_point.as_u64(), user_stack.as_u64(), rflags);
     
     // CRITICAL: After CR3 switch, we can no longer safely access kernel data/code
     // We must perform the entire transition in one atomic assembly block:

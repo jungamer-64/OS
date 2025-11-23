@@ -560,6 +560,12 @@ pub fn dispatch(
     arg5: u64,
     arg6: u64,
 ) -> SyscallResult {
+    // Always log syscall entry for Phase 2.5 debugging
+    crate::debug_println!(
+        "[SYSCALL-ENTRY] num={}, args=({:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})",
+        syscall_num, arg1, arg2, arg3, arg4, arg5, arg6
+    );
+    
     let num = syscall_num as usize;
     
     if num >= SYSCALL_TABLE.len() {
@@ -573,7 +579,12 @@ pub fn dispatch(
     );
     
     let handler = SYSCALL_TABLE[num];
-    handler(arg1, arg2, arg3, arg4, arg5, arg6)
+    let result = handler(arg1, arg2, arg3, arg4, arg5, arg6);
+    
+    // Log syscall result
+    crate::debug_println!("[SYSCALL-RESULT] num={} returned {}", syscall_num, result);
+    
+    result
 }
 
 /// Test syscall mechanism from kernel space
