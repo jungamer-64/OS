@@ -364,10 +364,51 @@ pub fn sys_mmap(addr: u64, len: u64, _prot: u64, _flags: u64, _fd: u64, _offset:
     start_addr.as_u64() as SyscallResult
 }
 
+/// sys_pipe - Create a pipe
+pub fn sys_pipe(pipefd: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    use crate::kernel::process::PROCESS_TABLE;
+    use crate::kernel::fs::pipe::{Pipe, PipeReader, PipeWriter};
+    use alloc::sync::Arc;
+    use spin::Mutex;
+
+    if !is_user_address(pipefd) {
+        return EFAULT;
+    }
+
+    // Create pipe
+    let pipe = Arc::new(Mutex::new(Pipe::new()));
+    
+    let reader = Arc::new(Mutex::new(PipeReader {
+        pipe: pipe.clone(),
+    }));
+    
+    let writer = Arc::new(Mutex::new(PipeWriter {
+        pipe,
+    }));
+
+    // Add FDs to process
+    let mut table = PROCESS_TABLE.lock();
+    let process = match table.current_process_mut() {
+        Some(p) => p,
+        None => return ESRCH,
+    };
+
+    let read_fd = process.add_file_descriptor(reader);
+    let write_fd = process.add_file_descriptor(writer);
+
+    // Write FDs to user memory
+    // TODO: Validate that pipefd is writable
+    unsafe {
+        let pipefd_ptr = pipefd as *mut u64;
+        *pipefd_ptr = read_fd;
+        *pipefd_ptr.add(1) = write_fd;
+    }
+
+    SUCCESS
+}
+
 /// sys_munmap - Unmap memory
 pub fn sys_munmap(addr: u64, len: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-
-    
     if len == 0 {
         return EINVAL;
     }
@@ -398,17 +439,16 @@ pub fn sys_munmap(addr: u64, len: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6
             x86_64::instructions::tlb::flush(page.start_address());
             
             // Free the physical frame
-            let mut allocator_lock = crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR.lock();
-            if let Some(frame_allocator) = allocator_lock.as_mut() {
-                // SAFETY: Frame was allocated by this allocator and is no longer in use
-                unsafe {
+            unsafe {
+                let mut allocator_lock = crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR.lock();
+                if let Some(frame_allocator) = allocator_lock.as_mut() {
                     frame_allocator.deallocate_frame(frame);
                 }
             }
         }
     }
     
-    0
+    SUCCESS
 }
 
 /// Syscall handler function type
@@ -427,6 +467,7 @@ static SYSCALL_TABLE: &[SyscallHandler] = &[
     sys_wait,     // 8
     sys_mmap,     // 9
     sys_munmap,   // 10
+    sys_pipe,     // 11
 ];
 
 /// Dispatch a syscall to its handler

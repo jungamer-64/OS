@@ -119,10 +119,10 @@ pub fn fork_process() -> Result<ProcessId, CreateError> {
     let phys_mem_offset = VirtAddr::new(PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed));
     
     // 1. Get current process info
-    let (current_pid, current_registers) = {
+    let (current_pid, current_registers, (parent_fds, parent_next_fd)) = {
         let table = PROCESS_TABLE.lock();
         let process = table.current_process().ok_or(CreateError::PageTableCreationError("No current process"))?;
-        (process.pid(), *process.registers())
+        (process.pid(), *process.registers(), process.clone_file_descriptors())
     };
     
     // 2. Duplicate page table
@@ -177,6 +177,9 @@ pub fn fork_process() -> Result<ProcessId, CreateError> {
     
     // Copy registers
     *child_process.registers_mut() = current_registers;
+
+    // Copy file descriptors
+    child_process.set_file_descriptors(parent_fds, parent_next_fd);
     
     // Set return value for child to 0
     child_process.registers_mut().rax = 0;

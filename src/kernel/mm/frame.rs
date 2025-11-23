@@ -5,7 +5,7 @@
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
 use x86_64::structures::paging::{FrameAllocator, FrameDeallocator, PhysFrame, Size4KiB};
 use x86_64::PhysAddr;
-use alloc::collections::VecDeque;
+use alloc::collections::{VecDeque, BTreeMap};
 
 /// ブート情報（メモリマップ）に基づくフレームアロケータ
 ///
@@ -16,6 +16,8 @@ pub struct BootInfoFrameAllocator {
     next: usize,
     /// 解放されたフレームのリスト（再利用可能）
     free_frames: VecDeque<PhysFrame<Size4KiB>>,
+    /// フレームの参照カウント
+    references: BTreeMap<PhysFrame<Size4KiB>, usize>,
 }
 
 impl BootInfoFrameAllocator {
@@ -54,6 +56,7 @@ impl BootInfoFrameAllocator {
             memory_map,
             next: 0,
             free_frames: VecDeque::new(),
+            references: BTreeMap::new(),
         }
     }
 
@@ -76,6 +79,29 @@ impl BootInfoFrameAllocator {
         addr_ranges.flatten()
     }
     
+    /// フレームの参照カウントを増やす
+    pub fn add_reference(&mut self, frame: PhysFrame<Size4KiB>) {
+        let count = self.references.entry(frame).or_insert(0);
+        *count += 1;
+    }
+
+    /// フレームの参照カウントを減らす
+    ///
+    /// 参照カウントが0になった場合はtrueを返し、呼び出し元で解放処理を行う必要があることを示します。
+    /// (このメソッド自体は解放を行いません)
+    pub fn remove_reference(&mut self, frame: PhysFrame<Size4KiB>) -> bool {
+        if let Some(count) = self.references.get_mut(&frame) {
+            *count -= 1;
+            if *count == 0 {
+                self.references.remove(&frame);
+                return true;
+            }
+            return false;
+        }
+        // 参照がない場合は既に解放されているとみなす（または管理外）
+        true
+    }
+
     /// フレームを解放してフリーリストに追加
     ///
     /// # Safety
@@ -85,8 +111,11 @@ impl BootInfoFrameAllocator {
     /// - `frame` が他の場所で使用されていないこと
     /// - `frame` が二重解放されないこと
     pub unsafe fn deallocate_frame(&mut self, frame: PhysFrame<Size4KiB>) {
-        // フリーリストに追加
-        self.free_frames.push_back(frame);
+        // 参照カウントを減らす
+        if self.remove_reference(frame) {
+            // 参照がなくなった場合のみフリーリストに追加
+            self.free_frames.push_back(frame);
+        }
     }
 }
 
@@ -94,12 +123,18 @@ unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
         // まずフリーリストから取得を試みる
         if let Some(frame) = self.free_frames.pop_front() {
+            self.add_reference(frame);
             return Some(frame);
         }
         
         // フリーリストが空の場合は通常の割り当て
         let frame = self.usable_frames().nth(self.next);
         self.next += 1;
+        
+        if let Some(frame) = frame {
+            self.add_reference(frame);
+        }
+        
         frame
     }
 }

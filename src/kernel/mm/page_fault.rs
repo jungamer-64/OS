@@ -4,8 +4,10 @@
 //! including lazy allocation, copy-on-write, and stack growth.
 
 use x86_64::structures::idt::PageFaultErrorCode;
-use x86_64::{VirtAddr, structures::paging::{Page, PageTableFlags, Mapper, Size4KiB, FrameAllocator}};
+use x86_64::{VirtAddr, structures::paging::{Page, PageTableFlags, Mapper, Size4KiB, FrameAllocator, FrameDeallocator, Translate, mapper::TranslateResult}};
 use crate::kernel::mm::user_paging::{USER_STACK_TOP, USER_CODE_BASE};
+use crate::kernel::mm::paging::COW_FLAG;
+use crate::kernel::mm::BootInfoFrameAllocator;
 
 /// User stack size (64 KiB)
 const USER_STACK_SIZE: u64 = 64 * 1024;
@@ -27,6 +29,8 @@ pub enum PageFaultError {
     StackOverflow,
     /// Invalid address (not in user space)
     InvalidAddress,
+    /// Translation failed
+    TranslationFailed,
 }
 
 /// Page fault handler for user-space addresses
@@ -35,6 +39,7 @@ pub enum PageFaultError {
 /// - Lazy stack allocation (allocate stack pages on demand)
 /// - Stack growth (expand stack when needed)
 /// - Access violation detection
+/// - Copy-on-Write (CoW) handling
 ///
 /// # Arguments
 ///
@@ -46,15 +51,14 @@ pub enum PageFaultError {
 /// # Returns
 ///
 /// `Ok(())` if the page fault was successfully handled, `Err(PageFaultError)` otherwise
-pub fn handle_user_page_fault<M, A>(
+pub fn handle_user_page_fault<M>(
     fault_addr: VirtAddr,
     error_code: PageFaultErrorCode,
     mapper: &mut M,
-    frame_allocator: &mut A,
+    frame_allocator: &mut BootInfoFrameAllocator,
 ) -> PageFaultResult<()>
 where
-    M: Mapper<Size4KiB>,
-    A: FrameAllocator<Size4KiB>,
+    M: Mapper<Size4KiB> + Translate,
 {
     let fault_page = Page::containing_address(fault_addr);
     let fault_addr_u64 = fault_addr.as_u64();
@@ -74,6 +78,11 @@ where
         
         // Check if it's a protection violation (page is present but access denied)
         if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
+            // Check for CoW
+            if handle_cow_fault(fault_page, error_code, mapper, frame_allocator)? {
+                return Ok(());
+            }
+            
             debug_println!("[PageFault] Stack protection violation");
             return Err(PageFaultError::AccessViolation);
         }
@@ -100,6 +109,13 @@ where
                     .flush();
             }
             
+            // Zero-initialize the new stack page
+            unsafe {
+                let phys_offset = VirtAddr::new(crate::kernel::mm::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed));
+                let frame_ptr = (phys_offset + frame.start_address().as_u64()).as_mut_ptr::<u8>();
+                core::ptr::write_bytes(frame_ptr, 0, 4096);
+            }
+            
             debug_println!("[PageFault] Stack page allocated successfully");
             return Ok(());
         }
@@ -108,21 +124,96 @@ where
     // Check if the fault is in code region (should already be mapped)
     let code_end = USER_CODE_BASE + (1024 * 1024); // 1 MB max program size
     if fault_addr_u64 >= USER_CODE_BASE && fault_addr_u64 < code_end {
-        debug_println!("[PageFault] Code region fault - likely protection violation");
-        
-        // Code pages should be mapped by the loader
+        // Check for CoW
         if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
+             if handle_cow_fault(fault_page, error_code, mapper, frame_allocator)? {
+                return Ok(());
+            }
             // Trying to write to code segment
             return Err(PageFaultError::AccessViolation);
         }
+        
+        debug_println!("[PageFault] Code region fault - likely protection violation");
         
         // Code page not present - this shouldn't happen
         return Err(PageFaultError::InvalidAccess);
     }
     
+    // Check for generic CoW in other regions (heap, etc.)
+    if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
+        if handle_cow_fault(fault_page, error_code, mapper, frame_allocator)? {
+            return Ok(());
+        }
+    }
+    
     // Fault is outside valid user memory regions
     debug_println!("[PageFault] Invalid user address: {:#x}", fault_addr_u64);
     Err(PageFaultError::InvalidAddress)
+}
+
+/// Handle Copy-on-Write fault
+fn handle_cow_fault<M>(
+    page: Page<Size4KiB>,
+    error_code: PageFaultErrorCode,
+    mapper: &mut M,
+    frame_allocator: &mut BootInfoFrameAllocator,
+) -> PageFaultResult<bool>
+where
+    M: Mapper<Size4KiB> + Translate,
+{
+    // CoW only applies to write violations
+    if !error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
+        return Ok(false);
+    }
+
+    // Get current flags and frame
+    let (phys_frame, flags) = match mapper.translate(page.start_address()) {
+        TranslateResult::Mapped { frame, flags, .. } => (frame, flags),
+        _ => return Err(PageFaultError::TranslationFailed),
+    };
+        
+    // Check if CoW flag is set
+    if !flags.contains(COW_FLAG) {
+        return Ok(false);
+    }
+    
+    debug_println!("[PageFault] Handling CoW for page {:#x}", page.start_address().as_u64());
+    
+    // Allocate new frame
+    let new_frame = frame_allocator.allocate_frame().ok_or(PageFaultError::OutOfMemory)?;
+    
+    // Copy data
+    unsafe {
+        let phys_offset = VirtAddr::new(crate::kernel::mm::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed));
+        let src_ptr = (phys_offset + phys_frame.start_address().as_u64()).as_ptr::<u8>();
+        let dst_ptr = (phys_offset + new_frame.start_address().as_u64()).as_mut_ptr::<u8>();
+        core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, 4096);
+    }
+    
+    // Unmap old frame (this is tricky because unmap returns the frame, but we need to be careful not to double free if we just drop it)
+    // Actually, we should use `mapper.unmap` which returns the frame and flush.
+    // Then we call `frame_allocator.deallocate_frame` which handles ref count decrement.
+    
+    let (old_frame, flush) = mapper.unmap(page).map_err(|_| PageFaultError::TranslationFailed)?;
+    flush.flush();
+    
+    // Decrement ref count of old frame
+    unsafe {
+        frame_allocator.deallocate_frame(old_frame);
+    }
+    
+    // Map new frame with WRITABLE and NO CoW flag
+    let new_flags = (flags | PageTableFlags::WRITABLE) - COW_FLAG;
+    
+    unsafe {
+        mapper.map_to(page, new_frame, new_flags, frame_allocator)
+            .map_err(|_| PageFaultError::OutOfMemory)?
+            .flush();
+    }
+    
+    debug_println!("[PageFault] CoW complete for page {:#x}", page.start_address().as_u64());
+    
+    Ok(true)
 }
 
 /// Check if a virtual address is in valid user space range

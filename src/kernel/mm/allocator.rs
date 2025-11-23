@@ -84,11 +84,11 @@ impl ListNode {
         }
     }
 
-    fn start_addr(&self) -> PhysAddr {
-        unsafe { PhysAddr::new_unchecked(self as *const Self as usize) }
+    fn start_addr(&self) -> VirtAddr {
+        unsafe { VirtAddr::new_unchecked(self as *const Self as usize) }
     }
 
-    fn end_addr(&self) -> PhysAddr {
+    fn end_addr(&self) -> VirtAddr {
         self.start_addr().checked_add(self.size.as_usize())
             .expect("ListNode end address overflow")
     }
@@ -125,24 +125,21 @@ impl LinkedListAllocator {
     ///
     /// `heap_start` と `heap_size` は有効なヒープ領域を指している必要があります。
     /// この関数は一度だけ呼ばれる必要があります。
-    pub unsafe fn init(&mut self, heap_start: PhysAddr, heap_size: LayoutSize) {
+    pub unsafe fn init(&mut self, heap_start: VirtAddr, heap_size: LayoutSize) {
+        use crate::debug_println;
+        debug_println!("[DEBUG] init() called: heap_start={:#x}, heap_size={}", 
+                      heap_start.as_usize(), heap_size.as_usize());
+        debug_println!("[DEBUG] head before init: magic={:#x}, size={}", 
+                      self.head.magic, self.head.size.as_usize());
+        
         // ListNode のアラインメントを考慮して、実際に使える開始アドレスとサイズを計算する
         let node_align = mem::align_of::<ListNode>();
 
-        use crate::debug_println;
-        debug_println!("[HEAP] init: heap_start={:#x}, heap_size={}", heap_start.as_usize(), heap_size.as_usize());
-        debug_println!("[HEAP] ListNode: size={}, align={}", core::mem::size_of::<ListNode>(), node_align);
-
-        // PhysAddr::align_up を使用（車輪の再発明を削除）
+        // VirtAddr::align_up を使用
         let aligned_start = match heap_start.align_up(node_align) {
             Some(a) => a,
-            None => {
-                debug_println!("[HEAP] ERROR: Failed to align heap_start");
-                return; // アラインメント計算不可
-            }
+            None => return, // アラインメント計算不可
         };
-
-        debug_println!("[HEAP] aligned_start={:#x}", aligned_start.as_usize());
 
         // 切り上げで減った先頭分
         let head_shrink = aligned_start.as_usize().saturating_sub(heap_start.as_usize());
@@ -151,29 +148,23 @@ impl LinkedListAllocator {
         let heap_size_val = heap_size.as_usize();
         if heap_size_val <= head_shrink {
             // 元サイズが小さすぎて使える領域がない
-            debug_println!("[HEAP] ERROR: heap too small after alignment");
             return;
         }
         let usable_size = LayoutSize::new(heap_size_val - head_shrink);
 
-        debug_println!("[HEAP] usable_size={}, min_size={}", usable_size.as_usize(), mem::size_of::<ListNode>());
-
         // usable_size が ListNode を置ける最小サイズより小さいなら初期化失敗扱い
         if usable_size.as_usize() < mem::size_of::<ListNode>() {
-            debug_println!("[HEAP] ERROR: usable_size too small for ListNode");
             return;
         }
 
         // stats.heap_capacity は実際に使えるサイズを記録する
         self.stats.heap_capacity = usable_size;
 
-        debug_println!("[HEAP] Calling add_free_region...");
         // 実際に free リージョンを追加（aligned_start, usable_size）
         // Safety: aligned_start は align_up によって ListNode のアラインに整えられている
         unsafe {
             self.add_free_region(aligned_start, usable_size);
         }
-        debug_println!("[HEAP] init complete");
     }
 
     /// 指定された領域を空きリストに追加し、隣接ブロックと結合
@@ -186,8 +177,16 @@ impl LinkedListAllocator {
     /// - [addr, addr+size) の範囲は有効なヒープ領域内である必要があります
     /// 
     /// アドレス順にソートされた状態を維持しながら挿入し、前後のブロックと結合する
+    /// 
     /// 注意: addr は ListNode のアラインメントに合わせて切り上げられます。
-    unsafe fn add_free_region(&mut self, addr: PhysAddr, size: LayoutSize) {
+    unsafe fn add_free_region(&mut self, addr: VirtAddr, size: LayoutSize) {
+        use crate::debug_println;
+        
+        // スタックトレース情報を追加（簡易版）
+        debug_println!("[DEBUG] add_free_region() called: addr={:#x}, size={}", 
+                      addr.as_usize(), size.as_usize());
+        debug_println!("  [TRACE] Called from alloc/dealloc/init");
+        
         let addr_val = addr.as_usize();
         let size_val = size.as_usize();
         
@@ -256,14 +255,24 @@ impl LinkedListAllocator {
 
         // Step 2: 新しいノードの挿入（前のブロックと結合しなかった場合）
         if !merged_with_prev {
+            debug_println!("[DEBUG] Creating new ListNode at {:#x}, size={}", 
+                          new_start.as_usize(), usable_size.as_usize());
+            
             let mut new_node = ListNode::new(usable_size);
+            debug_println!("[DEBUG] new_node created: magic={:#x}, size={}", 
+                          new_node.magic, new_node.size.as_usize());
+            
             // current.next を new_node.next に繋ぐ
             new_node.next = current.next.take();
             
             let node_ptr = unsafe { new_start.as_mut_ptr::<ListNode>() };
+            debug_println!("[DEBUG] Writing new_node to {:#x}", node_ptr as usize);
+            
             unsafe {
                 node_ptr.write(new_node);
+                debug_println!("[DEBUG] Write completed, setting current.next");
                 current.next = Some(&mut *node_ptr);
+                debug_println!("[DEBUG] current.next set successfully");
             }
         }
 
@@ -294,32 +303,31 @@ impl LinkedListAllocator {
     }
 
     /// 指定されたサイズとアラインメントに適した領域を見つける
-    fn find_region(&mut self, size: usize, align: usize) -> Option<(&'static mut ListNode, usize)> {
+    fn find_region(&mut self, size: usize, align: usize) -> Option<(VirtAddr, VirtAddr, LayoutSize, usize)> {
         let mut current = &mut self.head;
-        let mut count = 0;
 
         while let Some(ref mut region) = current.next {
-            count += 1;
-            use crate::debug_println;
-            debug_println!("[DEBUG] find_region: checking node #{}, addr={:#x}, size={}, magic={:#x}",
-                count, region.start_addr().as_usize(), region.size.as_usize(), region.magic);
-            
+            // Debug: Check magic number
+            let magic_val = region.magic;
             if !region.verify_magic() {
-                debug_println!("[ERROR] Invalid magic at node #{}: expected {:#x}, got {:#x}",
-                    count, HEAP_MAGIC, region.magic);
+                use crate::debug_println;
+                debug_println!("[ERROR] Heap corruption: magic={:#x}, expected={:#x}", magic_val, HEAP_MAGIC);
+                debug_println!("  addr={:#x}, size={}", region.start_addr().as_usize(), region.size.as_usize());
                 panic!("Heap corruption detected: invalid magic number in ListNode");
             }
 
             if let Ok(alloc_start) = Self::alloc_from_region(region, size, align) {
-                // 見つかった領域をリストから削除
+                // 領域情報をコピー
+                let region_start = region.start_addr();
+                let region_end = region.end_addr();
+                let region_size = region.size;
+                
+                // リストから削除
                 let next = region.next.take();
-                // Safety: current.nextがSomeであることはwhile let で保証されている
-                let removed = match current.next.take() {
-                    Some(n) => n,
-                    None => unreachable!("current.next was Some in while let condition"),
-                };
+                let _ = current.next.take();  // regionを削除
                 current.next = next;
-                return Some((removed, alloc_start));
+                
+                return Some((region_start, region_end, region_size, alloc_start));
             }
             // 次のノードへ移動
             // Safety: while let条件でSomeであることが保証されている
@@ -448,11 +456,9 @@ impl LockedHeap {
             return Err(MemoryError::InvalidAddress);
         }
         
-        // 注: 簡易実装として仮想アドレスを物理アドレスとしてキャストしている。
-        // 本来はマッピングを確認すべきだが、ストレートマップを前提とする。
-        let addr = unsafe { PhysAddr::new_unchecked(heap_start.as_usize()) };
+        // 直接VirtAddrを使用
         unsafe {
-            self.inner.lock().init(addr, heap_size);
+            self.inner.lock().init(heap_start, heap_size);
         }
         Ok(())
     }
@@ -465,23 +471,28 @@ impl LockedHeap {
 
 unsafe impl GlobalAlloc for LockedHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        use crate::debug_println;
+        
         let (size, align) = match LinkedListAllocator::size_align(layout) {
             Ok(sa) => sa,
             Err(_) => return ptr::null_mut(),
         };
         
+        debug_println!("[DEBUG] alloc() called: size={}, align={}", size, align);
+        
         let mut allocator = self.inner.lock();
 
-        if let Some((region, alloc_start)) = allocator.find_region(size, align) {
-            let region_start = region.start_addr();
-            let region_end = region.end_addr();
-            let region_size = region.size;
-
+        if let Some((region_start, region_end, region_size, alloc_start)) = allocator.find_region(size, align) {
+            debug_println!("[DEBUG] Found region: start={:#x}, end={:#x}, size={}, alloc_start={:#x}", 
+                          region_start.as_usize(), region_end.as_usize(), region_size.as_usize(), alloc_start);
+            
             // Prefixの処理
             let region_start_val = region_start.as_usize();
             if alloc_start > region_start_val {
                 let prefix_size = LayoutSize::new(alloc_start - region_start_val);
                 if prefix_size.as_usize() >= mem::size_of::<ListNode>() {
+                    debug_println!("[DEBUG] Adding prefix: addr={:#x}, size={}", 
+                                  region_start_val, prefix_size.as_usize());
                     unsafe {
                         allocator.add_free_region(region_start, prefix_size);
                     }
@@ -505,7 +516,9 @@ unsafe impl GlobalAlloc for LockedHeap {
             if alloc_end < region_end_val {
                 let suffix_size = LayoutSize::new(region_end_val - alloc_end);
                 if suffix_size.as_usize() >= mem::size_of::<ListNode>() {
-                    let suffix_addr = unsafe { PhysAddr::new_unchecked(alloc_end) };
+                    let suffix_addr = unsafe { VirtAddr::new_unchecked(alloc_end) };
+                    debug_println!("[DEBUG] Adding suffix: addr={:#x}, size={}", 
+                                  suffix_addr.as_usize(), suffix_size.as_usize());
                     unsafe {
                         allocator.add_free_region(suffix_addr, suffix_size);
                     }
@@ -513,8 +526,10 @@ unsafe impl GlobalAlloc for LockedHeap {
             }
             
             allocator.record_allocation(size);
+            debug_println!("[DEBUG] Returning allocation: {:#x}", alloc_start);
             alloc_start as *mut u8
         } else {
+            debug_println!("[DEBUG] No suitable region found");
             ptr::null_mut()
         }
     }
@@ -528,7 +543,7 @@ unsafe impl GlobalAlloc for LockedHeap {
         let mut allocator = self.inner.lock();
         allocator.record_deallocation(size);
         
-        let addr = unsafe { PhysAddr::new_unchecked(ptr as usize) };
+        let addr = unsafe { VirtAddr::new_unchecked(ptr as usize) };
         let size_layout = LayoutSize::new(size);
         unsafe {
             allocator.add_free_region(addr, size_layout);

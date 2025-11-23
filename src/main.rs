@@ -115,6 +115,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     //     tiny_os::kernel::syscall::test_syscall_mechanism();
     // }
     
+    debug_println!("[DEBUG] About to create initial user process...");
+    
     // Phase 2: Create initial user process
     // This is required for the scheduler to have something to run
     match tiny_os::kernel::process::create_user_process() {

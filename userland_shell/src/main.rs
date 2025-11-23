@@ -12,23 +12,28 @@ pub extern "C" fn _start() -> ! {
     uprintln!("Hello from Userland Shell!");
     uprintln!("Type 'exit' to quit.");
 
-    loop {
-        uprint!("> ");
+    uprintln!("Starting CoW Test");
+    
+    let pid = syscall::sys_fork();
+    if pid == 0 {
+        uprintln!("I am the child!");
         
-        // Simple buffer for input
-        // Since we don't have a heap yet, use a stack buffer
-        // But stack is small (64KB mapped by kernel)
+        // Trigger CoW on stack
+        let mut x = 100;
+        uprintln!("Child: x = {}", x);
+        x = 200;
+        uprintln!("Child: x modified to {}", x);
         
-        // For now, just wait loop to simulate work
-        // TODO: Implement sys_read
-        
-        // Just yield or wait
-        // We don't have sys_yield, but we can sys_write
-        
-        // For testing, just print something and loop
-        for _ in 0..10000000 {
-            core::hint::spin_loop();
-        }
+        uprintln!("Child exiting...");
+        syscall::sys_exit(0);
+    } else if pid > 0 {
+        uprintln!("I am the parent, child PID: {}", pid);
+        syscall::sys_wait(pid, None);
+        uprintln!("Child terminated. Parent exiting.");
+        syscall::sys_exit(0);
+    } else {
+        uprintln!("Fork failed!");
+        syscall::sys_exit(1);
     }
 }
 

@@ -2,8 +2,11 @@
 //!
 //! x86_64のページテーブル操作を提供します。
 
-use x86_64::structures::paging::{OffsetPageTable, PageTable};
+use x86_64::structures::paging::{OffsetPageTable, PageTable, PageTableFlags};
 use x86_64::VirtAddr;
+
+/// Copy-on-Write flag (Bit 9, available for OS use)
+pub const COW_FLAG: PageTableFlags = PageTableFlags::BIT_9;
 
 /// 新しい OffsetPageTable を初期化します。
 ///

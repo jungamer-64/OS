@@ -7,9 +7,12 @@
 use x86_64::structures::paging::{PhysFrame, PageTable, FrameAllocator, Size4KiB};
 use x86_64::VirtAddr;
 use alloc::vec::Vec;
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::alloc::{alloc_zeroed, Layout};
 use spin::Mutex;
 use lazy_static::lazy_static;
+use crate::kernel::fs::FileDescriptor;
 
 pub mod lifecycle;
 pub mod switch;
@@ -136,25 +139,45 @@ pub struct Process {
 
     /// Top of mmap allocation (bump allocator)
     mmap_top: VirtAddr,
+
+    /// File Descriptors
+    file_descriptors: BTreeMap<u64, Arc<Mutex<dyn FileDescriptor>>>,
+    
+    /// Next available FD
+    next_fd: u64,
 }
 
 impl Drop for Process {
     fn drop(&mut self) {
         use crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR;
-        // use x86_64::structures::paging::FrameDeallocator; // Trait imported but not used? Wait, deallocate_frame needs it.
+        use crate::kernel::mm::PHYS_MEM_OFFSET;
+        use alloc::alloc::{dealloc, Layout};
 
-        // Free page table frame
+        // 1. Free page table and all user frames
         let mut allocator_lock = BOOT_INFO_ALLOCATOR.lock();
         if let Some(frame_allocator) = allocator_lock.as_mut() {
+            let phys_mem_offset = VirtAddr::new(PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed));
+            
             unsafe {
-                frame_allocator.deallocate_frame(self.page_table_frame);
+                crate::kernel::mm::user_paging::free_user_page_table(
+                    self.page_table_frame,
+                    frame_allocator,
+                    phys_mem_offset
+                );
             }
         }
         
-        // TODO: Free kernel stack
-        // TODO: Free all user pages (requires walking the page table)
+        // 2. Free kernel stack
+        // Layout must match allocation in fork_process/create_user_process
+        // Size: 16KB, Align: 16
+        let layout = Layout::from_size_align(16 * 1024, 16).unwrap();
+        unsafe {
+            // kernel_stack points to the TOP of the stack, so we need to subtract size to get the pointer
+            let stack_ptr = (self.kernel_stack.as_u64() - 16 * 1024) as *mut u8;
+            dealloc(stack_ptr, layout);
+        }
         
-        crate::debug_println!("[Process] Dropped PID={} (Freed page table frame)", self.pid.as_u64());
+        crate::debug_println!("[Process] Dropped PID={} (Freed resources)", self.pid.as_u64());
     }
 }
 
@@ -213,10 +236,12 @@ impl Process {
             kernel_stack,
             user_stack,
             saved_registers: registers,
-            context_rsp: 0, // Will be set during context switch
+            context_rsp: 0,
             parent_pid: None,
             exit_code: None,
-            mmap_top: VirtAddr::new(0x0000_0010_0000_0000), // Start mmap at 64GB
+            mmap_top: VirtAddr::new(0x0000_4000_0000_0000), // Start mmap at 64TB
+            file_descriptors: BTreeMap::new(),
+            next_fd: 3, // 0, 1, 2 reserved
         }
     }
     
@@ -313,6 +338,35 @@ impl Process {
     /// Set mmap top
     pub fn set_mmap_top(&mut self, addr: VirtAddr) {
         self.mmap_top = addr;
+    }
+
+    /// Add a file descriptor
+    pub fn add_file_descriptor(&mut self, fd: Arc<Mutex<dyn FileDescriptor>>) -> u64 {
+        let id = self.next_fd;
+        self.next_fd += 1;
+        self.file_descriptors.insert(id, fd);
+        id
+    }
+
+    /// Get a file descriptor
+    pub fn get_file_descriptor(&self, fd: u64) -> Option<Arc<Mutex<dyn FileDescriptor>>> {
+        self.file_descriptors.get(&fd).cloned()
+    }
+
+    /// Remove a file descriptor
+    pub fn remove_file_descriptor(&mut self, fd: u64) -> Option<Arc<Mutex<dyn FileDescriptor>>> {
+        self.file_descriptors.remove(&fd)
+    }
+
+    /// Clone file descriptors (for fork)
+    pub fn clone_file_descriptors(&self) -> (BTreeMap<u64, Arc<Mutex<dyn FileDescriptor>>>, u64) {
+        (self.file_descriptors.clone(), self.next_fd)
+    }
+
+    /// Set file descriptors (for fork)
+    pub fn set_file_descriptors(&mut self, fds: BTreeMap<u64, Arc<Mutex<dyn FileDescriptor>>>, next_fd: u64) {
+        self.file_descriptors = fds;
+        self.next_fd = next_fd;
     }
 }
 

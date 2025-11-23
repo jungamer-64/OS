@@ -17,6 +17,8 @@ use x86_64::{
     VirtAddr,
 };
 use core::fmt;
+use crate::kernel::mm::BootInfoFrameAllocator;
+use crate::kernel::mm::paging::COW_FLAG;
 
 /// User memory layout constants
 ///
@@ -320,13 +322,11 @@ impl fmt::Display for MapError {
 ///
 /// # Returns
 /// Physical frame of the new page table
-pub unsafe fn duplicate_user_page_table<A>(
+pub unsafe fn duplicate_user_page_table(
     _src_mapper: &mut OffsetPageTable,
-    frame_allocator: &mut A,
+    frame_allocator: &mut BootInfoFrameAllocator,
     physical_memory_offset: VirtAddr,
 ) -> Result<PhysFrame, MapError>
-where
-    A: FrameAllocator<Size4KiB>,
 {
     // 1. Allocate new PML4 frame
     let pml4_frame = frame_allocator
@@ -348,14 +348,15 @@ where
     
     // 3. Deep copy user mappings (lower half)
     let (src_pml4_frame, _) = x86_64::registers::control::Cr3::read();
-    let src_pml4_ptr = (physical_memory_offset + src_pml4_frame.start_address().as_u64()).as_ptr::<x86_64::structures::paging::PageTable>();
-    let src_pml4 = unsafe { &*src_pml4_ptr };
+    let src_pml4_ptr = (physical_memory_offset + src_pml4_frame.start_address().as_u64()).as_mut_ptr::<x86_64::structures::paging::PageTable>();
+    let src_pml4 = unsafe { &mut *src_pml4_ptr };
     
     for i in 0..256 {
         if !src_pml4[i].is_unused() {
             unsafe {
+                // Get mutable reference to source entry to update flags (CoW)
                 copy_pml4_entry(
-                    &src_pml4[i],
+                    &mut src_pml4[i],
                     &mut pml4[i],
                     frame_allocator,
                     physical_memory_offset
@@ -368,30 +369,28 @@ where
 }
 
 // Helper to copy page table entries recursively
-unsafe fn copy_pml4_entry<A>(
-    src_entry: &PageTableEntry,
+unsafe fn copy_pml4_entry(
+    src_entry: &mut PageTableEntry,
     dst_entry: &mut PageTableEntry,
-    frame_allocator: &mut A,
+    frame_allocator: &mut BootInfoFrameAllocator,
     phys_offset: VirtAddr,
 ) -> Result<(), MapError>
-where
-    A: FrameAllocator<Size4KiB>,
 {
     // Allocate new PDPT frame
     let frame = frame_allocator.allocate_frame().ok_or(MapError::FrameAllocationFailed)?;
     dst_entry.set_frame(frame, src_entry.flags());
     
-    let src_table_ptr = (phys_offset + src_entry.addr().as_u64()).as_ptr::<x86_64::structures::paging::PageTable>();
+    let src_table_ptr = (phys_offset + src_entry.addr().as_u64()).as_mut_ptr::<x86_64::structures::paging::PageTable>();
     let dst_table_ptr = (phys_offset + frame.start_address().as_u64()).as_mut_ptr::<x86_64::structures::paging::PageTable>();
     // SAFETY: We just allocated the frame and checked the source entry is present
-    let src_table = unsafe { &*src_table_ptr };
+    let src_table = unsafe { &mut *src_table_ptr };
     let dst_table = unsafe { &mut *dst_table_ptr };
     dst_table.zero();
     
     for i in 0..512 {
         if !src_table[i].is_unused() {
             unsafe {
-                copy_pdpt_entry(&src_table[i], &mut dst_table[i], frame_allocator, phys_offset)?;
+                copy_pdpt_entry(&mut src_table[i], &mut dst_table[i], frame_allocator, phys_offset)?;
             }
         }
     }
@@ -399,14 +398,12 @@ where
     Ok(())
 }
 
-unsafe fn copy_pdpt_entry<A>(
-    src_entry: &PageTableEntry,
+unsafe fn copy_pdpt_entry(
+    src_entry: &mut PageTableEntry,
     dst_entry: &mut PageTableEntry,
-    frame_allocator: &mut A,
+    frame_allocator: &mut BootInfoFrameAllocator,
     phys_offset: VirtAddr,
 ) -> Result<(), MapError>
-where
-    A: FrameAllocator<Size4KiB>,
 {
     // Check for huge page (1GB) - Not supported yet
     if src_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
@@ -416,16 +413,16 @@ where
     let frame = frame_allocator.allocate_frame().ok_or(MapError::FrameAllocationFailed)?;
     dst_entry.set_frame(frame, src_entry.flags());
     
-    let src_table_ptr = (phys_offset + src_entry.addr().as_u64()).as_ptr::<x86_64::structures::paging::PageTable>();
+    let src_table_ptr = (phys_offset + src_entry.addr().as_u64()).as_mut_ptr::<x86_64::structures::paging::PageTable>();
     let dst_table_ptr = (phys_offset + frame.start_address().as_u64()).as_mut_ptr::<x86_64::structures::paging::PageTable>();
-    let src_table = unsafe { &*src_table_ptr };
+    let src_table = unsafe { &mut *src_table_ptr };
     let dst_table = unsafe { &mut *dst_table_ptr };
     dst_table.zero();
     
     for i in 0..512 {
         if !src_table[i].is_unused() {
             unsafe {
-                copy_pd_entry(&src_table[i], &mut dst_table[i], frame_allocator, phys_offset)?;
+                copy_pd_entry(&mut src_table[i], &mut dst_table[i], frame_allocator, phys_offset)?;
             }
         }
     }
@@ -433,14 +430,12 @@ where
     Ok(())
 }
 
-unsafe fn copy_pd_entry<A>(
-    src_entry: &PageTableEntry,
+unsafe fn copy_pd_entry(
+    src_entry: &mut PageTableEntry,
     dst_entry: &mut PageTableEntry,
-    frame_allocator: &mut A,
+    frame_allocator: &mut BootInfoFrameAllocator,
     phys_offset: VirtAddr,
 ) -> Result<(), MapError>
-where
-    A: FrameAllocator<Size4KiB>,
 {
     // Check for huge page (2MB) - Not supported yet
     if src_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
@@ -450,16 +445,16 @@ where
     let frame = frame_allocator.allocate_frame().ok_or(MapError::FrameAllocationFailed)?;
     dst_entry.set_frame(frame, src_entry.flags());
     
-    let src_table_ptr = (phys_offset + src_entry.addr().as_u64()).as_ptr::<x86_64::structures::paging::PageTable>();
+    let src_table_ptr = (phys_offset + src_entry.addr().as_u64()).as_mut_ptr::<x86_64::structures::paging::PageTable>();
     let dst_table_ptr = (phys_offset + frame.start_address().as_u64()).as_mut_ptr::<x86_64::structures::paging::PageTable>();
-    let src_table = unsafe { &*src_table_ptr };
+    let src_table = unsafe { &mut *src_table_ptr };
     let dst_table = unsafe { &mut *dst_table_ptr };
     dst_table.zero();
     
     for i in 0..512 {
         if !src_table[i].is_unused() {
             unsafe {
-                copy_pt_entry(&src_table[i], &mut dst_table[i], frame_allocator, phys_offset)?;
+                copy_pt_entry(&mut src_table[i], &mut dst_table[i], frame_allocator, phys_offset)?;
             }
         }
     }
@@ -467,29 +462,167 @@ where
     Ok(())
 }
 
-unsafe fn copy_pt_entry<A>(
-    src_entry: &PageTableEntry,
+unsafe fn copy_pt_entry(
+    src_entry: &mut PageTableEntry,
     dst_entry: &mut PageTableEntry,
-    frame_allocator: &mut A,
-    phys_offset: VirtAddr,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    _phys_offset: VirtAddr,
 ) -> Result<(), MapError>
-where
-    A: FrameAllocator<Size4KiB>,
 {
-    // This is the leaf level. We need to allocate a new frame and copy the data.
-    let new_frame = frame_allocator.allocate_frame().ok_or(MapError::FrameAllocationFailed)?;
+    // This is the leaf level. Implement Copy-on-Write.
     
-    // Copy data
-    let src_frame = src_entry.frame().map_err(|_| MapError::InvalidAddress)?;
-    let src_ptr = (phys_offset + src_frame.start_address().as_u64()).as_ptr::<u8>();
-    let dst_ptr = (phys_offset + new_frame.start_address().as_u64()).as_mut_ptr::<u8>();
+    let flags = src_entry.flags();
+    let frame = src_entry.frame().map_err(|_| MapError::InvalidAddress)?;
     
-    unsafe {
-        core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, 4096);
+    if flags.contains(PageTableFlags::WRITABLE) {
+        // If writable, mark both as Read-Only + CoW
+        let new_flags = (flags - PageTableFlags::WRITABLE) | COW_FLAG;
+        
+        // Update source entry
+        src_entry.set_flags(new_flags);
+        
+        // Map destination to the SAME frame with new flags
+        dst_entry.set_frame(frame, new_flags);
+        
+        // Increment reference count
+        frame_allocator.add_reference(frame);
+    } else {
+        // If already read-only (e.g. code), just share it
+        // We can optionally add CoW flag, but it's not strictly necessary if we never write.
+        // Let's just share it as is.
+        dst_entry.set_frame(frame, flags);
+        
+        // Increment reference count
+        frame_allocator.add_reference(frame);
     }
     
-    // Map new frame
-    dst_entry.set_frame(new_frame, src_entry.flags());
-    
     Ok(())
+}
+
+/// Free all user-space resources in a page table
+pub unsafe fn free_user_page_table(
+    pml4_frame: PhysFrame,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    physical_memory_offset: VirtAddr,
+) {
+    let pml4_ptr = (physical_memory_offset + pml4_frame.start_address().as_u64()).as_mut_ptr::<x86_64::structures::paging::PageTable>();
+    let pml4 = unsafe { &mut *pml4_ptr };
+
+    // Only free user space (lower half: 0..256)
+    for i in 0..256 {
+        if !pml4[i].is_unused() {
+            unsafe {
+                free_pml4_entry(&mut pml4[i], frame_allocator, physical_memory_offset);
+            }
+        }
+    }
+    
+    // Finally free the PML4 frame itself
+    unsafe {
+        frame_allocator.deallocate_frame(pml4_frame);
+    }
+}
+
+unsafe fn free_pml4_entry(
+    entry: &mut PageTableEntry,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    phys_offset: VirtAddr,
+) {
+    if let Ok(frame) = entry.frame() {
+        let pdpt_ptr = (phys_offset + frame.start_address().as_u64()).as_mut_ptr::<x86_64::structures::paging::PageTable>();
+        let pdpt = unsafe { &mut *pdpt_ptr };
+        
+        for i in 0..512 {
+            if !pdpt[i].is_unused() {
+                unsafe {
+                    free_pdpt_entry(&mut pdpt[i], frame_allocator, phys_offset);
+                }
+            }
+        }
+        
+        unsafe {
+            frame_allocator.deallocate_frame(frame);
+        }
+    }
+    entry.set_unused();
+}
+
+unsafe fn free_pdpt_entry(
+    entry: &mut PageTableEntry,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    phys_offset: VirtAddr,
+) {
+    if entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+        if let Ok(frame) = entry.frame() {
+            unsafe {
+                frame_allocator.deallocate_frame(frame);
+            }
+        }
+        entry.set_unused();
+        return;
+    }
+
+    if let Ok(frame) = entry.frame() {
+        let pd_ptr = (phys_offset + frame.start_address().as_u64()).as_mut_ptr::<x86_64::structures::paging::PageTable>();
+        let pd = unsafe { &mut *pd_ptr };
+        
+        for i in 0..512 {
+            if !pd[i].is_unused() {
+                unsafe {
+                    free_pd_entry(&mut pd[i], frame_allocator, phys_offset);
+                }
+            }
+        }
+        
+        unsafe {
+            frame_allocator.deallocate_frame(frame);
+        }
+    }
+    entry.set_unused();
+}
+
+unsafe fn free_pd_entry(
+    entry: &mut PageTableEntry,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    phys_offset: VirtAddr,
+) {
+    if entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+        if let Ok(frame) = entry.frame() {
+            unsafe {
+                frame_allocator.deallocate_frame(frame);
+            }
+        }
+        entry.set_unused();
+        return;
+    }
+
+    if let Ok(frame) = entry.frame() {
+        let pt_ptr = (phys_offset + frame.start_address().as_u64()).as_mut_ptr::<x86_64::structures::paging::PageTable>();
+        let pt = unsafe { &mut *pt_ptr };
+        
+        for i in 0..512 {
+            if !pt[i].is_unused() {
+                unsafe {
+                    free_pt_entry(&mut pt[i], frame_allocator);
+                }
+            }
+        }
+        
+        unsafe {
+            frame_allocator.deallocate_frame(frame);
+        }
+    }
+    entry.set_unused();
+}
+
+unsafe fn free_pt_entry(
+    entry: &mut PageTableEntry,
+    frame_allocator: &mut BootInfoFrameAllocator,
+) {
+    if let Ok(frame) = entry.frame() {
+        unsafe {
+            frame_allocator.deallocate_frame(frame);
+        }
+    }
+    entry.set_unused();
 }
