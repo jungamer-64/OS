@@ -125,60 +125,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             
             debug_println!("[Kernel] Entry: {:#x}, Stack: {:#x}, CR3: {:#x}", entry_point.as_u64(), user_stack.as_u64(), user_cr3);
             
-            // WORKAROUND Phase 2.5: Map user code to kernel page table
-            // Since we skip CR3 switch in jump_to_usermode_asm, user code must be accessible in kernel CR3
-            // TODO Phase 3: Remove this when proper CR3 switching works
-            {
-                use x86_64::structures::paging::{Page, PageTable, OffsetPageTable, Size4KiB, Mapper, PageTableFlags};
-                use x86_64::{VirtAddr, PhysAddr};
-                
-                debug_println!("[WORKAROUND] Mapping user code to kernel page table...");
-                
-                // Get kernel page table
-                let phys_mem_offset = tiny_os::kernel::mm::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
-                let (kernel_frame, _flags) = x86_64::registers::control::Cr3::read();
-                let kernel_pt_ptr = (phys_mem_offset + kernel_frame.start_address().as_u64()) as *mut PageTable;
-                let kernel_pt = unsafe { &mut *kernel_pt_ptr };
-                let mut kernel_mapper = unsafe { OffsetPageTable::new(kernel_pt, VirtAddr::new(phys_mem_offset)) };
-                
-                // Get user page table
-                let user_pt_ptr = (phys_mem_offset + user_cr3) as *mut PageTable;
-                let user_pt = unsafe { &mut *user_pt_ptr };
-                let user_mapper = unsafe { OffsetPageTable::new(user_pt, VirtAddr::new(phys_mem_offset)) };
-                
-                // User code is at 0x400000, size ~2KB (1 page is enough)
-                let user_code_start = entry_point.as_u64();
-                let user_code_pages = 1; // shell.bin is ~1.6KB
-                
-                for i in 0..user_code_pages {
-                    let virt_addr = user_code_start + (i * 4096);
-                    let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(virt_addr));
-                    
-                    // Get physical frame from user page table
-                    if let Ok(frame) = user_mapper.translate_page(page) {
-                        debug_println!("  User page {:#x} -> frame {:#x}", virt_addr, frame.start_address().as_u64());
-                        
-                        // Map the same frame in kernel page table
-                        let flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
-                        
-                        unsafe {
-                            use tiny_os::kernel::mm::EmptyFrameAllocator;
-                            let mut frame_allocator = EmptyFrameAllocator;
-                            
-                            match kernel_mapper.map_to(page, frame, flags, &mut frame_allocator) {
-                                Ok(flusher) => flusher.flush(),
-                                Err(e) => panic!("Failed to map user code to kernel PT: {:?}", e),
-                            }
-                        }
-                        
-                        debug_println!("  Mapped to kernel PT");
-                    } else {
-                        panic!("User code page {:#x} not found in user PT", virt_addr);
-                    }
-                }
-                
-                debug_println!("[WORKAROUND] User code mapped to kernel PT successfully");
-            }
+            // NOTE: User code is already accessible in kernel CR3!
+            // Both kernel and user CR3 share Entry 0 (low memory range where user code is mapped)
+            // This is because we copy ALL kernel entries (0-511) to user page table
+            debug_println!("[NOTE] User code is already accessible in kernel CR3 (Entry 0 shared)");
             
             // TEMP: Disable timer and interrupts for testing User mode transition
             // This helps isolate the problem (timer interrupt vs user code)

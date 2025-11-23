@@ -614,9 +614,10 @@ where
     }
     crate::debug_println!("[create_user_page_table] Found {} kernel entries", count);
     
-    // Copy ALL entries (0-511) to enable kernel access during privilege transitions
-    crate::debug_println!("[create_user_page_table] Copying ALL kernel entries (0-511)");
-    for i in 0..512 {
+    // Copy kernel entries (1-511) to enable kernel access during privilege transitions
+    // Skip Entry 0 - it's reserved for user space (user code and stack)
+    crate::debug_println!("[create_user_page_table] Copying kernel entries (1-511)");
+    for i in 1..512 {
         if !kernel_pt[i].is_unused() {
             page_table[i] = kernel_pt[i].clone();
         }
