@@ -66,6 +66,17 @@ pub fn create_user_process() -> Result<(ProcessId, VirtAddr, VirtAddr, u64), Cre
         let loaded_program = match crate::kernel::process::elf_impl::validate_elf(program_data) {
             Ok(_) => {
                 crate::debug_println!("[create] Using ELF loader");
+                
+                // Print detailed ELF information
+                let _ = crate::kernel::process::elf_impl::print_elf_info(program_data);
+                
+                // Verify W^X property
+                match crate::kernel::process::elf_impl::verify_wx_separation(program_data) {
+                    Ok(true) => crate::debug_println!("[SECURITY] W^X verification: PASSED"),
+                    Ok(false) => crate::debug_println!("[SECURITY] W^X verification: FAILED"),
+                    Err(_) => crate::debug_println!("[SECURITY] W^X verification: ERROR"),
+                }
+                
                 let loaded = crate::kernel::process::elf_impl::load_elf(
                     program_data,
                     &mut mapper,

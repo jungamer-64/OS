@@ -297,6 +297,148 @@ pub unsafe fn read_struct<T>(data: &[u8]) -> Result<&T, ElfError> {
     Ok(unsafe { &*(data.as_ptr() as *const T) })
 }
 
+/// Section header (64-bit)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Elf64SectionHeader {
+    /// Section name (string table index)
+    pub sh_name: u32,
+    /// Section type
+    pub sh_type: u32,
+    /// Section flags
+    pub sh_flags: u64,
+    /// Section virtual address at execution
+    pub sh_addr: u64,
+    /// Section file offset
+    pub sh_offset: u64,
+    /// Section size in bytes
+    pub sh_size: u64,
+    /// Link to another section
+    pub sh_link: u32,
+    /// Additional section information
+    pub sh_info: u32,
+    /// Section alignment
+    pub sh_addralign: u64,
+    /// Entry size if section holds table
+    pub sh_entsize: u64,
+}
+
+/// Section types
+pub mod sh_type {
+    /// Inactive section
+    pub const SHT_NULL: u32 = 0;
+    /// Program data
+    pub const SHT_PROGBITS: u32 = 1;
+    /// Symbol table
+    pub const SHT_SYMTAB: u32 = 2;
+    /// String table
+    pub const SHT_STRTAB: u32 = 3;
+    /// Relocation entries with addends
+    pub const SHT_RELA: u32 = 4;
+    /// Symbol hash table
+    pub const SHT_HASH: u32 = 5;
+    /// Dynamic linking information
+    pub const SHT_DYNAMIC: u32 = 6;
+    /// Notes
+    pub const SHT_NOTE: u32 = 7;
+    /// BSS
+    pub const SHT_NOBITS: u32 = 8;
+    /// Relocation entries without addends
+    pub const SHT_REL: u32 = 9;
+}
+
+/// Section flags
+pub mod sh_flags {
+    /// Writable
+    pub const SHF_WRITE: u64 = 0x1;
+    /// Occupies memory during execution
+    pub const SHF_ALLOC: u64 = 0x2;
+    /// Executable
+    pub const SHF_EXECINSTR: u64 = 0x4;
+}
+
+impl Elf64Header {
+    /// Get section headers
+    ///
+    /// # Safety
+    /// Caller must ensure `data` contains valid section headers at the specified offset
+    pub unsafe fn section_headers<'a>(&self, data: &'a [u8]) -> Result<&'a [Elf64SectionHeader], ElfError> {
+        let shoff = self.e_shoff as usize;
+        let shnum = self.e_shnum as usize;
+        let shentsize = self.e_shentsize as usize;
+        
+        if shentsize != mem::size_of::<Elf64SectionHeader>() {
+            return Err(ElfError::InvalidHeader);
+        }
+        
+        let total_size = shnum * shentsize;
+        if data.len() < shoff + total_size {
+            return Err(ElfError::FileTooSmall);
+        }
+        
+        let ptr = unsafe { data.as_ptr().add(shoff) as *const Elf64SectionHeader };
+        Ok(unsafe { core::slice::from_raw_parts(ptr, shnum) })
+    }
+    
+    /// Get string from string table
+    pub fn get_string<'a>(&self, data: &'a [u8], strtab_offset: usize, str_offset: u32) -> Result<&'a str, ElfError> {
+        let start = strtab_offset + str_offset as usize;
+        if start >= data.len() {
+            return Err(ElfError::FileTooSmall);
+        }
+        
+        // Find null terminator
+        let mut end = start;
+        while end < data.len() && data[end] != 0 {
+            end += 1;
+        }
+        
+        if end >= data.len() {
+            return Err(ElfError::FileTooSmall);
+        }
+        
+        core::str::from_utf8(&data[start..end])
+            .map_err(|_| ElfError::InvalidHeader)
+    }
+    
+    /// Validate additional ELF properties
+    pub fn validate_extended(&self) -> Result<(), ElfError> {
+        // Check version
+        if self.e_version != 1 {
+            return Err(ElfError::InvalidHeader);
+        }
+        
+        // Check type (should be executable or shared object)
+        if self.e_type != ElfType::Exec as u16 && self.e_type != ElfType::Dyn as u16 {
+            return Err(ElfError::InvalidType);
+        }
+        
+        // Entry point should be in user space
+        if self.e_entry >= 0x0000_8000_0000_0000 {
+            return Err(ElfError::InvalidHeader);
+        }
+        
+        Ok(())
+    }
+}
+
+impl Elf64SectionHeader {
+    /// Check if section is allocated
+    pub fn is_alloc(&self) -> bool {
+        self.sh_flags & sh_flags::SHF_ALLOC != 0
+    }
+    
+    /// Check if section is writable
+    pub fn is_write(&self) -> bool {
+        self.sh_flags & sh_flags::SHF_WRITE != 0
+    }
+    
+    /// Check if section is executable
+    pub fn is_exec(&self) -> bool {
+        self.sh_flags & sh_flags::SHF_EXECINSTR != 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -195,10 +195,66 @@ fn calculate_memory_range(phdrs: &[Elf64ProgramHeader]) -> Result<(u64, u64), El
     Ok((min_addr, max_addr))
 }
 
-/// Validate ELF file format
+/// Validate ELF file format with detailed checks
 pub fn validate_elf(elf_data: &[u8]) -> Result<(), ElfError> {
     let header = unsafe { Elf64Header::from_bytes(elf_data)? };
     let _phdrs = unsafe { header.program_headers(elf_data)? };
+    
+    // Extended validation
+    header.validate_extended()?;
+    
+    Ok(())
+}
+
+/// Get detailed ELF information for debugging
+pub fn get_elf_info(elf_data: &[u8]) -> Result<ElfInfo, ElfError> {
+    let header = unsafe { Elf64Header::from_bytes(elf_data)? };
+    let phdrs = unsafe { header.program_headers(elf_data)? };
+    
+    let mut loadable_segments = 0;
+    let mut total_memory_size = 0u64;
+    
+    for phdr in phdrs {
+        if phdr.is_load() {
+            loadable_segments += 1;
+            total_memory_size += phdr.p_memsz;
+        }
+    }
+    
+    Ok(ElfInfo {
+        entry_point: header.e_entry,
+        program_header_count: header.e_phnum,
+        section_header_count: header.e_shnum,
+        loadable_segments,
+        total_memory_size,
+        file_type: header.e_type,
+    })
+}
+
+/// Detailed ELF information
+#[derive(Debug)]
+pub struct ElfInfo {
+    pub entry_point: u64,
+    pub program_header_count: u16,
+    pub section_header_count: u16,
+    pub loadable_segments: usize,
+    pub total_memory_size: u64,
+    pub file_type: u16,
+}
+
+/// Print detailed ELF information
+pub fn print_elf_info(elf_data: &[u8]) -> Result<(), ElfError> {
+    let info = get_elf_info(elf_data)?;
+    
+    crate::debug_println!("=== ELF File Information ===");
+    crate::debug_println!("Entry point: 0x{:x}", info.entry_point);
+    crate::debug_println!("Program headers: {}", info.program_header_count);
+    crate::debug_println!("Section headers: {}", info.section_header_count);
+    crate::debug_println!("Loadable segments: {}", info.loadable_segments);
+    crate::debug_println!("Total memory: {} bytes", info.total_memory_size);
+    crate::debug_println!("File type: 0x{:x}", info.file_type);
+    crate::debug_println!("============================");
+    
     Ok(())
 }
 
@@ -206,6 +262,24 @@ pub fn validate_elf(elf_data: &[u8]) -> Result<(), ElfError> {
 pub fn get_entry_point(elf_data: &[u8]) -> Result<VirtAddr, ElfError> {
     let header = unsafe { Elf64Header::from_bytes(elf_data)? };
     Ok(VirtAddr::new(header.e_entry))
+}
+
+/// Verify W^X (Write XOR Execute) property
+pub fn verify_wx_separation(elf_data: &[u8]) -> Result<bool, ElfError> {
+    let header = unsafe { Elf64Header::from_bytes(elf_data)? };
+    let phdrs = unsafe { header.program_headers(elf_data)? };
+    
+    for phdr in phdrs {
+        if phdr.is_load() {
+            let (_, write, exec) = phdr.permissions();
+            if write && exec {
+                crate::debug_println!("[SECURITY] WARNING: Segment at 0x{:x} is both writable and executable!", phdr.p_vaddr);
+                return Ok(false);
+            }
+        }
+    }
+    
+    Ok(true)
 }
 
 #[cfg(test)]
