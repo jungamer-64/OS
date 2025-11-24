@@ -143,6 +143,9 @@ pub mod mem;
 pub mod alloc;
 pub mod constants;
 pub mod util;
+pub mod sync;
+// pub mod testing;  // TODO: Fix compilation
+// pub mod debug;    // TODO: Fix compilation
 
 // Re-export commonly used items for convenience
 pub use io::{print, println};

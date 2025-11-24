@@ -24,7 +24,8 @@ members = [
     "kernel",                     # OS kernel
     "userland/libuser",           # Userland standard library
     "userland/programs/shell",    # Interactive shell
-    # "userland/programs/init",   # TODO: Phase 5 - Init process
+    "userland/programs/test",     # Test program
+    "userland/programs/init",     # Init process
 ]
 resolver = "2"
 
