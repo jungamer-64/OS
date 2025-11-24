@@ -6,7 +6,7 @@ license = "MIT"
 license-file = "LICENSE"
 
 [dependencies]
-bootloader = "0.11.10"
+bootloader = "0.11.12"
 
 [[bin]]
 name = "builder"

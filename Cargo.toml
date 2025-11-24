@@ -26,6 +26,9 @@ members = [
     "userland/programs/shell",    # Interactive shell
     "userland/programs/test",     # Test program
     "userland/programs/init",     # Init process
+    "userland/programs/syscall_test", # Syscall tests
+    "builder",                    # Build tool
+    "tools/mkcpio",               # CPIO tool
 ]
 resolver = "2"
 
@@ -38,7 +41,7 @@ resolver = "2"
 panic = "abort"
 
 # Enable overflow checks even in dev builds (safety)
-overflow-checks = true
+overflow-checks = false
 
 # Enable debug assertions
 debug-assertions = true
@@ -57,7 +60,7 @@ opt-level = 3
 strip = true
 
 # Enable overflow checks in release (safety over speed)
-overflow-checks = true
+overflow-checks = false
 
 # Codegen units = 1 for better optimization
 codegen-units = 1

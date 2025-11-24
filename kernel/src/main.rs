@@ -89,6 +89,32 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
     debug_println!("[OK] Heap initialized at 0x{:x} (Size: {} bytes)", heap_start_virt.as_usize(), heap_size.as_usize());
     
+    // Initrd Setup
+    if let Some(ramdisk_addr) = boot_info.ramdisk_addr.into_option() {
+        let ramdisk_len = boot_info.ramdisk_len;
+        debug_println!("[Initrd] Found at {:#x}, size: {} bytes", ramdisk_addr, ramdisk_len);
+        
+        let ramdisk_slice = unsafe {
+            core::slice::from_raw_parts(
+                (ramdisk_addr + phys_mem_offset) as *const u8,
+                ramdisk_len as usize
+            )
+        };
+        
+        // TODO: Implement initrd and VFS
+        /*
+        // SAFETY: ramdisk memory is valid and static (loaded by bootloader)
+        let static_slice = unsafe { core::mem::transmute::<&[u8], &'static [u8]>(ramdisk_slice) };
+        let initrd = unsafe { tiny_os::kernel::fs::initrd::InitrdFs::new(static_slice) };
+        
+        tiny_os::kernel::fs::vfs::VFS.lock().mount("/", initrd);
+        debug_println!("[OK] Initrd mounted at /");
+        */
+        debug_println!("[TODO] Initrd support not implemented yet");
+    } else {
+        debug_println!("[WARNING] No initrd found!");
+    }
+    
     // ウェルカムバナー
     println!("========================================");
     println!("  Tiny OS - Ideal Rust Kernel (UEFI)");
@@ -104,7 +130,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     
     // Phase 2: Create initial user process
     // This is required for the scheduler to have something to run
-    match tiny_os::kernel::process::create_user_process() {
+    match tiny_os::kernel::process::create_user_process("/bin/init") {
         Ok((pid, entry_point, user_stack, user_cr3)) => {
             debug_println!("[Process] Created initial user process: PID={}", pid.as_u64());
             

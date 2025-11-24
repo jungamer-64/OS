@@ -112,29 +112,20 @@ fn main() {
     println!("cargo:rerun-if-changed=x86_64-rany_os.json");
     println!("cargo:rerun-if-changed=.cargo/config.toml");
 
-    // Validate build environment
-    validate_environment();
-
-    // Check target specification
-    validate_target_spec();
-
-    // Print build information
-    print_build_info();
-
     // Compile assembly files
     compile_assembly();
-
-    // Setup linker configuration (NEW: ここを変更)
-    // リンカースクリプトの絶対パスを解決して cargo に伝えます
+    
+    // Check target specification
+    validate_target_spec();
+    
+    // Setup linker
     setup_linker();
-
-    // Build userland shell
-    build_userland();
+    
+    // Print build info
+    print_build_info();
 }
 
-/// Configure the linker script
-///
-/// Finds the linker script (linker.ld) and passes its absolute path
+/// Setup linker script path
 /// to the linker. This is crucial when running builds from subdirectories.
 fn setup_linker() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -152,83 +143,6 @@ fn setup_linker() {
         .expect("Could not find linker.ld in workspace root or kernel directory!");
 
     println!("cargo:rerun-if-changed={}", linker_script.display());
-    
-    // Pass the ABSOLUTE path to the linker
-    // This avoids "cannot find linker script" errors when running from subdirectories
-    println!("cargo:rustc-link-arg=-T{}", linker_script.display());
-}
-
-/// Build the userland shell and convert it to a flat binary
-fn build_userland() {
-    let root = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let root_path = Path::new(&root);
-    // Navigate up to workspace root then to shell dir
-    let shell_dir = root_path.parent().unwrap().join("userland/programs/shell");
-    
-    println!("cargo:rerun-if-changed={}", shell_dir.join("src").display());
-    println!("cargo:rerun-if-changed={}", shell_dir.join("Cargo.toml").display());
-
-    // Check both local target dir and workspace target dir
-    let local_target = shell_dir.join("target/x86_64-unknown-none/release/shell");
-    let workspace_target = root_path.parent().unwrap().join("target/x86_64-unknown-none/release/shell");
-    
-    // 値を返す際は .clone() して所有権移動を防ぐ
-    let elf_path = if local_target.exists() {
-        local_target.clone()
-    } else if workspace_target.exists() {
-        workspace_target.clone()
-    } else {
-        // エラーメッセージでパスを表示するために、変数が移動していてはいけない
-        Path::new("").to_path_buf() 
-    };
-    
-    let bin_path = root_path.join("src/shell.bin");
-    
-    if !elf_path.exists() {
-        println!("cargo:warning=Shell ELF not found at {} or {}. Using dummy binary.", local_target.display(), workspace_target.display());
-        println!("cargo:warning=Run 'cargo build -p shell --release' before building the kernel.");
-        create_dummy_binary(bin_path);
-        return;
-    }
-
-    
-    // Try to convert to binary using rust-objcopy
-    let objcopy_commands = ["rust-objcopy", "llvm-objcopy", "objcopy"];
-    let mut converted = false;
-    
-    for cmd in objcopy_commands {
-        let status = Command::new(cmd)
-            .args(["--output-target=binary", elf_path.to_str().unwrap(), bin_path.to_str().unwrap()])
-            .status();
-            
-        if let Ok(s) = status {
-            if s.success() {
-                println!("cargo:warning=Successfully created shell.bin using {}", cmd);
-                converted = true;
-                break;
-            }
-        }
-    }
-    
-    if !converted {
-        println!("cargo:warning=Could not convert shell to binary (objcopy not found).");
-        println!("cargo:warning=Using dummy shell binary (infinite loop).");
-        create_dummy_binary(bin_path);
-    }
-}
-
-fn create_dummy_binary(path: std::path::PathBuf) {
-    let dummy_code: [u8; 2] = [0xeb, 0xfe];
-    if let Err(e) = fs::write(&path, dummy_code) {
-        println!("cargo:warning=Failed to write dummy binary: {}", e);
-    }
-}
-
-
-/// Validate the build environment
-///
-/// Checks for required tools and configurations.
-fn validate_environment() {
     let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
     println!("cargo:rustc-env=RUSTC_PATH={rustc}");
 
@@ -371,11 +285,13 @@ fn print_build_info() {
     if let Ok(output) = std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()
-        && output.status.success()
-        && let Ok(commit) = String::from_utf8(output.stdout)
     {
-        let commit = commit.trim();
-        println!("cargo:rustc-env=BUILD_COMMIT={commit}");
+        if output.status.success() {
+            if let Ok(commit) = String::from_utf8(output.stdout) {
+                let commit = commit.trim();
+                println!("cargo:rustc-env=BUILD_COMMIT={commit}");
+            }
+        }
     }
 
     if profile == "release" {

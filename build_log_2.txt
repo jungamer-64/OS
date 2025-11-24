@@ -1,0 +1,274 @@
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   D:\Rust\OS\OS\userland\programs\test\Cargo.toml
+workspace: D:\Rust\OS\OS\Cargo.toml
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   D:\Rust\OS\OS\userland\programs\init\Cargo.toml
+workspace: D:\Rust\OS\OS\Cargo.toml
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   D:\Rust\OS\OS\userland\programs\syscall_test\Cargo.toml
+workspace: D:\Rust\OS\OS\Cargo.toml
+warning: D:\Rust\OS\OS\userland\programs\shell\Cargo.toml: only one of `license` or `license-file` is necessary
+`license` should be used if the package license can be expressed with a standard SPDX expression.
+`license-file` should be used if the package uses a non-standard license.
+See https://doc.rust-lang.org/cargo/reference/manifest.html#the-license-and-license-file-fields for more information.
+warning: D:\Rust\OS\OS\builder\Cargo.toml: only one of `license` or `license-file` is necessary
+`license` should be used if the package license can be expressed with a standard SPDX expression.
+`license-file` should be used if the package uses a non-standard license.
+See https://doc.rust-lang.org/cargo/reference/manifest.html#the-license-and-license-file-fields for more information.
+warning: D:\Rust\OS\OS\kernel\Cargo.toml: only one of `license` or `license-file` is necessary
+`license` should be used if the package license can be expressed with a standard SPDX expression.
+`license-file` should be used if the package uses a non-standard license.
+See https://doc.rust-lang.org/cargo/reference/manifest.html#the-license-and-license-file-fields for more information.
+warning: D:\Rust\OS\OS\userland\libuser\Cargo.toml: only one of `license` or `license-file` is necessary
+`license` should be used if the package license can be expressed with a standard SPDX expression.
+`license-file` should be used if the package uses a non-standard license.
+See https://doc.rust-lang.org/cargo/reference/manifest.html#the-license-and-license-file-fields for more information.
+    Updating crates.io index
+     Locking 1 package to latest compatible version
+ Downgrading bootloader v0.11.12 -> v0.11.10 (available: v0.11.12)
+   Compiling bootloader v0.11.10
+   Compiling serde_core v1.0.228
+   Compiling memchr v2.7.6
+   Compiling once_cell v1.21.3
+   Compiling fastrand v2.3.0
+   Compiling uuid v1.18.1
+   Compiling bitvec v1.0.1
+   Compiling byteorder v1.5.0
+   Compiling anyhow v1.0.100
+   Compiling thiserror v1.0.69
+error[E0152]: duplicate lang item in crate `core` (which `thiserror` depends on): `sized`
+  |
+  = note: the lang item is first defined in crate `core` (which `std` depends on)
+  = note: first definition in `core` loaded from C:\Users\jungamer64\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib\libcore-a281a1c30288b887.rlib
+  = note: second definition in `core` loaded from \\?\D:\Rust\OS\OS\target\x86_64-pc-windows-msvc\debug\deps\libcore-f8e495a4b1577d88.rmeta
+
+For more information about this error, try `rustc --explain E0152`.
+error[E0152]: duplicate lang item in crate `alloc` (which `once_cell` depends on): `exchange_malloc`
+  |
+  = note: the lang item is first defined in crate `alloc` (which `std` depends on)
+  = note: first definition in `alloc` loaded from C:\Users\jungamer64\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib\liballoc-7de4ad70ad25e6da.rlib
+  = note: second definition in `alloc` loaded from \\?\D:\Rust\OS\OS\target\x86_64-pc-windows-msvc\debug\deps\liballoc-51a4268a882af594.rmeta
+
+error[E0152]: duplicate lang item in crate `core` (which `std` depends on): `sized`
+  |
+  = note: the lang item is first defined in crate `core` (which `fastrand` depends on)
+  = note: first definition in `core` loaded from \\?\D:\Rust\OS\OS\target\x86_64-pc-windows-msvc\debug\deps\libcore-f8e495a4b1577d88.rmeta
+  = note: second definition in `core` loaded from C:\Users\jungamer64\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib\libcore-a281a1c30288b887.rlib
+
+error[E0152]: duplicate lang item in crate `core` (which `std` depends on): `sized`
+  |
+  = note: the lang item is first defined in crate `core` (which `anyhow` depends on)
+  = note: first definition in `core` loaded from \\?\D:\Rust\OS\OS\target\x86_64-pc-windows-msvc\debug\deps\libcore-f8e495a4b1577d88.rmeta
+  = note: second definition in `core` loaded from C:\Users\jungamer64\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib\libcore-a281a1c30288b887.rlib
+
+error[E0152]: duplicate lang item in crate `core` (which `std` depends on): `sized`
+  |
+  = note: the lang item is first defined in crate `core` (which `memchr` depends on)
+  = note: first definition in `core` loaded from \\?\D:\Rust\OS\OS\target\x86_64-pc-windows-msvc\debug\deps\libcore-f8e495a4b1577d88.rmeta
+  = note: second definition in `core` loaded from C:\Users\jungamer64\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib\libcore-a281a1c30288b887.rlib
+
+error: could not compile `thiserror` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `fastrand` (lib) due to 1 previous error
+error[E0152]: duplicate lang item in crate `core` (which `byteorder` depends on): `sized`
+  |
+  = note: the lang item is first defined in crate `core` (which `std` depends on)
+  = note: first definition in `core` loaded from C:\Users\jungamer64\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib\libcore-a281a1c30288b887.rlib
+  = note: second definition in `core` loaded from \\?\D:\Rust\OS\OS\target\x86_64-pc-windows-msvc\debug\deps\libcore-f8e495a4b1577d88.rmeta
+
+error: could not compile `anyhow` (lib) due to 1 previous error
+error: could not compile `memchr` (lib) due to 1 previous error
+error: could not compile `once_cell` (lib) due to 1 previous error
+error: could not compile `byteorder` (lib) due to 1 previous error
+error[E0152]: duplicate lang item in crate `core` (which `std` depends on): `sized`
+  |
+  = note: the lang item is first defined in crate `core` (which `uuid` depends on)
+  = note: first definition in `core` loaded from \\?\D:\Rust\OS\OS\target\x86_64-pc-windows-msvc\debug\deps\libcore-f8e495a4b1577d88.rmeta
+  = note: second definition in `core` loaded from C:\Users\jungamer64\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib\libcore-a281a1c30288b887.rlib
+
+error: could not compile `uuid` (lib) due to 1 previous error
+error[E0152]: duplicate lang item in crate `alloc` (which `bitvec` depends on): `exchange_malloc`
+  |
+  = note: the lang item is first defined in crate `alloc` (which `std` depends on)
+  = note: first definition in `alloc` loaded from C:\Users\jungamer64\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib\liballoc-7de4ad70ad25e6da.rlib
+  = note: second definition in `alloc` loaded from \\?\D:\Rust\OS\OS\target\x86_64-pc-windows-msvc\debug\deps\liballoc-51a4268a882af594.rmeta
+
+error[E0152]: duplicate lang item in crate `core` (which `serde_core` depends on): `sized`
+  |
+  = note: the lang item is first defined in crate `core` (which `std` depends on)
+  = note: first definition in `core` loaded from C:\Users\jungamer64\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib\libcore-a281a1c30288b887.rlib
+  = note: second definition in `core` loaded from \\?\D:\Rust\OS\OS\target\x86_64-pc-windows-msvc\debug\deps\libcore-f8e495a4b1577d88.rmeta
+
+error: could not compile `bitvec` (lib) due to 1 previous error
+error: could not compile `serde_core` (lib) due to 1 previous error
+error: failed to run custom build command for `bootloader v0.11.10`
+
+Caused by:
+  process didn't exit successfully: `D:\Rust\OS\OS\target\debug\build\bootloader-6275bfeba45cff37\build-script-build` (exit code: 101)
+  --- stdout
+  cargo:rustc-env=UEFI_BOOTLOADER_PATH=D:\Rust\OS\OS\target\x86_64-pc-windows-msvc\debug\build\bootloader-1bb80df99cd4b402\out\bin\bootloader-x86_64-uefi.efi
+
+  --- stderr
+      Blocking waiting for file lock on package cache
+      Blocking waiting for file lock on crate metadata
+      Updating crates.io index
+      Blocking waiting for file lock on package cache
+      Blocking waiting for file lock on crate metadata
+      Blocking waiting for file lock on package cache
+      Blocking waiting for file lock on package cache
+      Blocking waiting for file lock on package cache
+      Updating crates.io index
+    Installing bootloader-x86_64-bios-boot-sector v0.11.10
+      Blocking waiting for file lock on package cache
+      Updating crates.io index
+    Installing bootloader-x86_64-uefi v0.11.10
+      Blocking waiting for file lock on package cache
+      Updating crates.io index
+    Installing bootloader-x86_64-bios-stage-2 v0.11.10
+      Blocking waiting for file lock on package cache
+      Updating crates.io index
+    Installing bootloader-x86_64-bios-stage-4 v0.11.10
+      Blocking waiting for file lock on package cache
+      Blocking waiting for file lock on package cache
+      Updating crates.io index
+    Installing bootloader-x86_64-bios-stage-3 v0.11.10
+      Blocking waiting for file lock on package cache
+      Blocking waiting for file lock on package cache
+      Updating crates.io index
+      Blocking waiting for file lock on package cache
+      Updating crates.io index
+      Blocking waiting for file lock on package cache
+      Updating crates.io index
+      Updating crates.io index
+      Blocking waiting for file lock on package cache
+  error: failed to compile `bootloader-x86_64-bios-boot-sector v0.11.10`, intermediate artifacts can be found at `C:\Users\JUNGAM~1\AppData\Local\Temp\cargo-install7TkxPA`.
+  To reuse those artifacts with a future compilation, set the environment variable `CARGO_TARGET_DIR` to that path.
+
+  Caused by:
+    failed to run `rustc` to learn about target-specific information
+
+  Caused by:
+    process didn't exit successfully: `C:\Users\jungamer64\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\bin\rustc.exe - --crate-name ___ --print=file-names --target \\?\C:\Users\jungamer64\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bootloader-0.11.10\i386-code16-boot-sector.json --crate-type bin --crate-type rlib --crate-type dylib --crate-type cdylib --crate-type staticlib --crate-type proc-macro --print=sysroot --print=split-debuginfo --print=crate-name --print=cfg -Wwarnings` (exit code: 1)
+    --- stderr
+    error: error loading target specification: target-c-int-width: invalid type: string "32", expected u16 at line 13 column 27
+      |
+      = help: run `rustc --print target-list` for a list of built-in targets
+
+
+  thread '<unnamed>' (11244) panicked at C:\Users\jungamer64\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bootloader-0.11.10\build.rs:162:9:
+  failed to build bios boot sector
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  thread '<unnamed>' (21684) panicked at C:\Users\jungamer64\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bootloader-0.11.10\build.rs:33:69:
+  called `Result::unwrap()` on an `Err` value: Any { .. }
+  warning: package `atomic-polyfill v0.1.11` in Cargo.lock is yanked in registry `crates-io`, consider running without --locked
+  warning: package `critical-section v1.1.1` in Cargo.lock is yanked in registry `crates-io`, consider running without --locked
+      Blocking waiting for file lock on package cache
+  error: failed to compile `bootloader-x86_64-bios-stage-2 v0.11.10`, intermediate artifacts can be found at `C:\Users\JUNGAM~1\AppData\Local\Temp\cargo-installP11UCG`.
+  To reuse those artifacts with a future compilation, set the environment variable `CARGO_TARGET_DIR` to that path.
+
+  Caused by:
+    failed to run `rustc` to learn about target-specific information
+
+  Caused by:
+    process didn't exit successfully: `C:\Users\jungamer64\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\bin\rustc.exe - --crate-name ___ --print=file-names --target \\?\C:\Users\jungamer64\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bootloader-0.11.10\i386-code16-stage-2.json --crate-type bin --crate-type rlib --crate-type dylib --crate-type cdylib --crate-type staticlib --crate-type proc-macro --print=sysroot --print=split-debuginfo --print=crate-name --print=cfg -Wwarnings` (exit code: 1)
+    --- stderr
+    error: error loading target specification: target-c-int-width: invalid type: string "32", expected u16 at line 13 column 27
+      |
+      = help: run `rustc --print target-list` for a list of built-in targets
+
+
+  thread '<unnamed>' (23000) panicked at C:\Users\jungamer64\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bootloader-0.11.10\build.rs:229:9:
+  failed to build bios second stage
+  warning: package `atomic-polyfill v0.1.11` in Cargo.lock is yanked in registry `crates-io`, consider running without --locked
+  warning: package `critical-section v1.1.1` in Cargo.lock is yanked in registry `crates-io`, consider running without --locked
+      Updating crates.io index
+  error: failed to compile `bootloader-x86_64-bios-stage-4 v0.11.10`, intermediate artifacts can be found at `C:\Users\JUNGAM~1\AppData\Local\Temp\cargo-install2nBi0V`.
+  To reuse those artifacts with a future compilation, set the environment variable `CARGO_TARGET_DIR` to that path.
+
+  Caused by:
+    failed to run `rustc` to learn about target-specific information
+
+  Caused by:
+    process didn't exit successfully: `C:\Users\jungamer64\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\bin\rustc.exe - --crate-name ___ --print=file-names --target \\?\C:\Users\jungamer64\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bootloader-0.11.10\x86_64-stage-4.json --crate-type bin --crate-type rlib --crate-type dylib --crate-type cdylib --crate-type staticlib --crate-type proc-macro --print=sysroot --print=split-debuginfo --print=crate-name --print=cfg -Wwarnings` (exit code: 1)
+    --- stderr
+    error: error loading target specification: target-pointer-width: invalid type: string "64", expected u16 at line 19 column 32
+      |
+      = help: run `rustc --print target-list` for a list of built-in targets
+
+
+  thread '<unnamed>' (21768) panicked at C:\Users\jungamer64\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bootloader-0.11.10\build.rs:355:9:
+  failed to build bios stage-4
+  error: failed to compile `bootloader-x86_64-bios-stage-3 v0.11.10`, intermediate artifacts can be found at `C:\Users\JUNGAM~1\AppData\Local\Temp\cargo-installciIkAF`.
+  To reuse those artifacts with a future compilation, set the environment variable `CARGO_TARGET_DIR` to that path.
+
+  Caused by:
+    failed to run `rustc` to learn about target-specific information
+
+  Caused by:
+    process didn't exit successfully: `C:\Users\jungamer64\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\bin\rustc.exe - --crate-name ___ --print=file-names --target \\?\C:\Users\jungamer64\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bootloader-0.11.10\i686-stage-3.json --crate-type bin --crate-type rlib --crate-type dylib --crate-type cdylib --crate-type staticlib --crate-type proc-macro --print=sysroot --print=split-debuginfo --print=crate-name --print=cfg -Wwarnings` (exit code: 1)
+    --- stderr
+    error: error loading target specification: target-c-int-width: invalid type: string "32", expected u16 at line 13 column 30
+      |
+      = help: run `rustc --print target-list` for a list of built-in targets
+
+
+  thread '<unnamed>' (6076) panicked at C:\Users\jungamer64\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bootloader-0.11.10\build.rs:292:9:
+  failed to build bios stage-3
+     Compiling compiler_builtins v0.1.160 (C:\Users\jungamer64\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\compiler-builtins\compiler-builtins)
+     Compiling core v0.0.0 (C:\Users\jungamer64\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\core)
+     Compiling proc-macro2 v1.0.63
+     Compiling quote v1.0.29
+     Compiling unicode-ident v1.0.10
+     Compiling autocfg v1.1.0
+     Compiling semver v1.0.17
+     Compiling syn v1.0.109
+     Compiling rustversion v1.0.13
+     Compiling serde v1.0.166
+     Compiling bootloader_api v0.11.10
+     Compiling lock_api v0.4.10
+     Compiling rustc_version v0.4.0
+     Compiling heapless v0.7.16
+     Compiling syn v2.0.23
+     Compiling serde_derive v1.0.166
+     Compiling ptr_meta_derive v0.2.0
+     Compiling uefi-macros v0.11.0
+     Compiling bit_field v0.10.2
+     Compiling scopeguard v1.1.0
+     Compiling bitflags v2.3.3
+     Compiling bitflags v1.3.2
+     Compiling volatile v0.4.6
+     Compiling rand_core v0.6.4
+     Compiling byteorder v1.4.3
+     Compiling log v0.4.19
+     Compiling conquer-util v0.3.0
+     Compiling stable_deref_trait v1.2.0
+     Compiling zero v0.1.3
+     Compiling rand_hc v0.3.2
+     Compiling hash32 v0.2.1
+     Compiling x86_64 v0.14.13
+     Compiling xmas-elf v0.8.0
+     Compiling x86_64 v0.15.2
+     Compiling rand v0.8.5
+     Compiling spin v0.9.8
+     Compiling spinning_top v0.2.5
+     Compiling ucs2 v0.3.2
+     Compiling raw-cpuid v10.7.0
+     Compiling conquer-once v0.3.2
+     Compiling ptr_meta v0.2.0
+     Compiling noto-sans-mono-bitmap v0.2.0
+     Compiling usize_conversions v0.2.0
+     Compiling ryu v1.0.14
+     Compiling uefi v0.20.0
+     Compiling uart_16550 v0.2.18
+     Compiling bootloader-boot-config v0.11.10
+     Compiling serde-json-core v0.5.0
+     Compiling bootloader-x86_64-common v0.11.10
+     Compiling bootloader-x86_64-uefi v0.11.10
+      Finished `release` profile [optimized] target(s) in 26.48s
+    Installing D:\Rust\OS\OS\target\x86_64-pc-windows-msvc\debug\build\bootloader-1bb80df99cd4b402\out\bin\bootloader-x86_64-uefi.efi
+     Installed package `bootloader-x86_64-uefi v0.11.10` (executable `bootloader-x86_64-uefi.efi`)
+  warning: be sure to add `D:\Rust\OS\OS\target\x86_64-pc-windows-msvc\debug\build\bootloader-1bb80df99cd4b402\out\bin` to your PATH to be able to run the installed binaries
+
+  thread 'main' (18456) panicked at C:\Users\jungamer64\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bootloader-0.11.10\build.rs:17:29:
+  called `Result::unwrap()` on an `Err` value: Any { .. }

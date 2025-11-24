@@ -27,26 +27,24 @@ pub enum LoadError {
 /// In Phase 2, we embed the compiled user program directly into the kernel.
 /// Phase 3 will implement proper ELF loading from disk.
 /// 
-/// Note: The shell binary is built by build.rs and placed in src/shell.bin
-static USER_PROGRAM: &[u8] = include_bytes!("../shell.bin");
-
-
 /// Load embedded user program into a new process
 ///
 /// # Arguments
+/// * `data` - Program binary data
 /// * `mapper` - User page table mapper
 /// * `frame_allocator` - Frame allocator
 ///
 /// # Returns
 /// LoadedProgram info
 pub fn load_user_program<A>(
+    data: &[u8],
     mapper: &mut OffsetPageTable,
     frame_allocator: &mut A,
 ) -> Result<LoadedProgram, LoadError>
 where
     A: FrameAllocator<Size4KiB>,
 {
-    let code = USER_PROGRAM;
+    let code = data;
     // Entry point at the start of the binary (release build)
     let entry_point = VirtAddr::new(USER_CODE_BASE);
     
@@ -56,8 +54,6 @@ where
         &code[..16.min(code.len())]);
     
     // Map code into user space
-    // We need to pass physical_memory_offset? 
-    // map_user_code implementation in user_paging.rs uses global PHYS_MEM_OFFSET
     unsafe {
         map_user_code(mapper, code, entry_point, frame_allocator)
             .map_err(|_| LoadError::MappingFailure)?;

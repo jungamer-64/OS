@@ -12,7 +12,7 @@ use alloc::sync::Arc;
 use alloc::alloc::{alloc_zeroed, Layout};
 use spin::Mutex;
 use lazy_static::lazy_static;
-use crate::kernel::fs::FileDescriptor;
+use crate::kernel::fs::FileDescriptor;  // Re-enabled with stub trait
 
 pub mod lifecycle;
 pub mod switch;

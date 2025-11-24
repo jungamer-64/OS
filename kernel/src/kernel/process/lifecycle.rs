@@ -6,8 +6,9 @@ use crate::kernel::loader::load_user_program;
 use crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR;
 use crate::kernel::mm::PHYS_MEM_OFFSET;
 use x86_64::VirtAddr;
-use x86_64::structures::paging::{OffsetPageTable, PageTable, PhysFrame, PageTableFlags};
+use x86_64::structures::paging::{OffsetPageTable, PageTable, PhysFrame, PageTableFlags, Translate};
 use x86_64::structures::paging::page::Size4KiB;
+
 
 
 /// Error types for process creation
@@ -19,6 +20,8 @@ pub enum CreateError {
     LoaderError(crate::kernel::loader::LoadError),
     /// Page table creation error
     PageTableCreationError(&'static str),
+    /// File not found
+    FileNotFound,
 }
 
 impl From<crate::kernel::loader::LoadError> for CreateError {
@@ -30,8 +33,8 @@ impl From<crate::kernel::loader::LoadError> for CreateError {
 /// Create a new user process
 /// 
 /// This is the main entry point for creating processes in Phase 2.
-/// It creates a new process, loads the embedded user program, and adds it to the process table.
-pub fn create_user_process() -> Result<(ProcessId, VirtAddr, VirtAddr, u64), CreateError> {
+/// It creates a new process, loads the program from the filesystem, and adds it to the process table.
+pub fn create_user_process(path: &str) -> Result<(ProcessId, VirtAddr, VirtAddr, u64), CreateError> {
     let mut allocator_lock = BOOT_INFO_ALLOCATOR.lock();
     let frame_allocator = allocator_lock.as_mut().ok_or(CreateError::FrameAllocationFailed)?;
     
@@ -59,7 +62,7 @@ pub fn create_user_process() -> Result<(ProcessId, VirtAddr, VirtAddr, u64), Cre
 
         let mut mapper = unsafe { OffsetPageTable::new(l4_table, phys_mem_offset) };
         
-        // Get embedded program binary
+        // Get embedded program binary (TODO: Use VFS when implemented)
         let program_data = include_bytes!("../../shell.bin");
         
         // Try ELF loader first, fallback to legacy loader
@@ -91,7 +94,7 @@ pub fn create_user_process() -> Result<(ProcessId, VirtAddr, VirtAddr, u64), Cre
             },
             Err(_) => {
                 crate::debug_println!("[create] Using legacy flat binary loader");
-                load_user_program(&mut mapper, frame_allocator)?
+                load_user_program(program_data, &mut mapper, frame_allocator)?
             }
         };
         
@@ -115,8 +118,16 @@ pub fn create_user_process() -> Result<(ProcessId, VirtAddr, VirtAddr, u64), Cre
         }
         
         // Update process entry point and stack
+        // [PHASE 3 FIX] Adjust stack top to be within mapped range
+        // User stack is mapped at 0x6fffffff0000 ~ 0x6fffffffFFFF (16 pages = 65536 bytes)
+        // Stack top should be 0x6fffffffFFFF + 1 - 8 = 0x6ffffffff000 + 0xFF8 = 0x6fffffffffF8
+        // But for safety, use 0x6ffffffff000 which is definitely mapped
+        let adjusted_stack_top = loaded_program.stack_top.as_u64() - 4096; // One page below boundary
+        crate::debug_println!("[PHASE 3 FIX] Adjusting stack top from {:#x} to {:#x}", 
+            loaded_program.stack_top.as_u64(), adjusted_stack_top);
+        
         process.registers_mut().rip = loaded_program.entry_point.as_u64();
-        process.registers_mut().rsp = loaded_program.stack_top.as_u64();
+        process.registers_mut().rsp = adjusted_stack_top;
     }
     
     // Setup initial kernel stack context for switching
@@ -135,6 +146,115 @@ pub fn create_user_process() -> Result<(ProcessId, VirtAddr, VirtAddr, u64), Cre
         crate::arch::x86_64::run_cr3_diagnostic_tests(user_cr3);
     }
     crate::debug_println!("[PHASE 3] ========================================\n");
+    
+    // [PHASE 3] Map user code to kernel page table (workaround for CR3 switching)
+    crate::debug_println!("[PHASE 3] Mapping user code to kernel page table...");
+    unsafe {
+        // Get current kernel CR3
+        let kernel_cr3: u64;
+        core::arch::asm!("mov {}, cr3", out(reg) kernel_cr3, options(nomem, nostack));
+        crate::debug_println!("[PHASE 3] Kernel CR3: {:#x}", kernel_cr3);
+        
+        let phys_offset = crate::kernel::mm::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+        let phys_mem_offset = x86_64::VirtAddr::new(phys_offset);
+        
+        // Get kernel page table
+        let kernel_l4_ptr = (phys_mem_offset + kernel_cr3).as_mut_ptr::<PageTable>();
+        let kernel_l4 = &mut *kernel_l4_ptr;
+        let mut kernel_mapper = OffsetPageTable::new(kernel_l4, phys_mem_offset);
+        
+        // Get user page table to find physical frames
+        let user_l4_ptr = (phys_mem_offset + user_cr3).as_mut_ptr::<PageTable>();
+        let user_l4 = &mut *user_l4_ptr;
+        let user_mapper = OffsetPageTable::new(user_l4, phys_mem_offset);
+        
+        // Map user code pages (assuming 0x400000 base, and typical program size)
+        let user_code_start = x86_64::VirtAddr::new(0x400000);
+        let num_code_pages = 16; // Generous estimate for shell.bin
+        
+        for i in 0..num_code_pages {
+            let virt = user_code_start + (i * 4096u64);
+            
+            // Translate in user page table
+            use x86_64::structures::paging::mapper::TranslateResult;
+            match user_mapper.translate(virt) {
+                TranslateResult::Mapped { frame, .. } => {
+                    let frame_addr = frame.start_address();
+                    crate::debug_println!("[PHASE 3] Mapping code page {:#x} -> frame {:#x}", virt.as_u64(), frame_addr.as_u64());
+                    
+                    // Map same physical frame in kernel page table with USER_ACCESSIBLE flag
+                    use x86_64::structures::paging::{Page, Mapper};
+                    let page: Page = Page::containing_address(virt);
+                    let phys_frame = PhysFrame::<Size4KiB>::containing_address(frame_addr);
+                    let flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+                    
+                    // Check if already mapped
+                    match kernel_mapper.translate(virt) {
+                        TranslateResult::Mapped { .. } => {
+                            // Already mapped, skip
+                            crate::debug_println!("[PHASE 3] Page {:#x} already mapped in kernel page table", virt.as_u64());
+                        }
+                        _ => {
+                            // Not mapped yet, map it
+                            kernel_mapper.map_to(page, phys_frame, flags, frame_allocator)
+                                .map_err(|_| CreateError::PageTableCreationError("Failed to map user code to kernel page table"))?
+                                .flush();
+                        }
+                    }
+                }
+                _ => {
+                    // No more code pages
+                    break;
+                }
+            }
+        }
+        
+        crate::debug_println!("[PHASE 3] User code mapped to kernel page table successfully");
+        
+        // [PHASE 3] Map user stack to kernel page table
+        crate::debug_println!("[PHASE 3] Mapping user stack to kernel page table...");
+        let user_stack_top = x86_64::VirtAddr::new(user_stack.as_u64());
+        let user_stack_pages = 16; // 64KB stack
+        
+        for i in 1..=user_stack_pages {
+            let virt = user_stack_top - (i * 4096u64);
+            
+            // Translate in user page table
+            use x86_64::structures::paging::mapper::TranslateResult;
+            match user_mapper.translate(virt) {
+                TranslateResult::Mapped { frame, .. } => {
+                    let frame_addr = frame.start_address();
+                    crate::debug_println!("[PHASE 3] Mapping stack page {:#x} -> frame {:#x}", virt.as_u64(), frame_addr.as_u64());
+                    
+                    // Map same physical frame in kernel page table with USER_ACCESSIBLE | WRITABLE flag
+                    use x86_64::structures::paging::{Page, Mapper};
+                    let page: Page = Page::containing_address(virt);
+                    let phys_frame = PhysFrame::<Size4KiB>::containing_address(frame_addr);
+                    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+                    
+                    // Check if already mapped
+                    match kernel_mapper.translate(virt) {
+                        TranslateResult::Mapped { .. } => {
+                            // Already mapped, skip
+                            crate::debug_println!("[PHASE 3] Stack page {:#x} already mapped in kernel page table", virt.as_u64());
+                        }
+                        _ => {
+                            // Not mapped yet, map it
+                            kernel_mapper.map_to(page, phys_frame, flags, frame_allocator)
+                                .map_err(|_| CreateError::PageTableCreationError("Failed to map user stack to kernel page table"))?
+                                .flush();
+                        }
+                    }
+                }
+                _ => {
+                    // No more stack pages
+                    break;
+                }
+            }
+        }
+        
+        crate::debug_println!("[PHASE 3] User stack mapped to kernel page table successfully");
+    }
     
     // 3. Add to process table
     {
@@ -429,12 +549,11 @@ pub fn fork_process() -> Result<ProcessId, CreateError> {
 /// Execute a new program in the current process
 ///
 /// Replaces the current process image with a new one.
-/// Note: Currently only reloads the embedded user program.
 ///
 /// # Returns
 /// * `Ok(0)` - Success (new program starts)
 /// * `Err(e)` - Error code
-pub fn exec_process() -> Result<u64, CreateError> {
+pub fn exec_process(path: &str) -> Result<u64, CreateError> {
     let mut allocator_lock = BOOT_INFO_ALLOCATOR.lock();
     let frame_allocator = allocator_lock.as_mut().ok_or(CreateError::FrameAllocationFailed)?;
     let phys_mem_offset = VirtAddr::new(PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed));
@@ -469,7 +588,7 @@ pub fn exec_process() -> Result<u64, CreateError> {
         let l4_table = unsafe { &mut *l4_table_ptr };
         let mut mapper = unsafe { OffsetPageTable::new(l4_table, phys_mem_offset) };
         
-        // Get embedded program binary
+        // Get embedded program binary (TODO: Use VFS when implemented)
         let program_data = include_bytes!("../../shell.bin");
         
         // Try ELF loader first, fallback to legacy loader
@@ -485,7 +604,7 @@ pub fn exec_process() -> Result<u64, CreateError> {
             },
             Err(_) => {
                 crate::debug_println!("[exec] Using legacy flat binary loader");
-                let loaded_program = load_user_program(&mut mapper, frame_allocator)?;
+                let loaded_program = load_user_program(program_data, &mut mapper, frame_allocator)?;
                 (loaded_program.entry_point, loaded_program.stack_top)
             }
         }

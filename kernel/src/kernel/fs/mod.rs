@@ -1,43 +1,42 @@
-//! File System and IPC module
+//! Filesystem abstraction layer
 
-/// Pipe implementation for inter-process communication.
-pub mod pipe;
-
-/// Result type for file operations
-pub type FileResult<T> = Result<T, FileError>;
+// pub mod initrd;  // TODO: Implement
+// pub mod vfs;     // TODO: Implement
 
 /// File operation errors
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub enum FileError {
-    /// Operation not implemented
-    NotImplemented,
-    /// Broken pipe (writer closed)
+    /// End of file / broken pipe
     BrokenPipe,
     /// Operation would block
     WouldBlock,
-    /// Invalid input provided
-    InvalidInput,
-    /// Other error
-    Other,
+    /// Input/output error
+    IoError,
+    /// Invalid argument
+    InvalidArgument,
 }
 
-/// File Descriptor Trait
-/// 
-/// Represents an open file, pipe, or other resource that can be read/written.
+/// File descriptor trait (stub for now)
 pub trait FileDescriptor: Send + Sync {
-    /// Read bytes from the file into the buffer
-    /// Returns the number of bytes read
-    fn read(&mut self, buf: &mut [u8]) -> FileResult<usize>;
+    /// Read from file descriptor
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, FileError>;
     
-    /// Write bytes to the file from the buffer
-    /// Returns the number of bytes written
-    fn write(&mut self, buf: &[u8]) -> FileResult<usize>;
+    /// Write to file descriptor
+    fn write(&mut self, buf: &[u8]) -> Result<usize, FileError>;
     
-    /// Close the file descriptor
-    fn close(&mut self) -> FileResult<()>;
+    /// Close file descriptor
+    fn close(&mut self) -> Result<(), FileError> {
+        Ok(()) // Default implementation does nothing
+    }
+}
+
+/// Trait for filesystem implementations
+pub trait FileSystem: Send + Sync {
+    /// Read file contents
+    fn read_file(&self, path: &str) -> Option<&[u8]>;
     
-    /// Poll for readiness (optional, for non-blocking I/O)
-    fn poll(&self) -> bool {
-        true
+    /// Check if file exists
+    fn exists(&self, path: &str) -> bool {
+        self.read_file(path).is_some()
     }
 }

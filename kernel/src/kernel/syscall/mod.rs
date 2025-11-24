@@ -356,10 +356,25 @@ pub fn sys_fork(_arg1: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg
 }
 
 /// sys_exec - Execute program
-pub fn sys_exec(_path: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    // Note: path argument is ignored for now as we only have one embedded program
-    match crate::kernel::process::lifecycle::exec_process() {
+pub fn sys_exec(path_ptr: u64, path_len: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    // Validate path pointer
+    if let Err(e) = validate_user_read(path_ptr, path_len) {
+        return e;
+    }
+    
+    // Read path string
+    let path_slice = unsafe {
+        core::slice::from_raw_parts(path_ptr as *const u8, path_len as usize)
+    };
+    
+    let path_str = match core::str::from_utf8(path_slice) {
+        Ok(s) => s,
+        Err(_) => return EINVAL,
+    };
+    
+    match crate::kernel::process::lifecycle::exec_process(path_str) {
         Ok(_) => 0,
+        Err(crate::kernel::process::lifecycle::CreateError::FileNotFound) => ENOENT,
         Err(_) => ENOMEM,
     }
 }
@@ -567,47 +582,11 @@ pub fn sys_mmap(addr: u64, len: u64, _prot: u64, _flags: u64, _fd: u64, _offset:
     start_addr.as_u64() as SyscallResult
 }
 
-/// sys_pipe - Create a pipe
-pub fn sys_pipe(pipefd: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    use crate::kernel::process::PROCESS_TABLE;
-    use crate::kernel::fs::pipe::{Pipe, PipeReader, PipeWriter};
-    use alloc::sync::Arc;
-    use spin::Mutex;
-
-    // Validate that pipefd is writable (needs 2 * u64)
-    if let Err(e) = validate_user_write(pipefd, 2 * core::mem::size_of::<u64>() as u64) {
-        return e;
-    }
-
-    // Create pipe
-    let pipe = Arc::new(Mutex::new(Pipe::new()));
-    
-    let reader = Arc::new(Mutex::new(PipeReader {
-        pipe: pipe.clone(),
-    }));
-    
-    let writer = Arc::new(Mutex::new(PipeWriter {
-        pipe,
-    }));
-
-    // Add FDs to process
-    let mut table = PROCESS_TABLE.lock();
-    let process = match table.current_process_mut() {
-        Some(p) => p,
-        None => return ESRCH,
-    };
-
-    let read_fd = process.add_file_descriptor(reader);
-    let write_fd = process.add_file_descriptor(writer);
-
-    // Write FDs to user memory (already validated above)
-    unsafe {
-        let pipefd_ptr = pipefd as *mut u64;
-        *pipefd_ptr = read_fd;
-        *pipefd_ptr.add(1) = write_fd;
-    }
-
-    SUCCESS
+/// sys_pipe - Create a pipe (TODO: Not implemented)
+pub fn sys_pipe(_pipefd: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    // TODO: Implement pipe support
+    crate::debug_println!("[Syscall] sys_pipe: Not implemented");
+    ENOSYS // Function not implemented
 }
 
 /// sys_munmap - Unmap memory
