@@ -15,12 +15,12 @@ jump_to_usermode_asm:
     cli
     
     ; Save arguments
-    mov r10, rdx      ; CR3
+    ; mov r10, rdx      ; CR3 (NOT USED - Phase 3: postponed to Phase 4)
     mov r11, rsi      ; User stack
     mov r12, rcx      ; RFLAGS
     mov r13, rdi      ; Entry point
     
-    ; Build iretq frame on KERNEL stack (accessible in both page tables)
+    ; Build iretq frame on KERNEL stack
     mov rax, 0x23
     push rax          ; SS (user data)
     push r11          ; RSP (user stack)
@@ -29,20 +29,9 @@ jump_to_usermode_asm:
     push rax          ; CS (user code)
     push r13          ; RIP (entry point)
     
-    ; [PHASE 3] Switch CR3 to user page table
-    mov cr3, r10
+    ; [PHASE 3] CR3 switching postponed to Phase 4
+    ; Instead, user code is mapped to kernel page table
+    ; mov cr3, r10
     
-    ; NOP sled to identify where failure occurs
-    nop
-    nop
-    nop
-    nop
-    nop
-    
-    ; iretq will:
-    ; 1. Set CS to 0x1b (user code) and RIP to entry point
-    ; 2. Set RFLAGS
-    ; 3. Set SS to 0x23 (user data) and RSP to user stack
-    ; Note: DS, ES, FS, GS remain as kernel segments
-    ; User code must set them if needed
+    ; iretq will load SS:RSP, RFLAGS, CS:RIP from stack
     iretq

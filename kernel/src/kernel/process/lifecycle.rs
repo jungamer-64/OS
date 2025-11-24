@@ -95,6 +95,12 @@ pub fn create_user_process() -> Result<(ProcessId, VirtAddr, VirtAddr, u64), Cre
             crate::debug_println!("[VALIDATION] Checking user page table mappings:");
             dump_page_table_entry(&user_mapper, loaded_program.entry_point, "User Code Entry");
             dump_page_table_entry(&user_mapper, loaded_program.stack_top, "User Stack Top");
+            
+            // [PHASE 3] Check if kernel stack is accessible in user page table
+            let kernel_rsp: u64;
+            core::arch::asm!("mov {}, rsp", out(reg) kernel_rsp, options(nomem, nostack));
+            crate::debug_println!("[VALIDATION] Current kernel RSP: {:#x}", kernel_rsp);
+            dump_page_table_entry(&user_mapper, x86_64::VirtAddr::new(kernel_rsp), "Kernel Stack (iretq frame location)");
         }
         
         // Update process entry point and stack
