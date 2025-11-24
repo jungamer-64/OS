@@ -76,27 +76,35 @@ fn compile_assembly() {
     use std::path::PathBuf;
     
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
-    // Path is relative to kernel directory (where Cargo.toml is)
-    let asm_file = PathBuf::from("../src/arch/x86_64/jump_to_usermode.asm");
-    let obj_file = PathBuf::from(&out_dir).join("jump_to_usermode.o");
     
-    println!("cargo:rerun-if-changed=../src/arch/x86_64/jump_to_usermode.asm");
+    // List of assembly files to compile
+    let asm_files = vec![
+        ("src/arch/x86_64/jump_to_usermode.asm", "jump_to_usermode.o"),
+        ("src/arch/x86_64/cr3_test.asm", "cr3_test.o"),
+    ];
     
-    // Compile assembly with NASM
-    // Use ELF64 format for rust-lld (GNU flavor)
-    let status = Command::new("nasm")
-        .args([
-            "-f", "elf64",           // ELF 64-bit format (for rust-lld)
-            "-o", obj_file.to_str().unwrap(),
-            asm_file.to_str().unwrap(),
-        ])
-        .status()
-        .expect("Failed to run NASM");
-    
-    assert!(status.success(), "NASM compilation failed!");
-    
-    // Link the object file directly
-    println!("cargo:rustc-link-arg={}", obj_file.display());
+    for (asm_file, obj_name) in asm_files {
+        let asm_path = PathBuf::from(asm_file);
+        let obj_file = PathBuf::from(&out_dir).join(obj_name);
+        
+        println!("cargo:rerun-if-changed={}", asm_file);
+        
+        // Compile assembly with NASM
+        // Use ELF64 format for rust-lld (GNU flavor)
+        let status = Command::new("nasm")
+            .args([
+                "-f", "elf64",           // ELF 64-bit format (for rust-lld)
+                "-o", obj_file.to_str().unwrap(),
+                asm_path.to_str().unwrap(),
+            ])
+            .status()
+            .expect("Failed to run NASM");
+        
+        assert!(status.success(), "NASM compilation failed for {}", asm_file);
+        
+        // Link the object file directly
+        println!("cargo:rustc-link-arg={}", obj_file.display());
+    }
 }
 
 fn main() {

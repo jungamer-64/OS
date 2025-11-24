@@ -617,11 +617,23 @@ where
     // Copy kernel entries (1-511) to enable kernel access during privilege transitions
     // Skip Entry 0 - it's reserved for user space (user code and stack)
     crate::debug_println!("[create_user_page_table] Copying kernel entries (1-511)");
+    let mut copied_entries = 0;
     for i in 1..512 {
         if !kernel_pt[i].is_unused() {
             page_table[i] = kernel_pt[i].clone();
+            copied_entries += 1;
+            // Detailed logging for critical entries
+            if i == 511 || (i >= 2 && i <= 6) {
+                crate::debug_println!(
+                    "  [COPY] Entry {}: {:#x} -> flags: {:?}",
+                    i,
+                    kernel_pt[i].addr().as_u64(),
+                    kernel_pt[i].flags()
+                );
+            }
         }
     }
+    crate::debug_println!("[create_user_page_table] Copied {} entries", copied_entries);
     
     crate::debug_println!("[create_user_page_table] Copy completed, frame={:#x}", frame.start_address().as_u64());
     

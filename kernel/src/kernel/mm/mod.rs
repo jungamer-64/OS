@@ -11,6 +11,11 @@ pub mod page_fault;
 pub use allocator::{LockedHeap, LinkedListAllocator};
 pub use frame::{BootInfoFrameAllocator, EmptyFrameAllocator};
 pub use types::{PhysAddr, VirtAddr, LayoutSize, PageFrameNumber, MemoryError};
+pub use user_paging::{
+    map_user_code, map_user_stack, free_user_page_table,
+    validate_user_page_flags, dump_page_table_entry,
+    USER_CODE_BASE,
+};
 
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
 use core::sync::atomic::AtomicU64;

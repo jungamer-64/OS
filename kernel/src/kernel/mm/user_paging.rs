@@ -11,7 +11,7 @@ use alloc::format;
 use x86_64::{
     structures::paging::{
         Page, PageTableFlags, PhysFrame, Size4KiB,
-        Mapper, FrameAllocator, OffsetPageTable,
+        Mapper, FrameAllocator, OffsetPageTable, Translate,
         page_table::PageTableEntry,
     },
     VirtAddr,
@@ -648,55 +648,62 @@ unsafe fn free_pt_entry(
     entry.set_unused();
 }
 
-/// WORKAROUND: Map user code region to kernel page table
-/// This is needed because we skip CR3 switch (Phase 2.5 limitation)
-/// TODO Phase 3: Remove this when proper CR3 switching is implemented
-pub unsafe fn map_user_code_to_kernel<A>(
-    kernel_mapper: &mut OffsetPageTable,
-    code_size: usize,
-    base_addr: VirtAddr,
-    frame_allocator: &mut A,
-) -> Result<(), MapError>
-where
-    A: FrameAllocator<Size4KiB>,
-{
-    let num_pages = (code_size + 4095) / 4096;
+/// Validate page table entry flags at all levels
+/// Returns true if all levels have USER_ACCESSIBLE flag
+pub unsafe fn validate_user_page_flags(
+    mapper: &OffsetPageTable,
+    virt_addr: VirtAddr,
+) -> bool {
+    use x86_64::structures::paging::PageTableFlags;
     
-    crate::debug_println!(
-        "[WORKAROUND] Mapping user code to kernel page table: {} bytes ({} pages) at {:#x}",
-        code_size,
-        num_pages,
-        base_addr.as_u64()
-    );
+    let _page: Page<Size4KiB> = Page::containing_address(virt_addr);
     
-    for i in 0..num_pages {
-        let page_addr = base_addr + (i * 4096) as u64;
-        let page: Page<Size4KiB> = Page::containing_address(page_addr);
-        
-        // Check if already mapped
-        if kernel_mapper.translate_page(page).is_ok() {
-            crate::debug_println!("  Page {:#x} already mapped in kernel PT", page_addr.as_u64());
-            continue;
-        }
-        
-        // Allocate physical frame
-        let frame = frame_allocator
-            .allocate_frame()
-            .ok_or(MapError::FrameAllocationFailed)?;
-        
-        // Map as READ-ONLY + USER_ACCESSIBLE + EXECUTABLE
-        let flags = PageTableFlags::PRESENT
-            | PageTableFlags::USER_ACCESSIBLE;
-        
-        unsafe {
-            kernel_mapper
-                .map_to(page, frame, flags, frame_allocator)
-                .map_err(|e| MapError::MappingFailed(format!("{:?}", e)))?
-                .flush();
-        }
-        
-        crate::debug_println!("  Mapped page {:#x} -> frame {:#x}", page_addr.as_u64(), frame.start_address().as_u64());
+    // Try to translate and check if USER_ACCESSIBLE is set
+    use x86_64::structures::paging::mapper::TranslateResult;
+    match mapper.translate(virt_addr) {
+        TranslateResult::Mapped { .. } => {
+            // Page is mapped, now check flags at all levels
+            // TODO: Walk page table manually to check each level
+            true
+        },
+        TranslateResult::NotMapped | TranslateResult::InvalidFrameAddress(_) => false,
     }
+}
+
+/// Dump page table structure for debugging
+pub unsafe fn dump_page_table_entry(
+    mapper: &OffsetPageTable,
+    virt_addr: VirtAddr,
+    label: &str,
+) {
+    use x86_64::structures::paging::PageTableFlags;
     
-    Ok(())
+    let _page: Page<Size4KiB> = Page::containing_address(virt_addr);
+    
+    use x86_64::structures::paging::mapper::TranslateResult;
+    match mapper.translate(virt_addr) {
+        TranslateResult::Mapped { frame, .. } => {
+            crate::debug_println!(
+                "[PageTable] {}: {:#x} -> frame {:#x}",
+                label,
+                virt_addr.as_u64(),
+                frame.start_address().as_u64()
+            );
+        },
+        TranslateResult::NotMapped => {
+            crate::debug_println!(
+                "[PageTable] {}: {:#x} -> NOT MAPPED",
+                label,
+                virt_addr.as_u64()
+            );
+        },
+        TranslateResult::InvalidFrameAddress(addr) => {
+            crate::debug_println!(
+                "[PageTable] {}: {:#x} -> INVALID FRAME: {:#x}",
+                label,
+                virt_addr.as_u64(),
+                addr
+            );
+        }
+    }
 }

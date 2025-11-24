@@ -86,6 +86,17 @@ pub fn create_user_process() -> Result<(ProcessId, VirtAddr, VirtAddr, u64), Cre
         
         crate::debug_println!("[create_user_process] PML4 Entry 0 after load: {:?}", l4_table[0]);
         
+        // Phase 3 preparation: Validate user page table structure
+        unsafe {
+            use crate::kernel::mm::dump_page_table_entry;
+            let phys_offset = crate::kernel::mm::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+            let user_mapper = x86_64::structures::paging::OffsetPageTable::new(l4_table, x86_64::VirtAddr::new(phys_offset));
+            
+            crate::debug_println!("[VALIDATION] Checking user page table mappings:");
+            dump_page_table_entry(&user_mapper, loaded_program.entry_point, "User Code Entry");
+            dump_page_table_entry(&user_mapper, loaded_program.stack_top, "User Stack Top");
+        }
+        
         // Update process entry point and stack
         process.registers_mut().rip = loaded_program.entry_point.as_u64();
         process.registers_mut().rsp = loaded_program.stack_top.as_u64();
@@ -100,6 +111,13 @@ pub fn create_user_process() -> Result<(ProcessId, VirtAddr, VirtAddr, u64), Cre
     let entry_point = VirtAddr::new(process.registers().rip);
     let user_stack = VirtAddr::new(process.registers().rsp);
     let user_cr3 = process.page_table_phys_addr();
+    
+    // [PHASE 3] CR3 Diagnostic Tests
+    crate::debug_println!("\n[PHASE 3] ========== CR3 DIAGNOSTIC TESTS ==========");
+    unsafe {
+        crate::arch::x86_64::run_cr3_diagnostic_tests(user_cr3);
+    }
+    crate::debug_println!("[PHASE 3] ========================================\n");
     
     // 3. Add to process table
     {
