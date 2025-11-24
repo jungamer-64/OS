@@ -48,9 +48,11 @@ fn main() {
     let initrd_path = root_dir.join("target/initrd.cpio");
     println!("Creating initrd archive at {}", initrd_path.display());
     
+    let mkcpio_dir = root_dir.join("tools/mkcpio");
     let status = Command::new("cargo")
-        .current_dir(root_dir.join("tools/mkcpio"))
-        .args(&["run", "--release", "--target", "x86_64-pc-windows-msvc", "--", initrd_root.to_str().unwrap(), initrd_path.to_str().unwrap()])
+        .current_dir(&mkcpio_dir)
+        .env("CARGO_BUILD_TARGET", "") // Override workspace default target
+        .args(&["run", "--release", "--", initrd_root.to_str().unwrap(), initrd_path.to_str().unwrap()])
         .status()
         .expect("Failed to run mkcpio");
         
@@ -87,18 +89,18 @@ fn main() {
         .create_disk_image(&uefi_path)
         .expect("Failed to create UEFI boot image");
 
-    // BIOS ブートイメージの作成
-    println!("Creating BIOS boot image...");
-    bootloader::BiosBoot::new(&kernel_binary_path)
-        .set_ramdisk(&initrd_path)
-        .create_disk_image(&bios_path)
-        .expect("Failed to create BIOS boot image");
+    // Skip BIOS build due to bootloader issues with 16-bit stage size
+    // BIOS boot is not needed for development/testing
+    // println!("Creating BIOS boot image...");
+    // bootloader::BiosBoot::new(&kernel_binary_path)
+    //     .set_ramdisk(&initrd_path)
+    //     .create_disk_image(&bios_path)
+    //     .expect("Failed to create BIOS boot image");
 
     println!("Build complete!");
     println!("  UEFI image: {}", uefi_path.display());
-    println!("  BIOS image: {}", bios_path.display());
     
     // QEMUコマンドの例を表示
     println!("\nTo run in QEMU (UEFI):");
-    println!("  qemu-system-x86_64 -bios OVMF.fd -drive format=raw,file={}", uefi_path.display());
+    println!("  run_qemu.ps1");
 }

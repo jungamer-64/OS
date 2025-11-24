@@ -27,8 +27,6 @@ members = [
     "userland/programs/test",     # Test program
     "userland/programs/init",     # Init process
     "userland/programs/syscall_test", # Syscall tests
-    "builder",                    # Build tool
-    "tools/mkcpio",               # CPIO tool
 ]
 resolver = "2"
 

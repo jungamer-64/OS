@@ -5,3 +5,6 @@ edition = "2021"
 
 [dependencies]
 walkdir = "2.3"
+
+# Empty workspace to make this package independent from parent workspace
+[workspace]

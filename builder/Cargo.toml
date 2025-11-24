@@ -11,3 +11,6 @@ bootloader = "0.11.12"
 [[bin]]
 name = "builder"
 path = "src/main.rs"
+
+# Empty workspace to make this package independent from parent workspace
+[workspace]
