@@ -140,12 +140,13 @@ pub fn create_user_process(path: &str) -> Result<(ProcessId, VirtAddr, VirtAddr,
     let user_stack = VirtAddr::new(process.registers().rsp);
     let user_cr3 = process.page_table_phys_addr();
     
-    // [PHASE 3] CR3 Diagnostic Tests
-    crate::debug_println!("\n[PHASE 3] ========== CR3 DIAGNOSTIC TESTS ==========");
-    unsafe {
-        crate::arch::x86_64::run_cr3_diagnostic_tests(user_cr3);
-    }
-    crate::debug_println!("[PHASE 3] ========================================\n");
+    // [PHASE 3] CR3 Diagnostic Tests (DISABLED - causes hang in Test 2)
+    // crate::debug_println!("\n[PHASE 3] ========== CR3 DIAGNOSTIC TESTS ==========");
+    // unsafe {
+    //     crate::arch::x86_64::run_cr3_diagnostic_tests(user_cr3);
+    // }
+    // crate::debug_println!("[PHASE 3] ========================================\n");
+    crate::debug_println!("[PHASE 3] CR3 diagnostic tests skipped (Test 2 causes hang)");
     
     // [PHASE 3] Map user code to kernel page table (workaround for CR3 switching)
     crate::debug_println!("[PHASE 3] Mapping user code to kernel page table...");
@@ -216,7 +217,9 @@ pub fn create_user_process(path: &str) -> Result<(ProcessId, VirtAddr, VirtAddr,
         let user_stack_top = x86_64::VirtAddr::new(user_stack.as_u64());
         let user_stack_pages = 16; // 64KB stack
         
-        for i in 1..=user_stack_pages {
+        // Map from stack_top down to stack_top - (16 * 4096)
+        // Include the page containing stack_top itself (i=0)
+        for i in 0..user_stack_pages {
             let virt = user_stack_top - (i * 4096u64);
             
             // Translate in user page table

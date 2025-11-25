@@ -943,7 +943,7 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
     crate::debug_println!("[DEBUG] GDT base: {:#x}, limit: {:#x}", 
         gdtr.base.as_u64(), gdtr.limit);
     
-    // DEBUG: Check current RSP before calling NASM function
+    // DEBUG: Check current RSP before transition
     let current_rsp: u64;
     unsafe {
         core::arch::asm!(
@@ -951,11 +951,65 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
             out(reg) current_rsp,
         );
     }
-    crate::debug_println!("[DEBUG] Current kernel RSP before NASM call: {:#x}", current_rsp);
+    crate::debug_println!("[DEBUG] Current kernel RSP: {:#x}", current_rsp);
     
-    // Call the external assembly function
+    // DEBUG: Print arguments
+    crate::debug_println!("[DEBUG] Building iretq frame:");
+    crate::debug_println!("[DEBUG]   entry_point (RIP): {:#x}", entry_point.as_u64());
+    crate::debug_println!("[DEBUG]   user_stack (RSP): {:#x}", user_stack.as_u64());
+    crate::debug_println!("[DEBUG]   user_cr3: {:#x}", user_cr3);
+    crate::debug_println!("[DEBUG]   rflags: {:#x}", rflags);
+    
+    // Build iretq frame and execute using inline assembly
+    // This gives us more control and debugging capability
     unsafe {
-        jump_to_usermode_asm(entry_point.as_u64(), user_stack.as_u64(), user_cr3, rflags)
+        core::arch::asm!(
+            // Disable interrupts
+            "cli",
+            
+            // CRITICAL: Load user data segment into DS, ES, FS, GS
+            // iretq only restores CS and SS, so we must manually set DS, ES, FS, GS
+            // to the user data segment selector (0x23 = Ring 3 data)
+            // NOTE: Use a separate register (BX) to avoid corrupting other registers
+            "mov bx, 0x23",             // User data segment selector
+            "mov ds, bx",               // DS = user data
+            "mov es, bx",               // ES = user data
+            "mov fs, bx",               // FS = user data
+            "mov gs, bx",               // GS = user data
+            
+            // Save arguments to non-volatile registers
+            "mov r11, {user_stack}",    // R11 = user stack
+            "mov r12, {rflags}",        // R12 = RFLAGS
+            "mov r13, {entry_point}",   // R13 = entry point
+            
+            // Build iretq frame on kernel stack
+            // Stack layout after pushes (top to bottom):
+            //   [RSP+0]:  RIP (return address)
+            //   [RSP+8]:  CS  (code segment)
+            //   [RSP+16]: RFLAGS
+            //   [RSP+24]: RSP (user stack)
+            //   [RSP+32]: SS  (stack segment)
+            "mov rax, 0x23",            // User data segment selector (SS)
+            "push rax",                 // Push SS
+            "push r11",                 // Push RSP (user stack)
+            "push r12",                 // Push RFLAGS
+            "mov rax, 0x1B",            // User code segment selector (CS)
+            "push rax",                 // Push CS
+            "push r13",                 // Push RIP (entry point)
+            
+            // Execute iretq to switch to Ring 3
+            // iretq will:
+            //  1. Pop RIP, CS, RFLAGS, RSP, SS from stack
+            //  2. Validate segment selectors
+            //  3. Switch to CPL 3 (Ring 3 / User mode)
+            //  4. Jump to user code at RIP
+            "iretq",
+            
+            entry_point = in(reg) entry_point.as_u64(),
+            user_stack = in(reg) user_stack.as_u64(),
+            rflags = in(reg) rflags,
+            options(noreturn)
+        )
     }
 }
 

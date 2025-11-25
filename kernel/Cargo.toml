@@ -37,7 +37,8 @@ test_usermode = []
 bootloader_api = "=0.11.10"
 
 # x86_64 specific types and instructions
-x86_64 = "0.15.2"
+# Using latest 0.15.x for better long mode support
+x86_64 = { version = "0.15", features = [] }
 
 # Spin-based synchronization primitives (no_std compatible)
 spin = "0.9.8"
