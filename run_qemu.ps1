@@ -2,43 +2,15 @@
   run_qemu.ps1
 
   Unified build and run script for tiny_os.
-
-  Features:
-    - Build kernel (quick or full with userland/initrd)
-    - Create UEFI boot image
-    - Run in QEMU with OVMF
-    - Clean build artifacts
-    - Interactive menu mode
-
-  Usage examples:
-    # Interactive menu
-    powershell -ExecutionPolicy Bypass -File .\run_qemu.ps1 -Menu
-
-    # Full pipeline (quick kernel build + image + run)
-    powershell -ExecutionPolicy Bypass -File .\run_qemu.ps1
-
-    # Full build mode (builds userland, initrd, kernel, and image)
-    powershell -ExecutionPolicy Bypass -File .\run_qemu.ps1 -FullBuild
-
-    # Skip build (assume kernel already built)
-    powershell -ExecutionPolicy Bypass -File .\run_qemu.ps1 -SkipBuild
-
-    # Release build
-    powershell -ExecutionPolicy Bypass -File .\run_qemu.ps1 -Release
-
-    # Enable GDB debugging
-    powershell -ExecutionPolicy Bypass -File .\run_qemu.ps1 -Debug
-
-    # Clean build artifacts
-    powershell -ExecutionPolicy Bypass -File .\run_qemu.ps1 -Clean
-
-    # Build only (no QEMU)
-    powershell -ExecutionPolicy Bypass -File .\run_qemu.ps1 -BuildOnly
-
-  Notes:
-    - This script expects to be located in the `OS` directory of the repository.
-    - It uses `rustup run nightly` to ensure the nightly toolchain is used.
-    - The builder tool is located at ./builder within the OS directory.
+  
+    Usage:
+        .\run_qemu.ps1 -Menu                 # Interactive Mode
+        .\run_qemu.ps1                       # Quick Build & Run (kernel only)
+        .\run_qemu.ps1 -FullBuild            # Rebuild Userland/Initrd + Kernel + Run
+        .\run_qemu.ps1 -Debug                # Enable GDB Stub (GDB stub: localhost:1234)
+        .\run_qemu.ps1 -SkipBuild -ExtraQemuArgs "-nographic"   # Run disk image with qemu and capture logs (Start-Process used by default)
+        .\run_qemu.ps1 -QemuPath "C:\Program Files\qemu\qemu-system-x86_64.exe" -OverrideOvmfPath "C:\OVMF\OVMF.fd" # Use explicit qemu and OVMF paths
+        .\run_qemu.ps1 -SkipBuild -NoStartQemuProcess -ExtraQemuArgs "-nographic"  # Run inline (no Start-Process) and use Tee-Object for stdout capture
 #>
 
 param(
@@ -50,17 +22,92 @@ param(
     [switch]$NoGraphic,
     [switch]$Clean,
     [switch]$BuildOnly,
-    [string]$ExtraQemuArgs = ""
+    [string[]]$ExtraQemuArgs = @(), 
+    [string]$QemuPath = "qemu-system-x86_64",
+    [string]$OverrideOvmfPath = "",
+    [switch]$NoStartQemuProcess
 )
+
+$ErrorActionPreference = "Stop"
 
 # ============================================================================
 # Helper Functions
 # ============================================================================
 
+function Parse-ArgumentString {
+    param([string]$Str)
+    if ([string]::IsNullOrWhiteSpace($Str)) { return @() }
+    $s = $Str
+    $len = $s.Length
+    $i = 0
+    $tokens = @()
+    while ($i -lt $len) {
+        # skip whitespace
+        while ($i -lt $len -and [char]::IsWhiteSpace($s[$i])) { $i++ }
+        if ($i -ge $len) { break }
+        $c = $s[$i]
+        $token = ''
+        if ($c -eq '"' -or $c -eq "'") {
+            # quoted token
+            $quote = $c
+            $i++ # skip opening quote
+            while ($i -lt $len) {
+                $ch = $s[$i]
+                if ($ch -eq '\\' -and $i + 1 -lt $len) { $token += $s[$i + 1]; $i += 2; continue }
+                if ($ch -eq $quote) { $i++; break }
+                $token += $ch; $i++
+            }
+            $tokens += $token
+            continue
+        }
+        else {
+            # unquoted token, but if we have an '=' followed by a quoted string, then absorb the quoted string into the token
+            while ($i -lt $len -and -not [char]::IsWhiteSpace($s[$i])) {
+                $ch = $s[$i]
+                if ($ch -eq '=' -and $i + 1 -lt $len -and ($s[$i + 1] -eq '"' -or $s[$i + 1] -eq "'")) {
+                    # include '='
+                    $token += '='; $i++;
+                    $quote = $s[$i]
+                    $i++ # skip opening quote
+                    while ($i -lt $len) {
+                        $ch2 = $s[$i]
+                        if ($ch2 -eq '\\' -and $i + 1 -lt $len) { $token += $s[$i + 1]; $i += 2; continue }
+                        if ($ch2 -eq $quote) { $i++; break }
+                        $token += $ch2; $i++
+                    }
+                    continue
+                }
+                $token += $ch; $i++
+            }
+            $tokens += $token
+            continue
+        }
+    }
+    return $tokens
+}
+
+function Parse-ExtraArgs {
+    param([object]$Args)
+    $result = @()
+    if ($Args -eq $null) { return $result }
+    if ($Args -is [System.Array]) {
+        foreach ($a in $Args) {
+            if ($a -is [string]) {
+                $result += Parse-ArgumentString $a
+            } else {
+                $result += $a.ToString()
+            }
+        }
+    } else {
+        $result += Parse-ArgumentString $Args.ToString()
+    }
+    return $result
+}
+
 function Show-Menu {
     Clear-Host
     Write-Host "=======================================" -ForegroundColor Cyan
-    Write-Host "       Tiny OS Build System           " -ForegroundColor Cyan
+    Write-Host "      Tiny OS Build System            " -ForegroundColor Cyan
     Write-Host "=======================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  1. Quick build & run (kernel only)" -ForegroundColor Green
@@ -75,56 +122,49 @@ function Show-Menu {
     Write-Host "=======================================" -ForegroundColor Cyan
 }
 
-function Clean-BuildArtifacts {
+function Clear-BuildArtifacts {
     param([string]$ScriptDir)
     
     Write-Host "Cleaning build artifacts..." -ForegroundColor Yellow
     
-    # Clean cargo artifacts
-    Push-Location $ScriptDir
-    & cargo clean 2>$null
-    Pop-Location
-    
-    # Clean builder artifacts
-    $builderDir = Join-Path $ScriptDir "builder"
-    if (Test-Path $builderDir) {
-        Push-Location $builderDir
-        & cargo clean 2>$null
-        Pop-Location
-    }
-    
-    # Clean kernel artifacts
-    $kernelDir = Join-Path $ScriptDir "kernel"
-    if (Test-Path $kernelDir) {
-        Push-Location $kernelDir
-        & cargo clean 2>$null
-        Pop-Location
-    }
-    
-    # Clean userland artifacts
-    $userlandDir = Join-Path $ScriptDir "userland"
-    if (Test-Path $userlandDir) {
-        Get-ChildItem -Path $userlandDir -Recurse -Directory -Filter "target" | ForEach-Object {
-            Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
+    # Define directories to clean
+    $dirsToClean = @(
+        $ScriptDir,                          # Root
+        (Join-Path $ScriptDir "builder"),    # Builder tool
+        (Join-Path $ScriptDir "kernel")      # Kernel
+    )
+
+    foreach ($dir in $dirsToClean) {
+        if (Test-Path $dir) {
+            Push-Location $dir
+            try {
+                Write-Host "  Cleaning $(Split-Path $dir -Leaf)..." -ForegroundColor DarkGray
+                & cargo clean 2>$null
+            } finally {
+                Pop-Location
+            }
         }
     }
     
-    # Clean initrd
-    $initrdPath = Join-Path $ScriptDir "target\initrd.cpio"
-    if (Test-Path $initrdPath) {
-        Remove-Item -Force $initrdPath -ErrorAction SilentlyContinue
+    # Clean userland target specifically
+    $userlandDir = Join-Path $ScriptDir "userland"
+    if (Test-Path $userlandDir) {
+        Get-ChildItem -Path $userlandDir -Recurse -Directory -Filter "target" | ForEach-Object {
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
     
-    # Clean initrd_root
-    $initrdRoot = Join-Path $ScriptDir "target\initrd_root"
-    if (Test-Path $initrdRoot) {
-        Remove-Item -Recurse -Force $initrdRoot -ErrorAction SilentlyContinue
+    # Clean specific build targets
+    $artifacts = @("target\initrd.cpio", "target\initrd_root")
+    foreach ($art in $artifacts) {
+        $p = Join-Path $ScriptDir $art
+        if (Test-Path $p) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }
     }
     
     Write-Host "Clean complete!" -ForegroundColor Green
 }
 
-function Run-Build {
+function Start-Build {
     param(
         [string]$ScriptDir,
         [string]$BuilderDir,
@@ -135,271 +175,239 @@ function Run-Build {
         [bool]$IsRelease
     )
     
-    $profileFlag = if ($IsRelease) { "--release" } else { "" }
+    # The release/profile is handled by appending '--release' to args when $IsRelease is true
     
     if ($IsFullBuild) {
-        # Full build: use builder tool which builds userland, initrd, kernel, and creates image
-        Write-Host "Running full build (userland + initrd + kernel + image)..." -ForegroundColor Cyan
+        # Full build: Builder tool handles userland -> initrd -> kernel -> image
+        Write-Host "Running full build pipeline..." -ForegroundColor Cyan
         Push-Location $BuilderDir
-        & rustup run nightly cargo run $profileFlag
-        $buildExit = $LASTEXITCODE
-        Pop-Location
-        return $buildExit
-    } else {
-        # Quick build: just kernel, then create image
-        Write-Host "Building kernel..." -ForegroundColor Cyan
-        Push-Location (Join-Path $ScriptDir "kernel")
-        $buildArgs = @("run", "nightly", "cargo", "build", "--target", "x86_64-rany_os.json")
-        if ($IsRelease) { $buildArgs += "--release" }
-        & rustup @buildArgs
-        $buildExit = $LASTEXITCODE
-        Pop-Location
-        if ($buildExit -ne 0) {
-            return $buildExit
-        }
+        try {
+            # Use invoke-expression or direct call
+            $cmdArgs = @("run", "nightly", "cargo", "run")
+            if ($IsRelease) { $cmdArgs += "--release" }
 
-        # Create boot image using builder's quick mode
+            & rustup @cmdArgs | Out-Host
+            $buildExit = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+        return $buildExit
+    }
+    else {
+        # Quick build: Kernel Direct -> Image
+        Write-Host "Building kernel (Quick Mode)..." -ForegroundColor Cyan
+        $kernelDir = Join-Path $ScriptDir "kernel"
+        Push-Location $kernelDir
+        try {
+            # Check for target spec
+            if (-not (Test-Path "x86_64-rany_os.json")) {
+                Write-Host "Error: x86_64-rany_os.json not found in kernel directory." -ForegroundColor Red
+                return 1
+            }
+
+            $buildArgs = @("run", "nightly", "cargo", "build", "--target", "x86_64-rany_os.json")
+            if ($IsRelease) { $buildArgs += "--release" }
+            
+            & rustup @buildArgs | Out-Host
+            $buildExit = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+        
+        if ($buildExit -ne 0) { return $buildExit }
+
+        # Create boot image
         Write-Host "Creating EFI disk image..." -ForegroundColor Cyan
         Push-Location $BuilderDir
-        $builderArgs = @("run", "nightly", "cargo", "run")
-        if ($IsRelease) { $builderArgs += "--release" }
-        $builderArgs += "--"
-        $builderArgs += "--kernel-path"
-        $builderArgs += $KernelPath
-        $builderArgs += "--output-path"
-        $builderArgs += $DiskImage
+        try {
+            $builderArgs = @("run", "nightly", "cargo", "run")
+            if ($IsRelease) { $builderArgs += "--release" }
+            $builderArgs += "--"
+            $builderArgs += "--kernel-path"; $builderArgs += $KernelPath
+            $builderArgs += "--output-path"; $builderArgs += $DiskImage
+        
         if (Test-Path $InitrdPath) {
-            Write-Host "  Including initrd: $InitrdPath" -ForegroundColor Green
-            $builderArgs += "--ramdisk"
-            $builderArgs += $InitrdPath
+            Write-Host "  Including existing initrd: $InitrdPath" -ForegroundColor Green
+            $builderArgs += "--ramdisk"; $builderArgs += $InitrdPath
         }
-        & rustup @builderArgs
-        $builderRc = $LASTEXITCODE
-        Pop-Location
+        else {
+            Write-Host "  Warning: No initrd found. Booting kernel only." -ForegroundColor DarkYellow
+        }
+
+            & rustup @builderArgs | Out-Host
+            $builderRc = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
         return $builderRc
     }
 }
 
-function Run-QEMU {
+function Start-QEMU {
     param(
         [string]$DiskImage,
         [string]$OvmfPath,
+        [string]$QemuExe,
         [bool]$IsDebug,
         [bool]$IsNoGraphic,
-        [string]$ExtraArgs
+        [string[]]$ExtraArgs,
+        [bool]$UseStartProcess
     )
     
-    Write-Host "Found disk image: $DiskImage" -ForegroundColor Green
-    Write-Host "Starting QEMU with OVMF (serial -> stdio). Press Ctrl+C to exit QEMU." -ForegroundColor Cyan
+    Write-Host "Starting QEMU..." -ForegroundColor Green
+    
+    $qemuLogPath = Join-Path $PSScriptRoot "qemu.log"
+    $stdoutLogPath = Join-Path $PSScriptRoot "qemu.stdout.log"
 
-    $qemuArgs = @()
-    $qemuArgs += "-drive"
-    $qemuArgs += "format=raw,file=$DiskImage"
-    $qemuArgs += "-bios"
-    $qemuArgs += "$OvmfPath"
-    $qemuArgs += "-serial"
-    $qemuArgs += "stdio"
-    $qemuArgs += "-m"
-    $qemuArgs += "128M"
-    $qemuArgs += "-no-reboot"
-    $qemuArgs += "-no-shutdown"
-    $qemuArgs += "-d"
-    $qemuArgs += "int,cpu_reset"
-    $qemuArgs += "-D"
-    $qemuArgs += "qemu.log"
+    $qemuArgs = @(
+        "-drive", "format=raw,file=$DiskImage",
+        "-bios", "$OvmfPath",
+        "-serial", "stdio",
+        "-m", "128M",
+        "-no-reboot",
+        "-no-shutdown",
+        "-d", "int,cpu_reset",
+        "-D", $qemuLogPath
+    )
 
-    # GDB debugging support
     if ($IsDebug) {
-        Write-Host "GDB debugging enabled. Connect with: target remote localhost:1234" -ForegroundColor Yellow
-        $qemuArgs += "-s"
-        $qemuArgs += "-S"
+        Write-Host "  GDB Stub: localhost:1234" -ForegroundColor Magenta
+        $qemuArgs += "-s", "-S"
     }
 
-    # No graphic mode (headless)
-    if ($IsNoGraphic) {
-        $qemuArgs += "-nographic"
-    }
+    if ($IsNoGraphic) { $qemuArgs += "-nographic" }
+    
+    if ($ExtraArgs -ne $null -and $ExtraArgs.Count -gt 0) { $qemuArgs += $ExtraArgs }
 
-    if ($ExtraArgs -ne "") {
-        $extra = $ExtraArgs -split ' '
-        $qemuArgs += $extra
+    Write-Host "Executing: $QemuExe $($qemuArgs -join ' ')" -ForegroundColor DarkGray
+    # If requested, use Start-Process for better control/capture, otherwise run inline and Tee
+    if ($UseStartProcess) {
+        $stderrLogPath = Join-Path $PSScriptRoot "qemu.stderr.log"
+        try {
+            $proc = Start-Process -FilePath $QemuExe -ArgumentList $qemuArgs -RedirectStandardOutput $stdoutLogPath -RedirectStandardError $stderrLogPath -NoNewWindow -PassThru -Wait
+            $qemuExit = $proc.ExitCode
+        } catch {
+            Write-Host "Start-Process failed: $_" -ForegroundColor Red
+            return 1
+        }
+        } else {
+        # Capture stdout & stderr to a log file while preserving interactive console output
+        $null = & $QemuExe @qemuArgs 2>&1 | Tee-Object -FilePath $stdoutLogPath
+        $qemuExit = $LASTEXITCODE
     }
-
-    Write-Host "qemu-system-x86_64 $($qemuArgs -join ' ')" -ForegroundColor Green
-    & qemu-system-x86_64 @qemuArgs
+    return $qemuExit
 }
 
 # ============================================================================
-# Main Script
+# Main Execution
 # ============================================================================
 
 try {
-    # Make script work even when invoked from a different CWD
-    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+    # Reliable path resolution
+    $scriptDir = $PSScriptRoot
     if (-not $scriptDir) { $scriptDir = Get-Location }
     Push-Location $scriptDir
 
-    # Determine build profile
-    $profile = if ($Release) { "release" } else { "debug" }
-
-    $kernelPath = Join-Path $scriptDir "target\x86_64-rany_os\$profile\tiny_os"
-    $ovmfPath   = Join-Path $scriptDir "ovmf-x64\OVMF.fd"
-    $diskImage  = Join-Path $scriptDir "target\x86_64-rany_os\$profile\boot-uefi-tiny_os.img"
+    # Configuration
+    $buildProfile = if ($Release) { "release" } else { "debug" }
+    $kernelPath = Join-Path $scriptDir "target\x86_64-rany_os\$buildProfile\tiny_os"
+    $ovmfPath = if ($OverrideOvmfPath -ne "") { $OverrideOvmfPath } else { Join-Path $scriptDir "ovmf-x64\OVMF.fd" }
+    $diskImage = Join-Path $scriptDir "target\x86_64-rany_os\$buildProfile\boot-uefi-tiny_os.img"
     $initrdPath = Join-Path $scriptDir "target\initrd.cpio"
     $builderDir = Join-Path $scriptDir "builder"
 
-    # Handle -Clean flag
+    # Parse ExtraQemuArgs into an argument array (supports quotes and spaces)
+    $parsedExtraQemuArgs = Parse-ExtraArgs $ExtraQemuArgs
+
+    # Pre-flight Checks
+    # Decide whether to use Start-Process by default unless explicitly disabled
+    $StartQemuProcess = -not $NoStartQemuProcess
+    if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) { throw "rustup not found in PATH." }
+    # Validate qemu executable - either the file path exists or it's available on PATH
+    $qemuCmdExists = $false
+    if ($QemuPath -ne "") {
+        if (Test-Path $QemuPath) { $qemuCmdExists = $true }
+        elseif (Get-Command $QemuPath -ErrorAction SilentlyContinue) { $qemuCmdExists = $true }
+    }
+    if (-not $qemuCmdExists) { throw "$QemuPath not found in PATH or not a valid path." }
+    if (-not (Test-Path $ovmfPath)) { throw "OVMF firmware not found at: $ovmfPath" }
+
+    # 1. Clean Mode
     if ($Clean) {
-        Clean-BuildArtifacts -ScriptDir $scriptDir
-        Pop-Location
+        Clear-BuildArtifacts -ScriptDir $scriptDir
         exit 0
     }
 
-    # Handle -Menu flag (interactive mode)
+    # 2. Menu Mode
     if ($Menu) {
         while ($true) {
             Show-Menu
             $choice = Read-Host "Select option (1-8)"
             
+            # Map choices to flags
+            $mFull = $false; $mBuildOnly = $false; $mSkip = $false; $mDebug = $false; $mRelease = $false
+            
             switch ($choice) {
-                "1" {
-                    # Quick build & run
-                    $buildExit = Run-Build -ScriptDir $scriptDir -BuilderDir $builderDir -KernelPath $kernelPath -DiskImage $diskImage -InitrdPath $initrdPath -IsFullBuild $false -IsRelease $false
-                    if ($buildExit -eq 0 -and (Test-Path $diskImage)) {
-                        Run-QEMU -DiskImage $diskImage -OvmfPath $ovmfPath -IsDebug $false -IsNoGraphic $false -ExtraArgs ""
-                    } else {
-                        Write-Host "Build failed (exit $buildExit)" -ForegroundColor Red
-                    }
-                }
-                "2" {
-                    # Full build & run
-                    $buildExit = Run-Build -ScriptDir $scriptDir -BuilderDir $builderDir -KernelPath $kernelPath -DiskImage $diskImage -InitrdPath $initrdPath -IsFullBuild $true -IsRelease $false
-                    if ($buildExit -eq 0 -and (Test-Path $diskImage)) {
-                        Run-QEMU -DiskImage $diskImage -OvmfPath $ovmfPath -IsDebug $false -IsNoGraphic $false -ExtraArgs ""
-                    } else {
-                        Write-Host "Build failed (exit $buildExit)" -ForegroundColor Red
-                    }
-                }
-                "3" {
-                    # Build only
-                    $buildExit = Run-Build -ScriptDir $scriptDir -BuilderDir $builderDir -KernelPath $kernelPath -DiskImage $diskImage -InitrdPath $initrdPath -IsFullBuild $false -IsRelease $false
-                    if ($buildExit -eq 0) {
-                        Write-Host "Build complete!" -ForegroundColor Green
-                    } else {
-                        Write-Host "Build failed (exit $buildExit)" -ForegroundColor Red
-                    }
-                }
-                "4" {
-                    # Run only
-                    if (Test-Path $diskImage) {
-                        Run-QEMU -DiskImage $diskImage -OvmfPath $ovmfPath -IsDebug $false -IsNoGraphic $false -ExtraArgs ""
-                    } else {
-                        Write-Host "Disk image not found. Build first." -ForegroundColor Red
-                    }
-                }
-                "5" {
-                    # Debug mode
-                    $buildExit = Run-Build -ScriptDir $scriptDir -BuilderDir $builderDir -KernelPath $kernelPath -DiskImage $diskImage -InitrdPath $initrdPath -IsFullBuild $false -IsRelease $false
-                    if ($buildExit -eq 0 -and (Test-Path $diskImage)) {
-                        Run-QEMU -DiskImage $diskImage -OvmfPath $ovmfPath -IsDebug $true -IsNoGraphic $false -ExtraArgs ""
-                    } else {
-                        Write-Host "Build failed (exit $buildExit)" -ForegroundColor Red
-                    }
-                }
-                "6" {
-                    # Release build & run
-                    $releaseKernelPath = Join-Path $scriptDir "target\x86_64-rany_os\release\tiny_os"
-                    $releaseDiskImage = Join-Path $scriptDir "target\x86_64-rany_os\release\boot-uefi-tiny_os.img"
-                    $buildExit = Run-Build -ScriptDir $scriptDir -BuilderDir $builderDir -KernelPath $releaseKernelPath -DiskImage $releaseDiskImage -InitrdPath $initrdPath -IsFullBuild $false -IsRelease $true
-                    if ($buildExit -eq 0 -and (Test-Path $releaseDiskImage)) {
-                        Run-QEMU -DiskImage $releaseDiskImage -OvmfPath $ovmfPath -IsDebug $false -IsNoGraphic $false -ExtraArgs ""
-                    } else {
-                        Write-Host "Build failed (exit $buildExit)" -ForegroundColor Red
-                    }
-                }
-                "7" {
-                    # Clean
-                    Clean-BuildArtifacts -ScriptDir $scriptDir
-                }
-                "8" {
-                    Write-Host "Goodbye!" -ForegroundColor Cyan
-                    Pop-Location
-                    exit 0
-                }
-                default {
-                    Write-Host "Invalid option" -ForegroundColor Red
+                "1" { } # Default quick
+                "2" { $mFull = $true }
+                "3" { $mBuildOnly = $true }
+                "4" { $mSkip = $true }
+                "5" { $mDebug = $true }
+                "6" { $mRelease = $true }
+                "7" { Clear-BuildArtifacts -ScriptDir $scriptDir; continue }
+                "8" { Write-Host "Goodbye."; exit 0 }
+                default { continue }
+            }
+
+            # Handle Release Path Overrides for Menu
+            $mKernelPath = if ($mRelease) { Join-Path $scriptDir "target\x86_64-rany_os\release\tiny_os" } else { $kernelPath }
+            $mDiskImage = if ($mRelease) { Join-Path $scriptDir "target\x86_64-rany_os\release\boot-uefi-tiny_os.img" } else { $diskImage }
+
+            if (-not $mSkip) {
+                $rc = Start-Build -ScriptDir $scriptDir -BuilderDir $builderDir -KernelPath $mKernelPath -DiskImage $mDiskImage -InitrdPath $initrdPath -IsFullBuild $mFull -IsRelease $mRelease
+                if ($rc -ne 0) { 
+                    Write-Host "Build Failed." -ForegroundColor Red; Pause; continue 
                 }
             }
-            
-            Write-Host ""
-            Write-Host "Press any key to continue..."
-            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+
+            if (-not $mBuildOnly) {
+                if (Test-Path $mDiskImage) {
+                    $qrc = Start-QEMU -DiskImage $mDiskImage -OvmfPath $ovmfPath -QemuExe $QemuPath -IsDebug $mDebug -IsNoGraphic $false -ExtraArgs $parsedExtraQemuArgs -UseStartProcess $StartQemuProcess
+                    if ($qrc -ne 0) {
+                        Write-Host "QEMU exited with code $qrc" -ForegroundColor Red
+                    }
+                }
+                else {
+                    Write-Host "Image not found." -ForegroundColor Red
+                }
+            }
+            Pause
         }
     }
 
-    # Non-interactive mode
-    Write-Host "=== tiny_os: build -> image -> run pipeline ===" -ForegroundColor Cyan
-    Write-Host "  Profile: $profile" -ForegroundColor Cyan
-
-    # Basic command availability checks
-    if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
-        Write-Host "Error: 'rustup' not found in PATH. Install rustup and try again." -ForegroundColor Red
-        Pop-Location; exit 1
-    }
-    if (-not (Get-Command qemu-system-x86_64 -ErrorAction SilentlyContinue)) {
-        Write-Host "Error: 'qemu-system-x86_64' not found in PATH. Install QEMU and try again." -ForegroundColor Red
-        Pop-Location; exit 1
-    }
-
-    if (!(Test-Path $ovmfPath)) {
-        Write-Host "Error: OVMF firmware not found at $ovmfPath" -ForegroundColor Red
-        Pop-Location; exit 1
-    }
-
-    # Check builder exists
-    if (-not (Test-Path $builderDir)) {
-        Write-Host "Error: builder not found at $builderDir" -ForegroundColor Red
-        Pop-Location; exit 1
-    }
-
-    # Build step
+    # 3. CLI Mode
+    Write-Host "=== tiny_os: $buildProfile mode ===" -ForegroundColor Cyan
+    
     if (-not $SkipBuild) {
-        $buildExit = Run-Build -ScriptDir $scriptDir -BuilderDir $builderDir -KernelPath $kernelPath -DiskImage $diskImage -InitrdPath $initrdPath -IsFullBuild $FullBuild -IsRelease $Release
-        if ($buildExit -ne 0) {
-            Write-Host "Build failed (exit $buildExit). Aborting." -ForegroundColor Red
-            Pop-Location; exit $buildExit
-        }
-    } else {
-        Write-Host "Skipping build (-SkipBuild was provided)." -ForegroundColor Yellow
+        $rc = Start-Build -ScriptDir $scriptDir -BuilderDir $builderDir -KernelPath $kernelPath -DiskImage $diskImage -InitrdPath $initrdPath -IsFullBuild $FullBuild -IsRelease $Release
+        if ($rc -ne 0) { throw "Build failed with exit code $rc" }
     }
 
-    # Build only mode - skip QEMU
     if ($BuildOnly) {
-        Write-Host "Build complete! (-BuildOnly was provided, skipping QEMU)" -ForegroundColor Green
-        Pop-Location
+        Write-Host "Build complete. Exiting." -ForegroundColor Green
         exit 0
     }
 
-    if (!(Test-Path $kernelPath)) {
-        Write-Host "Error: Kernel not found at $kernelPath" -ForegroundColor Red
-        Write-Host "Try running without -SkipBuild flag" -ForegroundColor Yellow
-        Pop-Location; exit 1
-    }
+    if (-not (Test-Path $diskImage)) { throw "Disk image missing. Run without -SkipBuild." }
 
-    # Run QEMU
-    if (!(Test-Path $diskImage)) {
-        Write-Host "Error: Disk image not found at $diskImage" -ForegroundColor Red
-        Write-Host "Try running without -SkipBuild flag" -ForegroundColor Yellow
-        Pop-Location; exit 1
-    }
+    $qrc = Start-QEMU -DiskImage $diskImage -OvmfPath $ovmfPath -QemuExe $QemuPath -IsDebug $Debug -IsNoGraphic $NoGraphic -ExtraArgs $parsedExtraQemuArgs -UseStartProcess $StartQemuProcess
+    if ($qrc -ne 0) { throw "QEMU exited with code $qrc" }
 
-    Run-QEMU -DiskImage $diskImage -OvmfPath $ovmfPath -IsDebug $Debug -IsNoGraphic $NoGraphic -ExtraArgs $ExtraQemuArgs
-
-    # Return to original directory
-    Pop-Location
-
-} catch {
-    Write-Host "An unexpected error occurred: $_" -ForegroundColor Red
-    try { Pop-Location } catch { }
+}
+catch {
+    Write-Host "Error: $_" -ForegroundColor Red
     exit 1
+}
+finally {
+    try { Pop-Location } catch {}
 }
