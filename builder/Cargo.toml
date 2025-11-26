@@ -6,11 +6,8 @@ license = "MIT"
 license-file = "LICENSE"
 
 [dependencies]
-bootloader = "0.11.12"
+bootloader = "0.11.10"
 
 [[bin]]
 name = "builder"
 path = "src/main.rs"
-
-# Empty workspace to make this package independent from parent workspace
-[workspace]

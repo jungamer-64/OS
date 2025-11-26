@@ -24,6 +24,7 @@ param(
     [switch]$Clean,
     [switch]$BuildOnly,
     [string[]]$ExtraQemuArgs = @(), 
+    [string]$ExtraQemuArgStr = "",
     [string]$QemuPath = "qemu-system-x86_64",
     [string]$OverrideOvmfPath = "",
     [string]$Memory = "128M",
@@ -213,6 +214,7 @@ function Start-QEMU {
         [string]$Mem,
         [int]$CpuCores,
         [string[]]$ExtraArgs,
+        [string]$ExtraArgString = "",
         [bool]$UseStartProcess
     )
     
@@ -255,7 +257,11 @@ function Start-QEMU {
         $qemuArgs += "-s", "-S"
     }
 
-    if ($IsNoGraphic) { $qemuArgs += "-nographic" }
+    # Avoid duplicate '-nographic' in both the base args and extra args
+    $hasNographicInExtra = $false
+    if ($ExtraArgString -ne "") { $hasNographicInExtra = ($ExtraArgString -match '(?i)\b-nographic\b') }
+    if (-not $hasNographicInExtra -and $ExtraArgs -ne $null) { $hasNographicInExtra = ($ExtraArgs -contains '-nographic') }
+    if ($IsNoGraphic -and -not $hasNographicInExtra) { $qemuArgs += "-nographic" }
     
     foreach ($arg in $ExtraArgs) {
         if ($arg -match "['`"]") { $qemuArgs += Parse-ArgumentString $arg }
@@ -264,10 +270,15 @@ function Start-QEMU {
 
     Write-Host "Executing: $QemuExe $($qemuArgs -join ' ')" -ForegroundColor DarkGray
 
+    # If Inline mode is requested, don't duplicate -nographic
+    if ($IsNoGraphic -and $ExtraArgs -ne $null) { $ExtraArgs = $ExtraArgs | Where-Object { $_ -ne '-nographic' } }
     # --- Preferred: Start-Process mode (separate process, accurate exit code) ---
     if ($UseStartProcess) {
         try {
-            $proc = Start-Process -FilePath $QemuExe -ArgumentList $qemuArgs `
+            # Build a single command-line string for Start-Process so argument quoting is preserved
+            $qemuArgListStr = $qemuArgs -join ' '
+            if ($ExtraArgString -ne "") { $qemuArgListStr = "$qemuArgListStr $ExtraArgString" }
+            $proc = Start-Process -FilePath $QemuExe -ArgumentList $qemuArgListStr `
                 -RedirectStandardOutput $stdoutLog `
                 -RedirectStandardError $stderrLog `
                 -NoNewWindow -PassThru
@@ -323,8 +334,14 @@ function Start-QEMU {
     else {
         # --- Inline mode: fallback that mirrors output (but exit code might be masked) ---
         Write-Host "  (Running inline - output mirrored to $stdoutLog)" -ForegroundColor DarkGray
-        & $QemuExe @qemuArgs 2>&1 | Tee-Object -FilePath $stdoutLog
-        return $LASTEXITCODE
+        # Build a single command-line string, using the combined ExtraArgString so quoting is preserved
+        $cmdStr = "$QemuExe $($qemuArgs -join ' ')"
+        if ($ExtraArgString -ne "") { $cmdStr = "$cmdStr $ExtraArgString" }
+        Write-Host "Inline Command: $cmdStr" -ForegroundColor DarkGray
+        # Use Invoke-Expression to run the constructed command-line, which matches how it would be executed in a shell
+        Invoke-Expression $cmdStr 2>&1 | Tee-Object -FilePath $stdoutLog
+        $last = $LASTEXITCODE
+        return $last
     }
 }
 
@@ -371,6 +388,27 @@ try {
     }
     if (-not (Test-Path $ovmfPath)) { throw "OVMF firmware not found at: $ovmfPath" }
 
+    # Normalize Extra QEMU args: combine array and single-string inputs
+    if ($Debug) { Write-Host "DEBUG (before parse): ExtraQemuArgStr='$ExtraQemuArgStr' ExtraQemuArgs=[$($ExtraQemuArgs -join ', ')]" -ForegroundColor Yellow }
+    $EffectiveExtraArgs = @()
+    # To be resilient against shells that split quoted strings incorrectly (for example, cmd.exe),
+    # reconstruct a combined argument string and parse it as a whole, which yields correct tokens.
+    $combinedExtraArgStr = ""
+    if ($ExtraQemuArgStr -ne "") { $combinedExtraArgStr = $ExtraQemuArgStr.Trim() }
+    if ($ExtraQemuArgs -ne $null -and $ExtraQemuArgs.Count -gt 0) {
+        $eaJoined = $ExtraQemuArgs -join ' '
+        if ($combinedExtraArgStr -eq "") { $combinedExtraArgStr = $eaJoined } else { $combinedExtraArgStr = "$combinedExtraArgStr $eaJoined" }
+    }
+    if ($combinedExtraArgStr -ne "") { 
+        if ($Debug) { Write-Host "DEBUG (combinedExtraArgStr): '$combinedExtraArgStr'" -ForegroundColor Yellow }
+        $EffectiveExtraArgs = Parse-ArgumentString $combinedExtraArgStr 
+    }
+    
+    # If user requested NoGraphic (-NoGraphic), avoid passing duplicate -nographic flags
+    if ($NoGraphic -and $EffectiveExtraArgs -ne $null) {
+        $EffectiveExtraArgs = $EffectiveExtraArgs | Where-Object { $_ -ne '-nographic' }
+    }
+
     # Bootstrap Info
     if (-not $Clean -and -not $Menu) {
         Write-Host "--- Configuration ---" -ForegroundColor DarkGray
@@ -414,7 +452,8 @@ try {
 
             if (-not $mBuildOnly) {
                 if (Test-Path $mDiskImage) {
-                    $qrc = Start-QEMU -DiskImage $mDiskImage -OvmfPath $ovmfPath -QemuExe $QemuPath -IsDebug $mDebug -IsNoGraphic $false -Mem $Memory -CpuCores $Cores -ExtraArgs $ExtraQemuArgs -UseStartProcess $UseStartProcess
+                    if ($Debug) { Write-Host "DEBUG: EffectiveExtraArgs = $($EffectiveExtraArgs -join '|')" -ForegroundColor Yellow }
+                    $qrc = Start-QEMU -DiskImage $mDiskImage -OvmfPath $ovmfPath -QemuExe $QemuPath -IsDebug $mDebug -IsNoGraphic $false -Mem $Memory -CpuCores $Cores -ExtraArgs $EffectiveExtraArgs -ExtraArgString $combinedExtraArgStr -UseStartProcess $UseStartProcess
                     if ($qrc -ne 0) { Write-Host "QEMU Error: $qrc" -ForegroundColor Red }
                 }
                 else { Write-Host "Image not found." -ForegroundColor Red }
@@ -432,8 +471,9 @@ try {
     if ($BuildOnly) { Write-Host "Build complete."; exit 0 }
 
     if (-not (Test-Path $diskImage)) { throw "Disk image missing. Run without -SkipBuild." }
+    if ($Debug) { Write-Host "DEBUG: EffectiveExtraArgs = $($EffectiveExtraArgs -join '|')" -ForegroundColor Yellow }
 
-    $qrc = Start-QEMU -DiskImage $diskImage -OvmfPath $ovmfPath -QemuExe $QemuPath -IsDebug $Debug -IsNoGraphic $NoGraphic -Mem $Memory -CpuCores $Cores -ExtraArgs $ExtraQemuArgs -UseStartProcess $UseStartProcess
+    $qrc = Start-QEMU -DiskImage $diskImage -OvmfPath $ovmfPath -QemuExe $QemuPath -IsDebug $Debug -IsNoGraphic $NoGraphic -Mem $Memory -CpuCores $Cores -ExtraArgs $EffectiveExtraArgs -ExtraArgString $combinedExtraArgStr -UseStartProcess $UseStartProcess
     if ($qrc -ne 0) { throw "QEMU exited with code $qrc" }
 
 }

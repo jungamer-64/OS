@@ -25,4 +25,4 @@ pub use gdt::init as init_gdt;
 pub use interrupts::init_idt;
 pub use cr3_test::run_cr3_diagnostic_tests;
 pub use tss::{init as init_tss, update_kernel_stack};
-pub use fpu::{save_fpu_state, restore_fpu_state};
+pub use fpu::{init as init_fpu, save_fpu_state, restore_fpu_state};

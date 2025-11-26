@@ -44,6 +44,14 @@ overflow-checks = false
 # Enable debug assertions
 debug-assertions = true
 
+
+[profile.dev.package."*"]
+opt-level = "s"  # Optimize for size in dev builds
+debug = false
+debug-assertions = false
+overflow-checks = false
+strip = "debuginfo"
+
 [profile.release]
 # Abort on panic (no unwinding in kernel space)
 panic = "abort"
@@ -63,4 +71,10 @@ overflow-checks = false
 # Codegen units = 1 for better optimization
 codegen-units = 1
 
+
+[profile.release.package."*"]
+opt-level = "s"
+debug = false
+overflow-checks = false
+strip = "debuginfo"
 # Note: test profile does not support panic = "abort" in workspaces

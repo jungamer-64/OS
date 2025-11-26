@@ -123,7 +123,6 @@ pub struct Process {
     mmap_top: VirtAddr,
     file_descriptors: BTreeMap<u64, Arc<Mutex<dyn FileDescriptor>>>,
     next_fd: u64,
-    #[repr(align(64))]
     fpu_state: FpuState,
 }
 
@@ -325,6 +324,16 @@ impl Process {
                 let _ = fd_lock.close();
             }
         }
+    }
+
+    /// Get mutable pointer to FPU state data for saving
+    pub(crate) fn fpu_state_mut_ptr(&mut self) -> *mut u8 {
+        self.fpu_state.data.as_mut_ptr()
+    }
+
+    /// Get const pointer to FPU state data for restoring
+    pub(crate) fn fpu_state_ptr(&self) -> *const u8 {
+        self.fpu_state.data.as_ptr()
     }
 }
 

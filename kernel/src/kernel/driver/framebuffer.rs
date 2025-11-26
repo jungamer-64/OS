@@ -9,7 +9,7 @@ use core::fmt;
 use spin::{Mutex, Once};
 
 /// The 8x16 font binary data, loaded at compile time.
-static FONT: &[u8] = include_bytes!("../../../../assets/font/basic_8x16.bin");
+static FONT: &[u8] = include_bytes!("../../../../font/basic_8x16.bin");
 
 
 /// Represents an RGB color.

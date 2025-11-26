@@ -107,6 +107,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "raw-cpuid"
+version = "11.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "498cd0dc59d73224351ee52a95fee0f1a617a2eae0e7d9d720cc622c73a54186"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
 name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -226,6 +235,7 @@ dependencies = [
  "lazy_static",
  "linked_list_allocator",
  "pc-keyboard",
+ "raw-cpuid",
  "serde",
  "serde_json",
  "spin",
