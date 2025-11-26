@@ -162,6 +162,19 @@ pub fn create_user_process(path: &str) -> Result<(ProcessId, VirtAddr, VirtAddr,
         // Get kernel page table
         let kernel_l4_ptr = (phys_mem_offset + kernel_cr3).as_mut_ptr::<PageTable>();
         let kernel_l4 = &mut *kernel_l4_ptr;
+        
+        // [CRITICAL] Ensure PML4 Entry 0 has USER_ACCESSIBLE flag
+        // This is necessary because User code (0x400000) and User stack (0x6fff...) 
+        // are in the lower half of the address space (PML4 index 0-255)
+        // Without USER_ACCESSIBLE on the PML4 entry, Ring 3 cannot access these pages
+        if !kernel_l4[0].is_unused() {
+            let old_flags = kernel_l4[0].flags();
+            let new_flags = old_flags | PageTableFlags::USER_ACCESSIBLE;
+            let frame_addr = kernel_l4[0].addr();
+            kernel_l4[0].set_addr(frame_addr, new_flags);
+            crate::debug_println!("[PHASE 3] PML4[0] has USER_ACCESSIBLE: {}", kernel_l4[0].flags().contains(PageTableFlags::USER_ACCESSIBLE));
+        }
+        
         let mut kernel_mapper = OffsetPageTable::new(kernel_l4, phys_mem_offset);
         
         // Get user page table to find physical frames
@@ -257,6 +270,95 @@ pub fn create_user_process(path: &str) -> Result<(ProcessId, VirtAddr, VirtAddr,
         }
         
         crate::debug_println!("[PHASE 3] User stack mapped to kernel page table successfully");
+        
+        // [CRITICAL] After all mappings, ensure page table hierarchy has USER_ACCESSIBLE
+        // This is needed because map_to may not set USER_ACCESSIBLE on parent table entries
+        crate::debug_println!("[PHASE 3] Setting USER_ACCESSIBLE on all used page table hierarchy entries...");
+        
+        // Helper function to add USER_ACCESSIBLE to page table entry
+        fn add_user_accessible_to_entry(entry: &mut x86_64::structures::paging::page_table::PageTableEntry) {
+            use x86_64::structures::paging::PageTableFlags;
+            if !entry.is_unused() {
+                let old_flags = entry.flags();
+                if !old_flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                    // Get the physical address from the entry
+                    if let Ok(frame) = entry.frame() {
+                        let new_flags = old_flags | PageTableFlags::USER_ACCESSIBLE;
+                        entry.set_addr(frame.start_address(), new_flags);
+                    }
+                }
+            }
+        }
+        
+        // Update page table hierarchy for User code (0x400000)
+        // PML4[0] -> PDPT[0] -> PD[2] -> PT[0]
+        let pml4_idx_code = 0usize;
+        let pdpt_idx_code = 0usize;
+        let pd_idx_code = 2usize;  // 0x400000 >> 21 = 2
+        
+        crate::debug_println!("[PHASE 3] Updating User code page table hierarchy...");
+        crate::debug_println!("[PHASE 3] PML4[{}] before: flags={:?}", pml4_idx_code, kernel_l4[pml4_idx_code].flags());
+        add_user_accessible_to_entry(&mut kernel_l4[pml4_idx_code]);
+        crate::debug_println!("[PHASE 3] PML4[{}] after: flags={:?}", pml4_idx_code, kernel_l4[pml4_idx_code].flags());
+        
+        if let Ok(pdpt_frame) = kernel_l4[pml4_idx_code].frame() {
+            let pdpt_ptr = (phys_mem_offset + pdpt_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+            let pdpt = &mut *pdpt_ptr;
+            crate::debug_println!("[PHASE 3] PDPT[{}] before: flags={:?}", pdpt_idx_code, pdpt[pdpt_idx_code].flags());
+            add_user_accessible_to_entry(&mut pdpt[pdpt_idx_code]);
+            crate::debug_println!("[PHASE 3] PDPT[{}] after: flags={:?}", pdpt_idx_code, pdpt[pdpt_idx_code].flags());
+            
+            if let Ok(pd_frame) = pdpt[pdpt_idx_code].frame() {
+                let pd_ptr = (phys_mem_offset + pd_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+                let pd = &mut *pd_ptr;
+                crate::debug_println!("[PHASE 3] PD[{}] before: flags={:?}", pd_idx_code, pd[pd_idx_code].flags());
+                add_user_accessible_to_entry(&mut pd[pd_idx_code]);
+                crate::debug_println!("[PHASE 3] PD[{}] after: flags={:?}", pd_idx_code, pd[pd_idx_code].flags());
+                crate::debug_println!("[PHASE 3] User code page table hierarchy updated with USER_ACCESSIBLE");
+            } else {
+                crate::debug_println!("[PHASE 3] ERROR: PD[{}] frame not found", pd_idx_code);
+            }
+        } else {
+            crate::debug_println!("[PHASE 3] ERROR: PDPT frame not found");
+        }
+        
+        // Update page table hierarchy for User stack (0x6ffffffff000)
+        // PML4 index = (0x6ffffffff000 >> 39) & 0x1FF = 223
+        // PDPT index = (0x6ffffffff000 >> 30) & 0x1FF = 511
+        // PD index = (0x6ffffffff000 >> 21) & 0x1FF = 511
+        let pml4_idx_stack = 223usize;
+        let pdpt_idx_stack = 511usize;
+        let pd_idx_stack = 511usize;
+        
+        crate::debug_println!("[PHASE 3] Updating User stack page table hierarchy...");
+        crate::debug_println!("[PHASE 3] PML4[{}] before: flags={:?}", pml4_idx_stack, kernel_l4[pml4_idx_stack].flags());
+        add_user_accessible_to_entry(&mut kernel_l4[pml4_idx_stack]);
+        crate::debug_println!("[PHASE 3] PML4[{}] after: flags={:?}", pml4_idx_stack, kernel_l4[pml4_idx_stack].flags());
+        
+        if let Ok(pdpt_frame) = kernel_l4[pml4_idx_stack].frame() {
+            let pdpt_ptr = (phys_mem_offset + pdpt_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+            let pdpt = &mut *pdpt_ptr;
+            crate::debug_println!("[PHASE 3] PDPT[{}] before: flags={:?}", pdpt_idx_stack, pdpt[pdpt_idx_stack].flags());
+            add_user_accessible_to_entry(&mut pdpt[pdpt_idx_stack]);
+            crate::debug_println!("[PHASE 3] PDPT[{}] after: flags={:?}", pdpt_idx_stack, pdpt[pdpt_idx_stack].flags());
+            
+            if let Ok(pd_frame) = pdpt[pdpt_idx_stack].frame() {
+                let pd_ptr = (phys_mem_offset + pd_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+                let pd = &mut *pd_ptr;
+                crate::debug_println!("[PHASE 3] PD[{}] before: flags={:?}", pd_idx_stack, pd[pd_idx_stack].flags());
+                add_user_accessible_to_entry(&mut pd[pd_idx_stack]);
+                crate::debug_println!("[PHASE 3] PD[{}] after: flags={:?}", pd_idx_stack, pd[pd_idx_stack].flags());
+                crate::debug_println!("[PHASE 3] User stack page table hierarchy updated with USER_ACCESSIBLE");
+            } else {
+                crate::debug_println!("[PHASE 3] ERROR: Stack PD frame not found");
+            }
+        } else {
+            crate::debug_println!("[PHASE 3] ERROR: Stack PDPT frame not found");
+        }
+        
+        // Flush TLB
+        x86_64::instructions::tlb::flush_all();
+        crate::debug_println!("[PHASE 3] TLB flushed");
     }
     
     // 3. Add to process table
@@ -622,7 +724,7 @@ pub fn exec_process(path: &str) -> Result<u64, CreateError> {
         
         // 4. Switch to new page table
         unsafe {
-            crate::kernel::process::switch_to_process(process);
+            crate::kernel::process::switch_to_single_process(process);
         }
         
         // 5. Reset registers

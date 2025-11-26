@@ -441,12 +441,31 @@ pub fn sys_wait(_pid: u64, status_ptr: u64, _options: u64, _arg4: u64, _arg5: u6
 pub fn sys_mmap(addr: u64, len: u64, _prot: u64, _flags: u64, _fd: u64, _offset: u64) -> SyscallResult {
     use crate::kernel::process::PROCESS_TABLE;
     use crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR;
+    use crate::kernel::security::{is_user_address, is_user_range, validate_alloc_size};
 
-    // Actually map_user_stack maps a range. We can reuse it or make a generic map_user_memory.
-    // map_user_stack is in user_paging.rs.
-    // Let's check user_paging.rs exports.
-    
+    // Validate length
     if len == 0 {
+        return EINVAL;
+    }
+    
+    // Validate allocation size (prevent excessive allocations)
+    if let Err(e) = validate_alloc_size(len) {
+        debug_println!("[SYSCALL] sys_mmap: invalid allocation size {}", len);
+        return e;
+    }
+    
+    // If addr is specified (non-zero), validate it's in user space
+    if addr != 0 {
+        // Align length to page size for range check
+        let len_aligned = (len + 4095) & !4095;
+        
+        if !is_user_range(addr, len_aligned) {
+            debug_println!("[SYSCALL] sys_mmap: requested address 0x{:x} not in user space", addr);
+            return EFAULT;
+        }
+        
+        // Fixed address mapping not supported yet
+        debug_println!("[SYSCALL] sys_mmap: fixed address mapping not supported yet");
         return EINVAL;
     }
     
@@ -582,17 +601,54 @@ pub fn sys_mmap(addr: u64, len: u64, _prot: u64, _flags: u64, _fd: u64, _offset:
     start_addr.as_u64() as SyscallResult
 }
 
-/// sys_pipe - Create a pipe (TODO: Not implemented)
-pub fn sys_pipe(_pipefd: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+/// sys_pipe - Create a pipe
+///
+/// Creates a pipe and stores the read/write file descriptors  in the user-provided array.
+///
+/// # Arguments
+/// * `pipefd` - Pointer to an array of 2 u64 values (read_fd, write_fd)
+///
+/// # Returns
+/// * `SUCCESS` (0) - Pipe created successfully
+/// * `EFAULT` - Invalid pointer
+/// * `ESRCH` - Current process not found
+/// * `ENOSYS` - Not yet implemented
+pub fn sys_pipe(pipefd: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    use crate::kernel::security::validate_user_write;
+    
+    // Validate pipefd pointer (array of 2 u64 values = 16 bytes)
+    if let Err(e) = validate_user_write(pipefd, 16) {
+        debug_println!("[SYSCALL] sys_pipe: invalid pipefd pointer 0x{:x}", pipefd);
+        return e;
+    }
+    
     // TODO: Implement pipe support
-    crate::debug_println!("[Syscall] sys_pipe: Not implemented");
+    debug_println!("[SYSCALL] sys_pipe: Not implemented yet");
     ENOSYS // Function not implemented
 }
 
 /// sys_munmap - Unmap memory
 pub fn sys_munmap(addr: u64, len: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    use crate::kernel::security::is_user_range;
+    
+    // Validate length
     if len == 0 {
         return EINVAL;
+    }
+    
+    // Check null pointer
+    if addr == 0 {
+        debug_println!("[SYSCALL] sys_munmap: null pointer");
+        return EFAULT;
+    }
+    
+    // Align length to page size for validation
+    let len_aligned = (len + 4095) & !4095;
+    
+    // Validate that address range is in user space
+    if !is_user_range(addr, len_aligned) {
+        debug_println!("[SYSCALL] sys_munmap: address 0x{:x} not in user space", addr);
+        return EFAULT;
     }
     
     // Align length
@@ -613,9 +669,27 @@ pub fn sys_munmap(addr: u64, len: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6
     let end_page = Page::<Size4KiB>::containing_address(start_addr + len_aligned);
     let page_range = Page::range(start_page, end_page);
     
+    // First pass: validate all pages are mapped
+    // This provides better error reporting (POSIX compliance)
+    let mut unmapped_found = false;
+    for page in page_range.clone() {
+        if mapper.translate_page(page).is_err() {
+            debug_println!("[SYSCALL] sys_munmap: page 0x{:x} is not mapped", page.start_address().as_u64());
+            unmapped_found = true;
+        }
+    }
+    
+    // If any pages are unmapped, we could either:
+    // 1. Return error (strict POSIX) - uncomment the line below
+    // 2. Continue and unmap only mapped pages (lenient)
+    // Currently using lenient approach for compatibility
+    // if unmapped_found {
+    //     return EINVAL;
+    // }
+    
+    // Second pass: unmap pages
     for page in page_range {
         // Unmap
-        // We ignore errors (e.g. page not mapped)
         if let Ok((frame, _flags)) = mapper.unmap(page) {
             // Flush TLB
             x86_64::instructions::tlb::flush(page.start_address());
@@ -731,7 +805,9 @@ pub fn test_syscall_mechanism() {
     debug_println!("  Result: {} (expected EFAULT = -14)", result);
     
     // Test 4: sys_write (kernel address)
-    debug_println!("\nTest 4: sys_write (kernel address)");
+    
+    // Test 4: sys_write (kernel address)
+    debug_println!("\\nTest 4: sys_write (kernel address)");
     let result = dispatch(
         0, // sys_write
         1, // stdout
@@ -741,5 +817,12 @@ pub fn test_syscall_mechanism() {
     );
     debug_println!("  Result: {} (expected EFAULT = -14)", result);
     
-    debug_println!("\n=== Syscall Mechanism Test Complete ===\n");
+    debug_println!("\\n=== Syscall Mechanism Test Complete ===\\n");
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests;

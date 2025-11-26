@@ -113,14 +113,15 @@ pub fn setup_process_context(process: &mut Process) {
 /// 1. Save current process state (callee-saved registers)
 /// 2. Switch kernel stack
 /// 3. Switch page tables
-/// 4. Restore new process state
 ///
 /// # Safety
-/// This function is unsafe because it changes the address space and stack.
+/// - Both processes must have valid page tables
+#[allow(dead_code)]
 pub unsafe fn context_switch(from: &mut Process, to: &Process) {
     // 1. Update TSS kernel stack for syscalls/interrupts
-    // This ensures that if an interrupt/syscall happens in the NEW process,
-    // it uses the correct kernel stack top.
+    crate::arch::x86_64::tss::update_kernel_stack(to.kernel_stack());
+    
+    // Also update legacy syscall stack for backward compatibility
     set_kernel_stack(to.kernel_stack());
     
     // 2. Switch page table (if different)
@@ -131,12 +132,16 @@ pub unsafe fn context_switch(from: &mut Process, to: &Process) {
         }
     }
     
-    // 3. Perform the actual register and stack switch
+    // 3. Save FPU/SSE/AVX state
+    unsafe {
+        crate::arch::x86_64::fpu::save_fpu_state(from.fpu_state.data.as_mut_ptr());
+    }
+    
+    // 4. Perform the actual register and stack switch
     let prev_ctx = from.context_rsp_mut() as *mut u64;
     let next_ctx = to.context_rsp();
     
     // Ensure the target process has a valid context
-    // (Should be set up by setup_process_context for new processes)
     if next_ctx == 0 {
          panic!("Target process (PID={}) has invalid context_rsp (0). Did you call setup_process_context?", to.pid().as_u64());
     }
@@ -144,12 +149,36 @@ pub unsafe fn context_switch(from: &mut Process, to: &Process) {
     crate::debug_println!(
         "[Context Switch] {} (RSP={:x}) -> {} (RSP={:x})",
         from.pid().as_u64(),
-        unsafe { *prev_ctx }, // Dereference unsafe
+        unsafe { *prev_ctx },
         to.pid().as_u64(),
         next_ctx
     );
 
     unsafe {
         switch_context_asm(prev_ctx, next_ctx);
+    }
+    
+    // 5. Restore FPU/SSE/AVX state
+    // This happens AFTER switch_context_asm returns, so we're now in the "to" process context
+    unsafe {
+        crate::arch::x86_64::fpu::restore_fpu_state(to.fpu_state.data.as_ptr());
+    }
+}
+
+/// Switch to a process (updates kernel stack and page table)
+///
+/// This is a convenience wrapper that can be used when you have a single process
+/// to switch to, without needing a "from" process.
+pub fn switch_to_process(process: &Process) {
+    use x86_64::registers::control::{Cr3, Cr3Flags};
+    
+    // Update kernel stack for syscalls
+    crate::arch::x86_64::tss::update_kernel_stack(process.kernel_stack());
+    set_kernel_stack(process.kernel_stack());
+    
+    // Switch page table
+    let flags = Cr3Flags::empty();
+    unsafe {
+        Cr3::write(process.page_table_frame(), flags);
     }
 }

@@ -31,6 +31,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     
     // GDT/IDT初期化
     tiny_os::arch::x86_64::init_gdt();
+    tiny_os::arch::x86_64::init_tss();  // Phase 2: TSS initialization
     debug_println!("[OK] GDT initialized");
     tiny_os::arch::x86_64::init_idt();
     debug_println!("[OK] IDT initialized");

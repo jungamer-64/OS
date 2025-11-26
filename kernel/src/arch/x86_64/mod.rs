@@ -12,6 +12,10 @@ pub mod pic;
 pub mod syscall;
 /// CR3 switching diagnostic tests (Phase 3 preparation)
 pub mod cr3_test;
+/// Task State Segment (Phase 2: Process Management)
+pub mod tss;
+/// FPU/SSE state management (Phase 2: Process Management)
+pub mod fpu;
 
 pub use cpu::{X86Cpu, InterruptFlags, critical_section};
 pub use cpu::read_timestamp;
@@ -20,3 +24,5 @@ pub use port::{Port, PortReadOnly, PortWriteOnly};
 pub use gdt::init as init_gdt;
 pub use interrupts::init_idt;
 pub use cr3_test::run_cr3_diagnostic_tests;
+pub use tss::{init as init_tss, update_kernel_stack};
+pub use fpu::{save_fpu_state, restore_fpu_state};

@@ -101,11 +101,13 @@ struct AlignedStack {
     data: [u8; STACK_SIZE],
 }
 
+
 static mut DOUBLE_FAULT_STACK: AlignedStack = AlignedStack {
     data: [0; STACK_SIZE],
 };
 
-static mut TSS: TaskStateSegment = TaskStateSegment::new();
+// Note: TSS is now managed by the tss.rs module (Phase 2)
+// The old static TSS has been removed and replaced with tss::TSS
 
 /// GDT とセグメントセレクタ
 pub struct Selectors {
@@ -148,10 +150,10 @@ lazy_static! {
         let user_code = gdt.append(create_user_code_descriptor());
         let user_data = gdt.append(create_user_data_descriptor());
         
-        // TSS (can be anywhere after the required segments)
-        let tss = gdt.append(Descriptor::tss_segment(unsafe { 
-            &*core::ptr::addr_of!(TSS) 
-        }));
+        // TSS - now uses the new tss.rs module (Phase 2)
+        // We get a reference to the TSS from the tss module
+        let tss_ref = unsafe { &*(&*super::tss::TSS.lock() as *const _) };
+        let tss = gdt.append(Descriptor::tss_segment(tss_ref));
         
         // DEBUG: Print selector values
         crate::debug_println!("[GDT DEBUG] Kernel code selector: {:#x}", kernel_code.0);
@@ -197,28 +199,71 @@ pub fn selectors() -> &'static Selectors {
     &GDT.1
 }
 
+/// GDT descriptor contentをdump（デバッグ用）
+pub fn dump_gdt_descriptors() {
+    use x86_64::instructions::tables::sgdt;
+    
+    let gdtr = sgdt();
+    let gdt_base = gdtr.base.as_u64();
+    let gdt_limit = gdtr.limit as u64;
+    
+    crate::debug_println!("[GDT DUMP] Base: {:#x}, Limit: {:#x}", gdt_base, gdt_limit);
+    
+    // Each descriptor is 8 bytes (except TSS which is 16 bytes)
+    let num_entries = (gdt_limit + 1) / 8;
+    
+    for i in 0..num_entries {
+        let entry_addr = gdt_base + (i * 8);
+        let descriptor = unsafe { *(entry_addr as *const u64) };
+        
+        crate::debug_println!("[GDT DUMP] Entry {}: offset={:#x}, value={:#018x}", i, i * 8, descriptor);
+        
+        // Parse descriptor bits for non-null entries
+        if descriptor != 0 {
+            let limit_low = descriptor & 0xFFFF;
+            let base_low = (descriptor >> 16) & 0xFFFF;
+            let base_mid = (descriptor >> 32) & 0xFF;
+            let access = (descriptor >> 40) & 0xFF;
+            let limit_high = (descriptor >> 48) & 0x0F;
+            let flags = (descriptor >> 52) & 0x0F;
+            let base_high = (descriptor >> 56) & 0xFF;
+            
+            let present = (access >> 7) & 1;
+            let dpl = (access >> 5) & 3;
+            let segment_type = access & 0x1F;
+            
+            crate::debug_println!("    Access={:#04x} (P={}, DPL={}, Type={:#03x}), Flags={:#03x}",
+                access, present, dpl, segment_type, flags);
+        }
+    }
+}
+
 /// GDT を初期化
 pub fn init() {
     use x86_64::instructions::tables::load_tss;
     use x86_64::instructions::segmentation::{CS, Segment};
 
+    // TSS の初期化は tss.rs モジュールで行う（Phase 2）
+    // Double fault スタックのみここで設定
+    {
+        let mut tss = super::tss::TSS.lock();
+        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
+            let stack_start = VirtAddr::from_ptr(unsafe { core::ptr::addr_of!(DOUBLE_FAULT_STACK) });
+            stack_start + (STACK_SIZE as u64)
+        };
+        // privilege_stack_table[0] は tss.rs で管理される
+        // プロセス切り替え時に update_kernel_stack() で更新される
+    }
+    
+    // GDT をロード
+    GDT.0.load();
     unsafe {
-        // TSS を設定
-        TSS.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
-            let stack_start = VirtAddr::from_ptr(core::ptr::addr_of!(DOUBLE_FAULT_STACK));
-            stack_start + (STACK_SIZE as u64)
-        };
-        
-        // システムコール用のカーネルスタックも設定（Ring 3 → Ring 0遷移用）
-        // Note: x86_64では privilege_stack_table[0] がRing 3からの遷移に使用される
-        TSS.privilege_stack_table[0] = {
-            let stack_start = VirtAddr::from_ptr(core::ptr::addr_of!(DOUBLE_FAULT_STACK));
-            stack_start + (STACK_SIZE as u64)
-        };
-        
-        // GDT をロード
-        GDT.0.load();
         CS::set_reg(GDT.1.kernel_code);
         load_tss(GDT.1.tss);
     }
+    
+    // DEBUG: Dump GDT content after initialization
+    dump_gdt_descriptors();
+    
+    crate::debug_println!("[GDT] Initialized with new tss.rs module integration");
 }

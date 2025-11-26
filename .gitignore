@@ -4,7 +4,30 @@
 # Rust build artifacts
 target/
 node_modules/
+
 # OS image files
 *.iso
-*.bin
 *.img
+
+# QEMU logs and debug output
+qemu.log
+qemu_*.log
+qemu_*.txt
+
+# Build artifacts
+build/
+*.bin
+
+# Backup files
+.backup/
+
+# Editor and IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS-specific
+.DS_Store
+Thumbs.db
