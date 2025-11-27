@@ -1,8 +1,8 @@
 [build]
-target = "x86_64-rany_os"
+target = "x86_64-unknown-none"
 
-[target.x86_64-rany_os]
+[target.x86_64-unknown-none]
 rustflags = [
-    "-C", "link-arg=-Tlink.ld",
+    "-C", "link-arg=-TD:/Rust/OS/userland/programs/shell/link.ld",
     "-C", "relocation-model=static",
 ]

@@ -29,7 +29,8 @@ param(
     [string]$OverrideOvmfPath = "",
     [string]$Memory = "128M",
     [int]$Cores = 1,
-    [switch]$InlineQemu # If set, runs QEMU in current console (Legacy Tee-Object mode)
+    [switch]$InlineQemu, # If set, runs QEMU in current console (Legacy Tee-Object mode)
+    [switch]$KeepAlive   # If set, QEMU stays open after crash/shutdown (for debugging)
 )
 
 $ErrorActionPreference = "Stop"
@@ -63,7 +64,7 @@ function Parse-ArgumentString {
         if ([char]::IsWhiteSpace($c) -and -not $inQuote) {
             if ($sb.Length -gt 0) {
                 $tokens += $sb.ToString()
-                $sb.Clear()
+                $null = $sb.Clear()
             }
         }
         elseif (($c -eq '"' -or $c -eq "'") -and -not $inQuote) {
@@ -215,7 +216,8 @@ function Start-QEMU {
         [int]$CpuCores,
         [string[]]$ExtraArgs,
         [string]$ExtraArgString = "",
-        [bool]$UseStartProcess
+        [bool]$UseStartProcess,
+        [bool]$KeepAlive = $false
     )
     
     Write-Host "Starting QEMU..." -ForegroundColor Green
@@ -232,25 +234,48 @@ function Start-QEMU {
     $logsToRotate = @($qemuLog, $stdoutLog, $stderrLog)
     foreach ($log in $logsToRotate) {
         if (Test-Path $log) {
-            Move-Item -Path $log -Destination "$log.old" -Force -ErrorAction SilentlyContinue
+            try {
+                Move-Item -Path $log -Destination "$log.old" -Force -ErrorAction Stop
+            }
+            catch {
+                # File might be locked, try to remove the old one first
+                Remove-Item -Path "$log.old" -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 100
+                try {
+                    Move-Item -Path $log -Destination "$log.old" -Force -ErrorAction Stop
+                }
+                catch {
+                    # Cannot rotate, just delete the original
+                    Remove-Item -Path $log -Force -ErrorAction SilentlyContinue
+                }
+            }
         }
     }
 
-    # Ensure empty log files exist for redirection
-    New-Item -Path $stdoutLog -ItemType File -Force | Out-Null
-    New-Item -Path $stderrLog -ItemType File -Force | Out-Null
+    # Start-Process creates the files on its own when redirecting
 
     $qemuArgs = @(
         "-drive", "format=raw,file=$DiskImage",
         "-bios", "$OvmfPath",
-        "-serial", "stdio",
         "-m", $Mem,
         "-smp", $CpuCores,
         "-no-reboot",
-        "-no-shutdown",
         "-d", "int,cpu_reset",
         "-D", $qemuLog
     )
+    
+    # Serial port configuration - use mon:stdio for nographic mode on Windows
+    if ($IsNoGraphic) {
+        $qemuArgs += "-serial", "mon:stdio"
+    }
+    else {
+        $qemuArgs += "-serial", "stdio"
+    }
+
+    # Keep QEMU alive after crash/shutdown for debugging
+    if ($KeepAlive) {
+        $qemuArgs += "-no-shutdown"
+    }
 
     if ($IsDebug) {
         Write-Host "  GDB Stub: localhost:1234" -ForegroundColor Magenta
@@ -260,28 +285,27 @@ function Start-QEMU {
     # Avoid duplicate '-nographic' in both the base args and extra args
     $hasNographicInExtra = $false
     if ($ExtraArgString -ne "") { $hasNographicInExtra = ($ExtraArgString -match '(?i)\b-nographic\b') }
-    if (-not $hasNographicInExtra -and $ExtraArgs -ne $null) { $hasNographicInExtra = ($ExtraArgs -contains '-nographic') }
+    if (-not $hasNographicInExtra -and ($null -ne $ExtraArgs)) { $hasNographicInExtra = ($ExtraArgs -contains '-nographic') }
     if ($IsNoGraphic -and -not $hasNographicInExtra) { $qemuArgs += "-nographic" }
     
-    foreach ($arg in $ExtraArgs) {
-        if ($arg -match "['`"]") { $qemuArgs += Parse-ArgumentString $arg }
-        else { $qemuArgs += $arg }
+    # Append additional tokens from EffectiveExtraArgs (already parsed as tokens)
+    if (($null -ne $ExtraArgs) -and ($ExtraArgs.Count -gt 0)) {
+        $qemuArgs += $ExtraArgs
     }
 
     Write-Host "Executing: $QemuExe $($qemuArgs -join ' ')" -ForegroundColor DarkGray
 
-    # If Inline mode is requested, don't duplicate -nographic
-    if ($IsNoGraphic -and $ExtraArgs -ne $null) { $ExtraArgs = $ExtraArgs | Where-Object { $_ -ne '-nographic' } }
     # --- Preferred: Start-Process mode (separate process, accurate exit code) ---
     if ($UseStartProcess) {
         try {
-            # Build a single command-line string for Start-Process so argument quoting is preserved
-            $qemuArgListStr = $qemuArgs -join ' '
-            if ($ExtraArgString -ne "") { $qemuArgListStr = "$qemuArgListStr $ExtraArgString" }
-            $proc = Start-Process -FilePath $QemuExe -ArgumentList $qemuArgListStr `
+            $argList = @($qemuArgs)
+            $proc = Start-Process -FilePath $QemuExe -ArgumentList $argList `
                 -RedirectStandardOutput $stdoutLog `
                 -RedirectStandardError $stderrLog `
                 -NoNewWindow -PassThru
+            
+            # Wait for process handle to be available (needed for ExitCode property)
+            $null = $proc.Handle  # Access Handle to ensure ExitCode can be retrieved later
             
             # Track process globally for cleanup on interrupt
             $script:currentQemuProc = $proc
@@ -291,38 +315,37 @@ function Start-QEMU {
             return 1
         }
 
-        # Stream output live while process runs
+        # Wait for process to exit and then show output
         try {
-            # Start streaming stdout (stderr captured to file)
-            $stdReader = Start-Job -ScriptBlock {
-                param($path)
-                Get-Content -Path $path -Wait -Tail 0 -Encoding UTF8
-            } -ArgumentList $stdoutLog
-            
-            # Track job globally for cleanup
-            $script:currentLogJob = $stdReader
-
-            # Wait for process to exit
-            $proc | Wait-Process
-
-            # Give some time for last buffer to flush
-            Start-Sleep -Milliseconds 200
-
-            # Graceful cleanup of job
-            if ($stdReader -and ($stdReader.State -eq 'Running')) {
-                Stop-Job $stdReader | Out-Null
-            }
-            Remove-Job $stdReader -ErrorAction SilentlyContinue | Out-Null
-            $script:currentLogJob = $null
+            # Wait for process to exit using .NET method to preserve ExitCode
+            Write-Host "  (Output will be shown after QEMU exits, or logged to $stdoutLog)" -ForegroundColor DarkGray
+            $proc.WaitForExit()
 
             # Clear process tracking since it exited normally
-            $procExit = $proc.ExitCode
+            # Use .NET HasExited and ExitCode properties for reliable exit code retrieval
+            $procExit = 0
+            if ($proc.HasExited) {
+                $procExit = $proc.ExitCode
+            }
             $script:currentQemuProc = $null
+            
+            # Debug: show retrieved exit code
+            if ($script:DebugPreference -eq 'Continue' -or $env:DEBUG) {
+                Write-Host "DEBUG: Process exited with code: $procExit" -ForegroundColor Yellow
+            }
+            
+            # Show the last part of output if file exists
+            if (Test-Path $stdoutLog) {
+                Write-Host "`n--- QEMU Output (last 50 lines) ---" -ForegroundColor Cyan
+                Get-Content -Path $stdoutLog -Tail 50 -ErrorAction SilentlyContinue | Out-Host
+                Write-Host "--- End of Output ---`n" -ForegroundColor Cyan
+            }
+            
             return $procExit
 
         }
         catch {
-            Write-Host "Error while streaming logs: $_" -ForegroundColor Red
+            Write-Host "Error while waiting for QEMU: $_" -ForegroundColor Red
             # Cleanup will be handled by finally block if we throw here, 
             # but we can try local stop
             if ($script:currentQemuProc) { 
@@ -332,16 +355,12 @@ function Start-QEMU {
         }
     }
     else {
-        # --- Inline mode: fallback that mirrors output (but exit code might be masked) ---
-        Write-Host "  (Running inline - output mirrored to $stdoutLog)" -ForegroundColor DarkGray
-        # Build a single command-line string, using the combined ExtraArgString so quoting is preserved
-        $cmdStr = "$QemuExe $($qemuArgs -join ' ')"
-        if ($ExtraArgString -ne "") { $cmdStr = "$cmdStr $ExtraArgString" }
-        Write-Host "Inline Command: $cmdStr" -ForegroundColor DarkGray
-        # Use Invoke-Expression to run the constructed command-line, which matches how it would be executed in a shell
-        Invoke-Expression $cmdStr 2>&1 | Tee-Object -FilePath $stdoutLog
-        $last = $LASTEXITCODE
-        return $last
+        # --- Inline mode: live output to console ---
+        Write-Host "  (Running inline - output also mirrored to $stdoutLog)" -ForegroundColor DarkGray
+        # Build a single command invocation from the tokenized args and run with call operator to preserve tokens
+        Write-Host "Inline Command: $QemuExe $($qemuArgs -join ' ')" -ForegroundColor DarkGray
+        & $QemuExe @qemuArgs 2>&1 | Tee-Object -FilePath $stdoutLog | Out-Host
+        return $LASTEXITCODE
     }
 }
 
@@ -390,22 +409,27 @@ try {
 
     # Normalize Extra QEMU args: combine array and single-string inputs
     if ($Debug) { Write-Host "DEBUG (before parse): ExtraQemuArgStr='$ExtraQemuArgStr' ExtraQemuArgs=[$($ExtraQemuArgs -join ', ')]" -ForegroundColor Yellow }
-    $EffectiveExtraArgs = @()
-    # To be resilient against shells that split quoted strings incorrectly (for example, cmd.exe),
-    # reconstruct a combined argument string and parse it as a whole, which yields correct tokens.
     $combinedExtraArgStr = ""
     if ($ExtraQemuArgStr -ne "") { $combinedExtraArgStr = $ExtraQemuArgStr.Trim() }
-    if ($ExtraQemuArgs -ne $null -and $ExtraQemuArgs.Count -gt 0) {
+    if (($null -ne $ExtraQemuArgs) -and ($ExtraQemuArgs.Count -gt 0)) {
         $eaJoined = $ExtraQemuArgs -join ' '
         if ($combinedExtraArgStr -eq "") { $combinedExtraArgStr = $eaJoined } else { $combinedExtraArgStr = "$combinedExtraArgStr $eaJoined" }
     }
-    if ($combinedExtraArgStr -ne "") { 
-        if ($Debug) { Write-Host "DEBUG (combinedExtraArgStr): '$combinedExtraArgStr'" -ForegroundColor Yellow }
-        $EffectiveExtraArgs = Parse-ArgumentString $combinedExtraArgStr 
+    if ($Debug) { Write-Host "DEBUG: Running local Get-EffectiveExtraArgs logic" -ForegroundColor Yellow }
+    $EffectiveExtraArgs = @()
+    if ($combinedExtraArgStr -ne "") {
+        # Normalize duplicate -nographic tokens
+        $normalized = [regex]::Replace($combinedExtraArgStr, '(-nographic)(\s*-nographic)+', '$1', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        # Use the char-based parser which handles quoted strings properly
+        $EffectiveExtraArgs = Parse-ArgumentString $normalized
+        if ($Debug) { 
+            Write-Host "DEBUG: Parsed into: $($EffectiveExtraArgs -join '|')" -ForegroundColor Magenta 
+        }
     }
+    if ($Debug) { Write-Host "DEBUG (combinedExtraArgStr): '$combinedExtraArgStr' => EffectiveExtraArgs: [$($EffectiveExtraArgs -join ', ')]" -ForegroundColor Yellow }
     
     # If user requested NoGraphic (-NoGraphic), avoid passing duplicate -nographic flags
-    if ($NoGraphic -and $EffectiveExtraArgs -ne $null) {
+    if ($NoGraphic -and ($null -ne $EffectiveExtraArgs)) {
         $EffectiveExtraArgs = $EffectiveExtraArgs | Where-Object { $_ -ne '-nographic' }
     }
 
@@ -453,7 +477,7 @@ try {
             if (-not $mBuildOnly) {
                 if (Test-Path $mDiskImage) {
                     if ($Debug) { Write-Host "DEBUG: EffectiveExtraArgs = $($EffectiveExtraArgs -join '|')" -ForegroundColor Yellow }
-                    $qrc = Start-QEMU -DiskImage $mDiskImage -OvmfPath $ovmfPath -QemuExe $QemuPath -IsDebug $mDebug -IsNoGraphic $false -Mem $Memory -CpuCores $Cores -ExtraArgs $EffectiveExtraArgs -ExtraArgString $combinedExtraArgStr -UseStartProcess $UseStartProcess
+                    $qrc = Start-QEMU -DiskImage $mDiskImage -OvmfPath $ovmfPath -QemuExe $QemuPath -IsDebug $mDebug -IsNoGraphic $false -Mem $Memory -CpuCores $Cores -ExtraArgs $EffectiveExtraArgs -ExtraArgString $combinedExtraArgStr -UseStartProcess $UseStartProcess -KeepAlive $KeepAlive
                     if ($qrc -ne 0) { Write-Host "QEMU Error: $qrc" -ForegroundColor Red }
                 }
                 else { Write-Host "Image not found." -ForegroundColor Red }
@@ -473,7 +497,7 @@ try {
     if (-not (Test-Path $diskImage)) { throw "Disk image missing. Run without -SkipBuild." }
     if ($Debug) { Write-Host "DEBUG: EffectiveExtraArgs = $($EffectiveExtraArgs -join '|')" -ForegroundColor Yellow }
 
-    $qrc = Start-QEMU -DiskImage $diskImage -OvmfPath $ovmfPath -QemuExe $QemuPath -IsDebug $Debug -IsNoGraphic $NoGraphic -Mem $Memory -CpuCores $Cores -ExtraArgs $EffectiveExtraArgs -ExtraArgString $combinedExtraArgStr -UseStartProcess $UseStartProcess
+    $qrc = Start-QEMU -DiskImage $diskImage -OvmfPath $ovmfPath -QemuExe $QemuPath -IsDebug $Debug -IsNoGraphic $NoGraphic -Mem $Memory -CpuCores $Cores -ExtraArgs $EffectiveExtraArgs -ExtraArgString $combinedExtraArgStr -UseStartProcess $UseStartProcess -KeepAlive $KeepAlive
     if ($qrc -ne 0) { throw "QEMU exited with code $qrc" }
 
 }

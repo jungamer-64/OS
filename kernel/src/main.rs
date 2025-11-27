@@ -175,6 +175,23 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             // debug_println!("[OK] Interrupts enabled");
             
             debug_println!("[TEMP] Interrupts DISABLED for User mode testing");
+            
+            // [CRITICAL] Update TSS kernel stack before jumping to user mode
+            // This is required so that interrupts/syscalls from Ring 3 use the correct kernel stack
+            {
+                let table = tiny_os::kernel::process::PROCESS_TABLE.lock();
+                if let Some(process) = table.get_process(pid) {
+                    let kernel_stack = process.kernel_stack();
+                    debug_println!("[TSS] Setting kernel stack to {:#x}", kernel_stack.as_u64());
+                    tiny_os::arch::x86_64::tss::update_kernel_stack(kernel_stack);
+                    
+                    // Also set syscall kernel stack (for sysret path)
+                    tiny_os::arch::x86_64::syscall::set_kernel_stack(kernel_stack);
+                } else {
+                    panic!("Failed to get process {} for TSS setup", pid.as_u64());
+                }
+            }
+            
             debug_println!("[Kernel] Jumping to first user process...");
             
             // Jump to user mode (this should not return)

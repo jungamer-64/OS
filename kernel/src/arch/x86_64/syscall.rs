@@ -181,9 +181,9 @@ pub unsafe extern "C" fn syscall_entry() {
         // but we verify and align if necessary.
         // This MUST happen before any push operations.
         "test rsp, 15",           // Check if RSP & 0xF == 0
-        "jz 1f",                  // If aligned, skip
+        "jz 2f",                  // If aligned, skip
         "and rsp, -16",           // Otherwise, align to 16-byte boundary
-        "1:",
+        "2:",
         
         // === Save user context (8 registers = 64 bytes) ===
         // After this, RSP is still 16-byte aligned (aligned - 64 = aligned)

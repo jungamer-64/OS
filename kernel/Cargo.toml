@@ -34,7 +34,7 @@ test_usermode = []
 
 [dependencies]
 # Bootloader API for kernel (v0.11)
-bootloader_api = "=0.11.10"
+bootloader_api = "=0.11.12"
 
 # x86_64 specific types and instructions
 # Using latest 0.15.x for better long mode support

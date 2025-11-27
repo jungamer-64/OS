@@ -102,7 +102,7 @@ fn quick_image_mode(args: QuickImageArgs) {
             std::process::exit(1);
         }
         println!("  Ramdisk: {}", ramdisk.display());
-        uefi_boot = uefi_boot.set_ramdisk(ramdisk);
+        uefi_boot.set_ramdisk(ramdisk);
     }
     
     uefi_boot

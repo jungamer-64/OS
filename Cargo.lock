@@ -22,9 +22,9 @@ checksum = "7bdfddac270bbdd45903296bc1caf29a7fdce6b326aaf0bbab7f04c5f98b7447"
 
 [[package]]
 name = "bootloader_api"
-version = "0.11.10"
+version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77fadafc2a2fa690f4f14a2e2a41c65d9e810b7fe959245bdf6d3b9c6d7e4bf1"
+checksum = "ba1a4adcd36a49a08c4fb8c13c132fb1ea01a59681b305b46625095318328455"
 
 [[package]]
 name = "const_fn"

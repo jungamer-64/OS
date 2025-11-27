@@ -3,7 +3,8 @@
 //! This module extends the ELF structures with actual loading logic.
 
 use super::elf_loader::*;
-use x86_64::{VirtAddr, structures::paging::{OffsetPageTable, FrameAllocator, Size4KiB, Page, Mapper}};
+use x86_64::{VirtAddr, PhysAddr, structures::paging::{OffsetPageTable, FrameAllocator, Size4KiB, Page, Mapper, Translate, PhysFrame}};
+use x86_64::structures::paging::mapper::TranslateResult;
 
 /// Information about a loaded ELF program
 #[derive(Debug)]
@@ -123,11 +124,18 @@ where
     // Get page flags from ELF permissions
     let flags = phdr.to_page_flags();
     
-    // Map pages for this segment
+    // Get physical memory offset for direct frame access
+    let phys_mem_offset = crate::kernel::mm::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+    
+    // Map pages for this segment and keep track of frames for data copy
+    let mut frames: alloc::vec::Vec<(Page<Size4KiB>, PhysFrame<Size4KiB>)> = alloc::vec::Vec::new();
+    
     for page in Page::range_inclusive(start_page, end_page) {
         let frame = frame_allocator
             .allocate_frame()
             .ok_or(ElfError::MapFailed)?;
+        
+        frames.push((page, frame));
         
         unsafe {
             mapper
@@ -137,7 +145,7 @@ where
         }
     }
     
-    // Copy data from ELF file to memory
+    // Copy data from ELF file to memory via physical addresses
     if phdr.p_filesz > 0 {
         let file_offset = phdr.p_offset as usize;
         let file_size = phdr.p_filesz as usize;
@@ -148,25 +156,80 @@ where
         
         let src = &elf_data[file_offset..file_offset + file_size];
         
-        // SAFETY: We just mapped these pages
-        unsafe {
-            let dst = core::slice::from_raw_parts_mut(
-                phdr.p_vaddr as *mut u8,
-                file_size
-            );
-            dst.copy_from_slice(src);
+        // Copy data to each page via physical address
+        let mut bytes_copied = 0usize;
+        let segment_offset = (phdr.p_vaddr & 0xFFF) as usize; // Offset within first page
+        
+        for (i, (page, frame)) in frames.iter().enumerate() {
+            let page_phys_addr = frame.start_address().as_u64();
+            let page_virt_addr = phys_mem_offset + page_phys_addr;
+            
+            // Calculate copy range for this page
+            let page_start = if i == 0 { segment_offset } else { 0 };
+            let remaining = file_size - bytes_copied;
+            let page_bytes = core::cmp::min(4096 - page_start, remaining);
+            
+            if page_bytes == 0 {
+                break;
+            }
+            
+            // SAFETY: We access the frame via physical memory offset
+            unsafe {
+                let dst = core::slice::from_raw_parts_mut(
+                    (page_virt_addr + page_start as u64) as *mut u8,
+                    page_bytes
+                );
+                dst.copy_from_slice(&src[bytes_copied..bytes_copied + page_bytes]);
+            }
+            
+            bytes_copied += page_bytes;
         }
+        
+        crate::debug_println!("[ELF] Copied {} bytes to segment {}", bytes_copied, index);
     }
     
     // Zero-fill BSS (uninitialized data)
     if phdr.p_memsz > phdr.p_filesz {
         let bss_start = phdr.p_vaddr + phdr.p_filesz;
-        let bss_size = phdr.p_memsz - phdr.p_filesz;
+        let bss_size = (phdr.p_memsz - phdr.p_filesz) as usize;
         
         crate::debug_println!("[ELF] Zero-filling BSS: 0x{:x} ({} bytes)", bss_start, bss_size);
         
-        unsafe {
-            core::ptr::write_bytes(bss_start as *mut u8, 0, bss_size as usize);
+        // Zero-fill via physical addresses
+        let mut bytes_zeroed = 0usize;
+        let first_bss_page = Page::<Size4KiB>::containing_address(VirtAddr::new(bss_start));
+        
+        for (page, frame) in frames.iter() {
+            if *page < first_bss_page {
+                continue;
+            }
+            
+            let page_phys_addr = frame.start_address().as_u64();
+            let page_virt_addr = phys_mem_offset + page_phys_addr;
+            
+            // Calculate zero-fill range for this page
+            let page_offset = if *page == first_bss_page {
+                (bss_start & 0xFFF) as usize
+            } else {
+                0
+            };
+            
+            let remaining = bss_size - bytes_zeroed;
+            let zero_bytes = core::cmp::min(4096 - page_offset, remaining);
+            
+            if zero_bytes == 0 {
+                break;
+            }
+            
+            unsafe {
+                core::ptr::write_bytes(
+                    (page_virt_addr + page_offset as u64) as *mut u8,
+                    0,
+                    zero_bytes
+                );
+            }
+            
+            bytes_zeroed += zero_bytes;
         }
     }
     
