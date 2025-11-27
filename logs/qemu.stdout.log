@@ -11,21 +11,21 @@ TRACE: switching to new level 4 table
 INFO : New page table at: PhysFrame[4KiB](0x101000)
 INFO : Elf file loaded at Pointer {
     addr: 0x0000000005a31000,
-    metadata: 4365368,
+    metadata: 4365576,
 }
 INFO : virtual_address_offset: 0x0
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 200000, physical_addr: 200000, file_size: 10824, mem_size: 10824, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 10830, virtual_addr: 211830, physical_addr: 211830, file_size: 609e7, mem_size: 609e7, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 71218, virtual_addr: 273218, physical_addr: 273218, file_size: 128, mem_size: 9e88, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 200000, physical_addr: 200000, file_size: 10864, mem_size: 10864, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 10870, virtual_addr: 211870, physical_addr: 211870, file_size: 60a27, mem_size: 60a27, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 71298, virtual_addr: 273298, physical_addr: 273298, file_size: 128, mem_size: 9e08, align: 1000 })
 INFO : Mapping bss section
-INFO : Entry point at: 0x212930
+INFO : Entry point at: 0x212970
 INFO : Creating GDT at PhysAddr(0x128000)
 INFO : Map framebuffer
 INFO : Map physical memory
 INFO : Allocate bootinfo
 INFO : Create Memory Map
 INFO : Create bootinfo
-INFO : Jumping to kernel entry point at VirtAddr(0x212930)
+INFO : Jumping to kernel entry point at VirtAddr(0x212970)
 [KERNEL] Entry point reached
 [GDT] Using SYSRET-compatible segment order
 [GDT DEBUG] Kernel code selector: 0x8
@@ -59,7 +59,7 @@ INFO : Jumping to kernel entry point at VirtAddr(0x212930)
 [OK] Kernel syscall stack initialized at 0x277090
 [OK] Syscall mechanism initialized
   STAR: kernel_cs=0x8, user_cs=0x1b
-  LSTAR: 0x250fc4
+  LSTAR: 0x251064
 [OK] Physical memory offset initialized: 0x20000000000
 [OK] Console initialized
 [OK] Paging & Global Frame Allocator initialized
@@ -170,10 +170,10 @@ File type: 0x2
 [USER PT FIX] Stack PT entries updated
 [VALIDATION] Checking user page table mappings:
 [PageTable] User Code Entry: 0x400000 -> frame 0x538000, flags: PageTableFlags(PRESENT | USER_ACCESSIBLE)
-[PageTable] User Stack Top: 0x700000000000 -> NOT MAPPED
+[PageTable] User Stack (first mapped page): 0x6ffffffff000 -> frame 0x63c000, flags: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
 [VALIDATION] Current kernel RSP: 0x10000011f40
 [PageTable] Kernel Stack (iretq frame location): 0x10000011f40 -> frame 0x123000, flags: PageTableFlags(PRESENT | WRITABLE | ACCESSED | DIRTY | NO_EXECUTE)
-[PHASE 3 FIX] Adjusting stack top from 0x700000000000 to 0x6ffffffff000
+[Process] Using stack top: 0x700000000000
 [PHASE 3] CR3 diagnostic tests skipped (Test 2 causes hang)
 [PHASE 3] Mapping user code to kernel page table...
 [PHASE 3] Kernel CR3: 0x101000
@@ -224,20 +224,20 @@ File type: 0x2
 [Process] Created process PID=1
 [Process] Created initial user process: PID=1
 [Process] Set PID=1 as Running
-[Kernel] Entry: 0x400000, Stack: 0x6ffffffff000, CR3: 0x537000
+[Kernel] Entry: 0x400000, Stack: 0x700000000000, CR3: 0x537000
 [PHASE 2.5] User mode transition test (CR3 switch skipped)
 [TEMP] Interrupts DISABLED for User mode testing
 [TSS] Setting kernel stack to 0x200009040c0
 [TSS] Updated kernel stack to 0x200009040c0
 [Kernel] Jumping to first user process...
 [jump_to_usermode] About to use SYSRET:
-  RIP=0x400000, RSP=0x6ffffffff000, RFLAGS=0x202
+  RIP=0x400000, RSP=0x700000000000, RFLAGS=0x202
   USER_CODE=0x1B, USER_DATA=0x13, CR3=0x537000
 [DEBUG] GDT base: 0x27d000, limit: 0x37
 [DEBUG] Current kernel RSP: 0x100000146f0
 [DEBUG] Building SYSRET frame:
 [DEBUG]   entry_point (RIP->RCX): 0x400000
-[DEBUG]   user_stack (RSP): 0x6ffffffff000
+[DEBUG]   user_stack (RSP): 0x700000000000
 [DEBUG]   user_cr3: 0x537000
 [DEBUG]   rflags (->R11): 0x202
 [DEBUG] Current SS: 0x10, DS: 0x10, ES: 0x10

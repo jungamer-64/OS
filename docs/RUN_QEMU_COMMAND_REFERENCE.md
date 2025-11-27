@@ -1,3 +1,7 @@
+---
+trigger: always_on
+---
+
 # run_qemu.ps1 Command Reference for AI Agents
 
 This document provides a comprehensive reference for the `run_qemu.ps1` build and run script used in the tiny_os project. This guide is intended for AI agents to understand and correctly invoke the script.
@@ -196,17 +200,37 @@ The script generates logs in the `logs/` directory:
    - QEMU must be installed and accessible
    - OVMF firmware must exist at `ovmf-x64/OVMF.fd`
 
-3. **Build Artifacts**:
+3. **Do NOT Pipe Script Output**: Piping the script output through any cmdlet (such as `Select-Object`, `Tee-Object`, `Out-File`, etc.) will cause the script to fail. The PowerShell pipeline interferes with the script's execution. For example, **DO NOT** use:
+
+   ```powershell
+   # ❌ WRONG - These will all fail!
+   .\run_qemu.ps1 | Select-Object -First 100
+   .\run_qemu.ps1 2>&1 | Tee-Object -FilePath output.log
+   .\run_qemu.ps1 | Out-File output.log
+   ```
+
+   Instead, run the script directly without any pipeline:
+
+   ```powershell
+   # ✅ CORRECT - Run directly without piping
+   .\run_qemu.ps1 -Timeout 30
+   
+   # ✅ CORRECT - Logs are automatically saved to logs/ directory
+   .\run_qemu.ps1 -Timeout 30
+   # Then check: logs/qemu.stdout.log, logs/qemu.debug.log
+   ```
+
+4. **Build Artifacts**:
    - Debug kernel: `target/x86_64-rany_os/debug/tiny_os`
    - Release kernel: `target/x86_64-rany_os/release/tiny_os`
    - Disk image: `target/x86_64-rany_os/{debug|release}/boot-uefi-tiny_os.img`
    - Initrd: `target/initrd.cpio`
 
-4. **Acceleration Note**: `-Accel` uses Windows WHPX. If WHPX is unavailable, QEMU will fail. Remove this flag if acceleration is not supported.
+5. **Acceleration Note**: `-Accel` uses Windows WHPX. If WHPX is unavailable, QEMU will fail. Remove this flag if acceleration is not supported.
 
-5. **Timeout Behavior**: When `-Timeout` is set, the script will kill QEMU after the specified seconds. Use `0` (default) for indefinite execution.
+6. **Timeout Behavior**: When `-Timeout` is set, the script will kill QEMU after the specified seconds. Use `0` (default) for indefinite execution.
 
-6. **Ctrl+C Handling**: The script handles Ctrl+C gracefully and cleans up QEMU processes.
+7. **Ctrl+C Handling**: The script handles Ctrl+C gracefully and cleans up QEMU processes.
 
 ## Example Command Sequences
 
