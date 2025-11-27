@@ -189,15 +189,62 @@ function Start-Build {
 
     if ($IsFullBuild) {
         Write-Host "Running full build pipeline..." -ForegroundColor Cyan
-        Push-Location $BuilderDir
+        
+        # CRITICAL: Builder must be completely isolated from workspace
+        # Copy builder to temp directory to avoid .cargo/config.toml inheritance
+        $tempBuilderDir = Join-Path $env:TEMP "builder_isolated"
+        
         try {
-            $cmdArgs = @("run")
-            if ($IsRelease) { $cmdArgs += "--release" }
+            # Clean and copy builder to isolated location
+            if (Test-Path $tempBuilderDir) {
+                Remove-Item -Path $tempBuilderDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
             
-            & cargo @cmdArgs | Out-Host
-            return $LASTEXITCODE
+            Write-Host "  Isolating builder from workspace..." -ForegroundColor DarkGray
+            Copy-Item -Path $BuilderDir -Destination $tempBuilderDir -Recurse -Force
+            
+            # Remove any .cargo directory that might have been copied
+            $tempCargoDir = Join-Path $tempBuilderDir ".cargo"
+            if (Test-Path $tempCargoDir) {
+                Remove-Item -Path $tempCargoDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            
+            Push-Location $tempBuilderDir
+            try {
+                $cmdArgs = @("run")
+                if ($IsRelease) { $cmdArgs += "--release" }
+                
+                # Pass output path to builder
+                $cmdArgs += "--", "--kernel-path", $KernelPath, "--output-path", $DiskImage
+                
+                if (Test-Path $InitrdPath) {
+                    Write-Host "  Including initrd: $InitrdPath" -ForegroundColor Green
+                    $cmdArgs += "--ramdisk", $InitrdPath
+                }
+                
+                $env:CARGO_TERM_COLOR = "always"
+                & cargo @cmdArgs | Out-Host
+                $buildExitCode = $LASTEXITCODE
+                
+                if ($buildExitCode -ne 0) {
+                    return $buildExitCode
+                }
+                
+                if (Test-Path $DiskImage) {
+                    Write-Host "  Full build completed successfully" -ForegroundColor Green
+                    return 0
+                }
+                else {
+                    Write-Host "  Full build completed but disk image not found: $DiskImage" -ForegroundColor Red
+                    return 1
+                }
+            }
+            finally { Pop-Location }
         }
-        finally { Pop-Location }
+        catch {
+            Write-Host "Error running full build: $_" -ForegroundColor Red
+            return 1
+        }
     }
     else {
         Write-Host "Building kernel (Quick Mode)..." -ForegroundColor Cyan

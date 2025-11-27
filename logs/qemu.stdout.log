@@ -12,22 +12,22 @@ TRACE: exiting boot services
 TRACE: switching to new level 4 table
 INFO : New page table at: PhysFrame[4KiB](0x101000)
 INFO : Elf file loaded at Pointer {
-    addr: 0x0000000006687000,
-    metadata: 143416,
+    addr: 0x0000000006688000,
+    metadata: 142536,
 }
 INFO : virtual_address_offset: 0x0
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 200000, physical_addr: 200000, file_size: 8f34, mem_size: 8f34, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 8f40, virtual_addr: 209f40, physical_addr: 209f40, file_size: 19c53, mem_size: 19c53, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 22b98, virtual_addr: 224b98, physical_addr: 224b98, file_size: 124, mem_size: 9618, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 200000, physical_addr: 200000, file_size: 8ebc, mem_size: 8ebc, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 8ec0, virtual_addr: 209ec0, physical_addr: 209ec0, file_size: 19966, mem_size: 19966, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 22828, virtual_addr: 224828, physical_addr: 224828, file_size: 124, mem_size: 9988, align: 1000 })
 INFO : Mapping bss section
-INFO : Entry point at: 0x20ca60
+INFO : Entry point at: 0x20c9e0
 INFO : Creating GDT at PhysAddr(0x128000)
 INFO : Map framebuffer
 INFO : Map physical memory
 INFO : Allocate bootinfo
 INFO : Create Memory Map
 INFO : Create bootinfo
-INFO : Jumping to kernel entry point at VirtAddr(0x20ca60)
+INFO : Jumping to kernel entry point at VirtAddr(0x20c9e0)
 [KERNEL] Entry point reached
 [GDT] Using manually created user segment descriptors
 [GDT DEBUG] Kernel code selector: 0x8
@@ -43,8 +43,8 @@ INFO : Jumping to kernel entry point at VirtAddr(0x20ca60)
     Access=0x93 (P=1, DPL=0, Type=0x13), Flags=0xc
 [GDT DUMP] Entry 3: offset=0x18, value=0x00affa000000ffff
     Access=0xfa (P=1, DPL=3, Type=0x1a), Flags=0xa
-[GDT DUMP] Entry 4: offset=0x20, value=0x00cff2000000ffff
-    Access=0xf2 (P=1, DPL=3, Type=0x12), Flags=0xc
+[GDT DUMP] Entry 4: offset=0x20, value=0x008ff2000000ffff
+    Access=0xf2 (P=1, DPL=3, Type=0x12), Flags=0x8
 [GDT DUMP] Entry 5: offset=0x28, value=0x00008b22e0e40067
     Access=0x8b (P=1, DPL=0, Type=0xb), Flags=0x0
 [GDT DUMP] Entry 6: offset=0x30, value=0x0000000000000000
@@ -61,7 +61,7 @@ INFO : Jumping to kernel entry point at VirtAddr(0x20ca60)
 [OK] Kernel syscall stack initialized at 0x22d000
 [OK] Syscall mechanism initialized
   STAR: kernel_cs=0x8, user_cs=0x1b
-  LSTAR: 0x209f40
+  LSTAR: 0x209ec0
 [OK] Physical memory offset initialized: 0x18000000000
 [OK] Console initialized
 [OK] Paging & Global Frame Allocator initialized
@@ -102,3 +102,106 @@ Section headers: 4
 Loadable segments: 2
 Total memory: 2350 bytes
 File type: 0x2
+============================
+[SECURITY] W^X verification: PASSED
+[ELF] Loading ELF binary, entry=0x400000
+[ELF] Found 2 program headers
+[ELF] Memory range: 0x400000 - 0x401292 (4754 bytes)
+[ELF] Loading segment 0: vaddr=0x400000, size=0x69c, flags=R-X
+[ELF] Copied 1692 bytes to segment 0
+[ELF] Loading segment 1: vaddr=0x401000, size=0x292, flags=R--
+[ELF] Copied 658 bytes to segment 1
+[User Paging] Mapping stack: 65536 bytes (16 pages) at 0x6fffffff0000
+[User Paging] Guard page at 0x6ffffffef000 (unmapped)
+[User Paging] Stack mapped successfully, top=0x700000000000
+[create_user_process] PML4 Entry 0 after load: PageTableEntry { addr: PhysAddr(0x102000), flags: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | ACCESSED) }
+[USER PT FIX] Setting USER_ACCESSIBLE on user page table hierarchy...
+[USER PT FIX] PML4[0] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | ACCESSED)
+[USER PT FIX] PML4[0] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | ACCESSED)
+[USER PT FIX] PDPT[0] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | ACCESSED)
+[USER PT FIX] PDPT[0] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | ACCESSED)
+[USER PT FIX] PD[2] before: PageTableFlags(PRESENT | USER_ACCESSIBLE)
+[USER PT FIX] PD[2] after: PageTableFlags(PRESENT | USER_ACCESSIBLE)
+[USER PT FIX] PT[0] before: PageTableFlags(PRESENT | USER_ACCESSIBLE)
+[USER PT FIX] PT[0] after: PageTableFlags(PRESENT | USER_ACCESSIBLE)
+[USER PT FIX] PT[1] before: PageTableFlags(PRESENT | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] PT[1] after: PageTableFlags(PRESENT | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] PML4[223] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[USER PT FIX] PML4[223] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[USER PT FIX] PDPT[511] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[USER PT FIX] PDPT[511] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[USER PT FIX] PD[511] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[USER PT FIX] PD[511] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[USER PT FIX] Updating all stack PT entries (496-511)...
+[USER PT FIX] Stack PT[496] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[496] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[497] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[497] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[498] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[498] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[499] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[499] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[500] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[500] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[501] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[501] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[502] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[502] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[503] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[503] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[504] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[504] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[505] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[505] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[506] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[506] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[507] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[507] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[508] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[508] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[509] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[509] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[510] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[510] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[511] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT[511] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | NO_EXECUTE)
+[USER PT FIX] Stack PT entries updated
+[VALIDATION] Checking user page table mappings:
+[PageTable] User Code Entry: 0x400000 -> frame 0x13b000, flags: PageTableFlags(PRESENT | USER_ACCESSIBLE)
+[PageTable] User Stack Top: 0x700000000000 -> NOT MAPPED
+[VALIDATION] Current kernel RSP: 0x8000014780
+[PageTable] Kernel Stack (iretq frame location): 0x8000014780 -> frame 0x126000, flags: PageTableFlags(PRESENT | WRITABLE | ACCESSED | DIRTY | NO_EXECUTE)
+[PHASE 3 FIX] Adjusting stack top from 0x700000000000 to 0x6ffffffff000
+[PHASE 3] CR3 diagnostic tests skipped (Test 2 causes hang)
+[PHASE 3] Mapping user code to kernel page table...
+[PHASE 3] Kernel CR3: 0x101000
+[PHASE 3] PML4[0] has USER_ACCESSIBLE: true
+[PHASE 3] Mapping code page 0x400000 -> frame 0x13b000
+[PHASE 3] Page 0x400000 already mapped in kernel page table
+[PHASE 3] Mapping code page 0x401000 -> frame 0x13d000
+[PHASE 3] Page 0x401000 already mapped in kernel page table
+[PHASE 3] User code mapped to kernel page table successfully
+[PHASE 3] Mapping user stack to kernel page table...
+[PHASE 3] Mapping stack page 0x6ffffffff000 -> frame 0x150000
+[PHASE 3] Mapping stack page 0x6fffffffe000 -> frame 0x14f000
+[PHASE 3] Mapping stack page 0x6fffffffd000 -> frame 0x14e000
+[PHASE 3] Mapping stack page 0x6fffffffc000 -> frame 0x14d000
+[PHASE 3] Mapping stack page 0x6fffffffb000 -> frame 0x14c000
+[PHASE 3] Mapping stack page 0x6fffffffa000 -> frame 0x14b000
+[PHASE 3] Mapping stack page 0x6fffffff9000 -> frame 0x14a000
+[PHASE 3] Mapping stack page 0x6fffffff8000 -> frame 0x149000
+[PHASE 3] Mapping stack page 0x6fffffff7000 -> frame 0x148000
+[PHASE 3] Mapping stack page 0x6fffffff6000 -> frame 0x147000
+[PHASE 3] Mapping stack page 0x6fffffff5000 -> frame 0x146000
+[PHASE 3] Mapping stack page 0x6fffffff4000 -> frame 0x145000
+[PHASE 3] Mapping stack page 0x6fffffff3000 -> frame 0x144000
+[PHASE 3] Mapping stack page 0x6fffffff2000 -> frame 0x143000
+[PHASE 3] Mapping stack page 0x6fffffff1000 -> frame 0x142000
+[PHASE 3] Mapping stack page 0x6fffffff0000 -> frame 0x13e000
+[PHASE 3] User stack mapped to kernel page table successfully
+[PHASE 3] Setting USER_ACCESSIBLE on all used page table hierarchy entries...
+[PHASE 3] Updating User code page table hierarchy...
+[PHASE 3] PML4[0] before: flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | ACCESSED)
+[PHASE 3] PML4[0] after: flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | ACCESSED)
+[PHASE 3] PDPT[0] before: flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | ACCESSED)
+[PHASE 3] PDPT[0] after: flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIB
