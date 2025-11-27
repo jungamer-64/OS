@@ -29,8 +29,8 @@ pub const USER_HEAP_BASE: u64 = 0x0000_6000_0000_0000;  // 96 TiB
 /// User stack top address (128 TiB)
 pub const USER_STACK_TOP: u64 = 0x0000_7000_0000_0000;  // 128 TiB
 
-/// Default user stack size (64 KiB)
-pub const DEFAULT_USER_STACK_SIZE: usize = 64 * 1024;
+/// Default user stack size (1 MiB - increased for deeper call stacks)
+pub const DEFAULT_USER_STACK_SIZE: usize = 1024 * 1024;
 
 /// Map user program code into user page table
 ///

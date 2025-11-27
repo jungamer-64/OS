@@ -205,24 +205,44 @@ pub unsafe extern "C" fn syscall_entry() {
         // Current state: RSP is 16-byte aligned (after 64 bytes of pushes)
         // Required: RSP = 16*N + 8
         // Solution: Push 8 more bytes as padding
-        "push rax",          // Padding (RAX will be overwritten anyway)
+        "sub rsp, 8",        // Padding for alignment
         
         // === Prepare arguments for C calling convention ===
-        // rax = syscall number (already set)
-        // rdi, rsi, rdx = args 1-3 (already set)
-        // rcx = arg 4 (need to move from r10)
-        // r8, r9 = args 5-6 (already set)
-        "mov rcx, r10",      // Move 4th arg from r10 to rcx for C ABI
+        // Syscall ABI:
+        //   RAX = syscall number
+        //   RDI = arg1, RSI = arg2, RDX = arg3, R10 = arg4, R8 = arg5, R9 = arg6
+        // 
+        // C calling convention (System V AMD64):
+        //   RDI = arg1, RSI = arg2, RDX = arg3, RCX = arg4, R8 = arg5, R9 = arg6
+        //
+        // syscall_handler(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6)
+        // So we need:
+        //   RDI = syscall_num (from RAX)
+        //   RSI = arg1 (from RDI)
+        //   RDX = arg2 (from RSI)
+        //   RCX = arg3 (from RDX)
+        //   R8  = arg4 (from R10)
+        //   R9  = arg5 (from R8)
+        //   [stack] = arg6 (from R9)
+        
+        // Save original values before shuffling
+        "push r9",           // Save arg6 to stack (will be 7th C arg)
+        "mov r9, r8",        // arg5 (C arg6 = R9)
+        "mov r8, r10",       // arg4 (C arg5 = R8)
+        "mov rcx, rdx",      // arg3 (C arg4 = RCX)
+        "mov rdx, rsi",      // arg2 (C arg3 = RDX)
+        "mov rsi, rdi",      // arg1 (C arg2 = RSI)
+        "mov rdi, rax",      // syscall_num (C arg1 = RDI)
         
         // === Call the syscall handler ===
-        // Stack is now properly aligned: (16*N + 8)
+        // Stack is now properly aligned: (16*N + 8) after sub + push
         // After 'call' pushes return address: (16*N)
         "call {syscall_handler}",
         
         // === Result is in RAX, preserve it ===
         
-        // === Remove padding ===
-        "add rsp, 8",        // Remove the 8-byte padding we added
+        // === Remove arg6 from stack and padding ===
+        "add rsp, 16",       // Remove arg6 push (8) + alignment padding (8)
         
         // === Restore callee-saved registers (in reverse order) ===
         "pop r14",
