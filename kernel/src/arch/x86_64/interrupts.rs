@@ -43,42 +43,21 @@ extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) 
 }
 
 extern "x86-interrupt" fn general_protection_fault_handler(
-    stack_frame: InterruptStackFrame, error_code: u64)
+    _stack_frame: InterruptStackFrame, _error_code: u64)
 {
     use crate::arch::x86_64::port::PortWriteOnly;
     use crate::arch::{Cpu, ArchCpu};
     
     ArchCpu::disable_interrupts();
     
-    // Read CR3 to see which page table was active
-    let cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
-    let rsp: u64;
+    // Minimal output - just indicate GPF occurred
+    // DO NOT access stack_frame because it may cause another GPF
     unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack));
+        let mut serial = PortWriteOnly::<u8>::new(0x3F8);
+        for byte in b"[GPF!]\n" {
+            serial.write(*byte);
+        }
     }
-    
-    // シリアル出力 - 詳細情報付き
-    crate::debug_println!("[EXCEPTION] GENERAL PROTECTION FAULT");
-    crate::debug_println!("  Error code: {:#x}", error_code);
-    crate::debug_println!("  RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
-    crate::debug_println!("  RSP: {:#x}", rsp);
-    crate::debug_println!("  CR3: {:#x}", cr3);
-    crate::debug_println!("  CS: {:?}", stack_frame.code_segment);
-    crate::debug_println!("  Flags: {:#x}", stack_frame.cpu_flags);
-    
-    // Try to decode error code for segment selector issues
-    let segment_selector = error_code & 0xFFFF;
-    let external = (error_code >> 0) & 1;
-    let idt = (error_code >> 1) & 1;
-    let ldt = (error_code >> 2) & 1;
-    let selector_index = (error_code >> 3) & 0x1FFF;
-    
-    crate::debug_println!("  Error code decode:");
-    crate::debug_println!("    External: {}", external);
-    crate::debug_println!("    IDT: {}", idt);
-    crate::debug_println!("    LDT: {}", ldt);
-    crate::debug_println!("    Selector index: {:#x}", selector_index);
-    crate::debug_println!("    Full selector: {:#x}", segment_selector);
     
     loop {
         ArchCpu::halt();
@@ -86,29 +65,25 @@ extern "x86-interrupt" fn general_protection_fault_handler(
 }
 
 extern "x86-interrupt" fn double_fault_handler(
-    stack_frame: InterruptStackFrame, error_code: u64) -> !
+    _stack_frame: InterruptStackFrame, _error_code: u64) -> !
 {
     use crate::arch::{Cpu, ArchCpu};
+    use crate::arch::x86_64::port::PortWriteOnly;
     
     ArchCpu::disable_interrupts();
     
-    // Read CR3 to see which page table was active
-    let cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
-    let rsp: u64;
+    // Minimal output - just indicate DF occurred
     unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack));
+        let mut serial = PortWriteOnly::<u8>::new(0x3F8);
+        for byte in b"[DF!]\n" {
+            serial.write(*byte);
+        }
     }
     
-    // シリアル出力 - 詳細情報付き
-    crate::debug_println!("[EXCEPTION] DOUBLE FAULT");
-    crate::debug_println!("  Error code: {:#x}", error_code);
-    crate::debug_println!("  RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
-    crate::debug_println!("  RSP: {:#x}", rsp);
-    crate::debug_println!("  CR3: {:#x}", cr3);
-    crate::debug_println!("  CS: {:?}", stack_frame.code_segment);
-    crate::debug_println!("  Flags: {:#x}", stack_frame.cpu_flags);
-    
     loop {
+        ArchCpu::halt();
+    }
+}
         ArchCpu::halt();
     }
 }

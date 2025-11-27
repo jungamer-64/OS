@@ -682,12 +682,13 @@ pub unsafe fn dump_page_table_entry(
     
     use x86_64::structures::paging::mapper::TranslateResult;
     match mapper.translate(virt_addr) {
-        TranslateResult::Mapped { frame, .. } => {
+        TranslateResult::Mapped { frame, offset, flags } => {
             crate::debug_println!(
-                "[PageTable] {}: {:#x} -> frame {:#x}",
+                "[PageTable] {}: {:#x} -> frame {:#x}, flags: {:?}",
                 label,
                 virt_addr.as_u64(),
-                frame.start_address().as_u64()
+                frame.start_address().as_u64(),
+                flags
             );
         },
         TranslateResult::NotMapped => {

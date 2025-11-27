@@ -1,16 +1,16 @@
 <#
 .SYNOPSIS
-    Unified build and run script for tiny_os (v2.4 Fixed)
+    Unified build and run script for tiny_os (v2.5)
 
 .DESCRIPTION
     Advanced build system with custom argument parsing, logging, and multiple execution modes.
-    v2.4 Fixed: Corrected syntax error in parser and hardened cleanup logic.
+    v2.5: Added Hardware Acceleration, Network support, Log History, and Clippy integration.
     
     Usage:
         .\run_qemu.ps1 -Menu                                  # Interactive Mode
         .\run_qemu.ps1                                        # Quick Build (Kernel) -> QEMU
-        .\run_qemu.ps1 -FullBuild -Memory "512M" -Cores 2     # Custom Hardware Config
-        .\run_qemu.ps1 -Debug                                 # Enable GDB Stub (localhost:1234)
+        .\run_qemu.ps1 -FullBuild -Accel -Network             # Full Build with WHPX & Network
+        .\run_qemu.ps1 -Check -BuildOnly                      # Run Clippy & Build only
         .\run_qemu.ps1 -SkipBuild -InlineQemu                 # Run inline with stdout mirroring
 #>
 
@@ -30,7 +30,13 @@ param(
     [string]$Memory = "128M",
     [int]$Cores = 1,
     [switch]$InlineQemu, # If set, runs QEMU in current console (Legacy Tee-Object mode)
-    [switch]$KeepAlive   # If set, QEMU stays open after crash/shutdown (for debugging)
+    [switch]$KeepAlive,  # If set, QEMU stays open after crash/shutdown (for debugging)
+    [int]$Timeout = 0,   # Timeout in seconds (0 = no timeout, wait indefinitely)
+    
+    # --- v2.5 New Features ---
+    [switch]$Accel,      # Enable hardware acceleration (WHPX)
+    [switch]$Network,    # Enable user networking (e1000)
+    [switch]$Check       # Run cargo clippy before build
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,6 +45,14 @@ $ErrorActionPreference = "Stop"
 $script:currentQemuProc = $null
 $script:currentLogJob = $null
 
+# Ctrl+C handler - ensure QEMU is killed when user interrupts
+[Console]::TreatControlCAsInput = $false
+$null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
+    if ($script:currentQemuProc -and -not $script:currentQemuProc.HasExited) {
+        Stop-Process -Id $script:currentQemuProc.Id -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -46,7 +60,6 @@ $script:currentLogJob = $null
 function Parse-ArgumentString {
     <#
       Parses a command line string into an array of arguments, preserving quoted strings.
-      Essential for passing complex -device or -drive arguments to QEMU.
     #>
     param([string]$Str)
     if ([string]::IsNullOrWhiteSpace($Str)) { return @() }
@@ -88,7 +101,7 @@ function Parse-ArgumentString {
 function Show-Menu {
     Clear-Host
     Write-Host "=======================================" -ForegroundColor Cyan
-    Write-Host "   Tiny OS Build System (v2.4 Fixed)   " -ForegroundColor Cyan
+    Write-Host "      Tiny OS Build System (v2.5)      " -ForegroundColor Cyan
     Write-Host "=======================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  1. Quick build & run (kernel only)" -ForegroundColor Green
@@ -151,9 +164,29 @@ function Start-Build {
         [string]$DiskImage,
         [string]$InitrdPath,
         [bool]$IsFullBuild,
-        [bool]$IsRelease
+        [bool]$IsRelease,
+        [bool]$RunCheck
     )
     
+    # --- Static Analysis (Clippy) ---
+    if ($RunCheck) {
+        Write-Host "Running Cargo Clippy..." -ForegroundColor Cyan
+        Push-Location (Join-Path $ScriptDir "kernel")
+        try {
+            $clippyArgs = @("clippy")
+            if (Test-Path "x86_64-rany_os.json") {
+                $clippyArgs += "--target", "x86_64-rany_os.json"
+            }
+            & cargo @clippyArgs
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "Clippy found issues (or failed). Continuing build..."
+            }
+        }
+        catch { Write-Warning "Failed to run cargo clippy: $_" }
+        finally { Pop-Location }
+    }
+    # --------------------------------
+
     if ($IsFullBuild) {
         Write-Host "Running full build pipeline..." -ForegroundColor Cyan
         Push-Location $BuilderDir
@@ -184,12 +217,9 @@ function Start-Build {
 
         Write-Host "Creating EFI disk image..." -ForegroundColor Cyan
         
-        # Build and run builder independently
-        # Builder needs nightly (for bootloader crate) but WITHOUT build-std
-        # We use -Zbuild-std= (empty) to override the workspace config's build-std setting
-        
         Push-Location $BuilderDir
         try {
+            # Builder needs nightly (for bootloader crate) but WITHOUT build-std
             $bArgs = @("run", "nightly", "cargo", "-Zbuild-std=", "run")
             if ($IsRelease) { $bArgs += "--release" }
             $bArgs += "--"; $bArgs += "--kernel-path"; $bArgs += $KernelPath
@@ -226,42 +256,50 @@ function Start-QEMU {
         [string[]]$ExtraArgs,
         [string]$ExtraArgString = "",
         [bool]$UseStartProcess,
-        [bool]$KeepAlive = $false
+        [bool]$KeepAlive = $false,
+        [int]$TimeoutSec = 0,
+        [bool]$EnableAccel = $false,
+        [bool]$EnableNet = $false
     )
     
     Write-Host "Starting QEMU..." -ForegroundColor Green
     
     $logDir = Join-Path $PSScriptRoot "logs"
     if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
-
+    
+    # --- Enhanced Log Management (History) ---
+    $historyDir = Join-Path $logDir "history"
+    if (-not (Test-Path $historyDir)) { New-Item -ItemType Directory -Path $historyDir -Force | Out-Null }
+    
     $qemuLog = Join-Path $logDir "qemu.debug.log"
     $stdoutLog = Join-Path $logDir "qemu.stdout.log"
     $stderrLog = Join-Path $logDir "qemu.stderr.log"
 
-    # --- Log Rotation ---
-    # Rename existing logs to .old to preserve history of the previous run
+    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $logsToRotate = @($qemuLog, $stdoutLog, $stderrLog)
+    
     foreach ($log in $logsToRotate) {
         if (Test-Path $log) {
+            $logName = Split-Path $log -Leaf
+            $backupPath = Join-Path $historyDir "$logName.$timestamp.bak"
             try {
-                Move-Item -Path $log -Destination "$log.old" -Force -ErrorAction Stop
+                Copy-Item -Path $log -Destination $backupPath -Force -ErrorAction SilentlyContinue
             }
-            catch {
-                # File might be locked, try to remove the old one first
-                Remove-Item -Path "$log.old" -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Milliseconds 100
-                try {
-                    Move-Item -Path $log -Destination "$log.old" -Force -ErrorAction Stop
-                }
-                catch {
-                    # Cannot rotate, just delete the original
-                    Remove-Item -Path $log -Force -ErrorAction SilentlyContinue
-                }
-            }
+            catch {}
         }
     }
+    
+    # Cleanup old logs (keep last 20)
+    try {
+        Get-ChildItem -Path $historyDir | Sort-Object CreationTime -Descending | 
+        Select-Object -Skip 60 | Remove-Item -Force -ErrorAction SilentlyContinue
+        # 3 files per run * 20 runs = 60 files
+    }
+    catch {}
 
-    # Start-Process creates the files on its own when redirecting
+    # Ensure empty log files exist
+    New-Item -Path $stdoutLog -ItemType File -Force | Out-Null
+    New-Item -Path $stderrLog -ItemType File -Force | Out-Null
 
     $qemuArgs = @(
         "-drive", "format=raw,file=$DiskImage",
@@ -273,7 +311,21 @@ function Start-QEMU {
         "-D", $qemuLog
     )
     
-    # Serial port configuration - use mon:stdio for nographic mode on Windows
+    # --- Acceleration ---
+    if ($EnableAccel) {
+        Write-Host "  Acceleration: Enabled (WHPX)" -ForegroundColor Cyan
+        $qemuArgs += "-accel", "whpx"
+        # Fallback note: if WHPX fails, try "-accel", "hax" (HAXM) or remove this flag
+    }
+
+    # --- Networking ---
+    if ($EnableNet) {
+        Write-Host "  Network: Enabled (User/NAT, e1000)" -ForegroundColor Cyan
+        $qemuArgs += "-netdev", "user,id=net0"
+        $qemuArgs += "-device", "e1000,netdev=net0"
+    }
+    
+    # Serial port configuration
     if ($IsNoGraphic) {
         $qemuArgs += "-serial", "mon:stdio"
     }
@@ -281,7 +333,6 @@ function Start-QEMU {
         $qemuArgs += "-serial", "stdio"
     }
 
-    # Keep QEMU alive after crash/shutdown for debugging
     if ($KeepAlive) {
         $qemuArgs += "-no-shutdown"
     }
@@ -291,20 +342,20 @@ function Start-QEMU {
         $qemuArgs += "-s", "-S"
     }
 
-    # Avoid duplicate '-nographic' in both the base args and extra args
+    # Normalize -nographic usage
     $hasNographicInExtra = $false
     if ($ExtraArgString -ne "") { $hasNographicInExtra = ($ExtraArgString -match '(?i)\b-nographic\b') }
     if (-not $hasNographicInExtra -and ($null -ne $ExtraArgs)) { $hasNographicInExtra = ($ExtraArgs -contains '-nographic') }
     if ($IsNoGraphic -and -not $hasNographicInExtra) { $qemuArgs += "-nographic" }
     
-    # Append additional tokens from EffectiveExtraArgs (already parsed as tokens)
+    # Append additional args
     if (($null -ne $ExtraArgs) -and ($ExtraArgs.Count -gt 0)) {
         $qemuArgs += $ExtraArgs
     }
 
     Write-Host "Executing: $QemuExe $($qemuArgs -join ' ')" -ForegroundColor DarkGray
 
-    # --- Preferred: Start-Process mode (separate process, accurate exit code) ---
+    # --- Preferred: Start-Process mode ---
     if ($UseStartProcess) {
         try {
             $argList = @($qemuArgs)
@@ -313,10 +364,7 @@ function Start-QEMU {
                 -RedirectStandardError $stderrLog `
                 -NoNewWindow -PassThru
             
-            # Wait for process handle to be available (needed for ExitCode property)
-            $null = $proc.Handle  # Access Handle to ensure ExitCode can be retrieved later
-            
-            # Track process globally for cleanup on interrupt
+            $null = $proc.Handle
             $script:currentQemuProc = $proc
         }
         catch {
@@ -324,39 +372,41 @@ function Start-QEMU {
             return 1
         }
 
-        # Wait for process to exit and then show output
         try {
-            # Wait for process to exit using .NET method to preserve ExitCode
-            Write-Host "  (Output will be shown after QEMU exits, or logged to $stdoutLog)" -ForegroundColor DarkGray
-            $proc.WaitForExit()
-
-            # Clear process tracking since it exited normally
-            # Use .NET HasExited and ExitCode properties for reliable exit code retrieval
-            $procExit = 0
-            if ($proc.HasExited) {
-                $procExit = $proc.ExitCode
+            if ($TimeoutSec -gt 0) {
+                Write-Host "  (Timeout: ${TimeoutSec}s - Output logged to $stdoutLog)" -ForegroundColor DarkGray
+                $exited = $proc.WaitForExit($TimeoutSec * 1000)
+                if (-not $exited) {
+                    Write-Host "Timeout reached (${TimeoutSec}s). Killing QEMU..." -ForegroundColor Yellow
+                    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                    Start-Sleep -Milliseconds 500
+                }
             }
+            else {
+                Write-Host "  (Output logged to $stdoutLog - Press Ctrl+C to stop)" -ForegroundColor DarkGray
+                # Poll-based wait to allow Ctrl+C interruption
+                while (-not $proc.HasExited) {
+                    Start-Sleep -Milliseconds 200
+                }
+            }
+
+            $procExit = 0
+            if ($proc.HasExited) { $procExit = $proc.ExitCode }
             $script:currentQemuProc = $null
             
-            # Debug: show retrieved exit code
             if ($script:DebugPreference -eq 'Continue' -or $env:DEBUG) {
                 Write-Host "DEBUG: Process exited with code: $procExit" -ForegroundColor Yellow
             }
             
-            # Show the last part of output if file exists
             if (Test-Path $stdoutLog) {
                 Write-Host "`n--- QEMU Output (last 50 lines) ---" -ForegroundColor Cyan
                 Get-Content -Path $stdoutLog -Tail 50 -ErrorAction SilentlyContinue | Out-Host
                 Write-Host "--- End of Output ---`n" -ForegroundColor Cyan
             }
-            
             return $procExit
-
         }
         catch {
             Write-Host "Error while waiting for QEMU: $_" -ForegroundColor Red
-            # Cleanup will be handled by finally block if we throw here, 
-            # but we can try local stop
             if ($script:currentQemuProc) { 
                 Stop-Process -Id $script:currentQemuProc.Id -ErrorAction SilentlyContinue 
             }
@@ -364,12 +414,33 @@ function Start-QEMU {
         }
     }
     else {
-        # --- Inline mode: live output to console ---
-        Write-Host "  (Running inline - output also mirrored to $stdoutLog)" -ForegroundColor DarkGray
-        # Build a single command invocation from the tokenized args and run with call operator to preserve tokens
-        Write-Host "Inline Command: $QemuExe $($qemuArgs -join ' ')" -ForegroundColor DarkGray
-        & $QemuExe @qemuArgs 2>&1 | Tee-Object -FilePath $stdoutLog | Out-Host
-        return $LASTEXITCODE
+        # --- Inline mode (direct execution, Ctrl+C works) ---
+        Write-Host "  (Running inline - Press Ctrl+C to stop)" -ForegroundColor DarkGray
+        
+        if ($TimeoutSec -gt 0) {
+            # Timeout mode: run as job and wait with timeout
+            Write-Host "  (Timeout: ${TimeoutSec}s)" -ForegroundColor DarkGray
+            $job = Start-Job -ScriptBlock {
+                param($exe, $args, $logFile)
+                & $exe @args 2>&1 | Tee-Object -FilePath $logFile
+            } -ArgumentList $QemuExe, $qemuArgs, $stdoutLog
+            
+            $completed = Wait-Job $job -Timeout $TimeoutSec
+            if ($null -eq $completed) {
+                Write-Host "Timeout reached (${TimeoutSec}s). Killing QEMU..." -ForegroundColor Yellow
+                Stop-Job $job -Force
+                # Kill any QEMU processes started by the job
+                Get-Process -Name "qemu-system-*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            }
+            Receive-Job $job | Out-Host
+            Remove-Job $job -Force -ErrorAction SilentlyContinue
+            return 0
+        }
+        else {
+            # No timeout: direct execution with Ctrl+C support
+            & $QemuExe @qemuArgs 2>&1 | Tee-Object -FilePath $stdoutLog | Out-Host
+            return $LASTEXITCODE
+        }
     }
 }
 
@@ -387,16 +458,13 @@ try {
     $__pushedScriptDir = $true
 
     # --- Parameter Validation ---
-    # Validate Memory format (e.g. 128M, 2G)
     if ($Memory -notmatch '^\d+[MG]$') {
         throw "Invalid memory format '$Memory'. Use '128M', '2G', etc."
     }
-    # Validate Cores
     if ($Cores -lt 1) {
         Write-Warning "Cores cannot be less than 1. Resetting to 1."
         $Cores = 1
     }
-    # ----------------------------
 
     # Configuration
     $buildProfile = if ($Release) { "release" } else { "debug" }
@@ -406,8 +474,8 @@ try {
     $initrdPath = Join-Path $scriptDir "target\initrd.cpio"
     $builderDir = Join-Path $scriptDir "builder"
     
-    # Use Start-Process by default unless InlineQemu is requested
-    $UseStartProcess = -not $InlineQemu
+    # -NoGraphic の場合は直接実行モードを使用（Ctrl+Cが効くように）
+    $UseStartProcess = (-not $InlineQemu) -and (-not $NoGraphic)
 
     # Pre-flight Checks
     if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) { throw "rustup not found in PATH." }
@@ -416,7 +484,7 @@ try {
     }
     if (-not (Test-Path $ovmfPath)) { throw "OVMF firmware not found at: $ovmfPath" }
 
-    # Normalize Extra QEMU args: combine array and single-string inputs
+    # Normalize Extra QEMU args
     if ($Debug) { Write-Host "DEBUG (before parse): ExtraQemuArgStr='$ExtraQemuArgStr' ExtraQemuArgs=[$($ExtraQemuArgs -join ', ')]" -ForegroundColor Yellow }
     $combinedExtraArgStr = ""
     if ($ExtraQemuArgStr -ne "") { $combinedExtraArgStr = $ExtraQemuArgStr.Trim() }
@@ -424,20 +492,12 @@ try {
         $eaJoined = $ExtraQemuArgs -join ' '
         if ($combinedExtraArgStr -eq "") { $combinedExtraArgStr = $eaJoined } else { $combinedExtraArgStr = "$combinedExtraArgStr $eaJoined" }
     }
-    if ($Debug) { Write-Host "DEBUG: Running local Get-EffectiveExtraArgs logic" -ForegroundColor Yellow }
     $EffectiveExtraArgs = @()
     if ($combinedExtraArgStr -ne "") {
-        # Normalize duplicate -nographic tokens
         $normalized = [regex]::Replace($combinedExtraArgStr, '(-nographic)(\s*-nographic)+', '$1', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-        # Use the char-based parser which handles quoted strings properly
         $EffectiveExtraArgs = Parse-ArgumentString $normalized
-        if ($Debug) { 
-            Write-Host "DEBUG: Parsed into: $($EffectiveExtraArgs -join '|')" -ForegroundColor Magenta 
-        }
     }
-    if ($Debug) { Write-Host "DEBUG (combinedExtraArgStr): '$combinedExtraArgStr' => EffectiveExtraArgs: [$($EffectiveExtraArgs -join ', ')]" -ForegroundColor Yellow }
     
-    # If user requested NoGraphic (-NoGraphic), avoid passing duplicate -nographic flags
     if ($NoGraphic -and ($null -ne $EffectiveExtraArgs)) {
         $EffectiveExtraArgs = $EffectiveExtraArgs | Where-Object { $_ -ne '-nographic' }
     }
@@ -447,8 +507,8 @@ try {
         Write-Host "--- Configuration ---" -ForegroundColor DarkGray
         Write-Host "Profile: $buildProfile" -ForegroundColor DarkGray
         Write-Host "Hardware: $Memory RAM, $Cores Core(s)" -ForegroundColor DarkGray
+        Write-Host "Features: $(if($Accel){'Accel '}else{''})$(if($Network){'Net '}else{''})$(if($Check){'Clippy'}else{''})" -ForegroundColor DarkGray
         Write-Host "QEMU: $QemuPath" -ForegroundColor DarkGray
-        Write-Host "OVMF: $(Split-Path $ovmfPath -Leaf)" -ForegroundColor DarkGray
         Write-Host "---------------------`n" -ForegroundColor DarkGray
     }
 
@@ -479,14 +539,13 @@ try {
             $mDiskImage = if ($mRelease) { Join-Path $scriptDir "target\x86_64-rany_os\release\boot-uefi-tiny_os.img" } else { $diskImage }
 
             if (-not $mSkip) {
-                $rc = Start-Build -ScriptDir $scriptDir -BuilderDir $builderDir -KernelPath $mKernelPath -DiskImage $mDiskImage -InitrdPath $initrdPath -IsFullBuild $mFull -IsRelease $mRelease
+                $rc = Start-Build -ScriptDir $scriptDir -BuilderDir $builderDir -KernelPath $mKernelPath -DiskImage $mDiskImage -InitrdPath $initrdPath -IsFullBuild $mFull -IsRelease $mRelease -RunCheck $Check
                 if ($rc -ne 0) { Write-Host "Build Failed." -ForegroundColor Red; Pause; continue }
             }
 
             if (-not $mBuildOnly) {
                 if (Test-Path $mDiskImage) {
-                    if ($Debug) { Write-Host "DEBUG: EffectiveExtraArgs = $($EffectiveExtraArgs -join '|')" -ForegroundColor Yellow }
-                    $qrc = Start-QEMU -DiskImage $mDiskImage -OvmfPath $ovmfPath -QemuExe $QemuPath -IsDebug $mDebug -IsNoGraphic $false -Mem $Memory -CpuCores $Cores -ExtraArgs $EffectiveExtraArgs -ExtraArgString $combinedExtraArgStr -UseStartProcess $UseStartProcess -KeepAlive $KeepAlive
+                    $qrc = Start-QEMU -DiskImage $mDiskImage -OvmfPath $ovmfPath -QemuExe $QemuPath -IsDebug $mDebug -IsNoGraphic $false -Mem $Memory -CpuCores $Cores -ExtraArgs $EffectiveExtraArgs -ExtraArgString $combinedExtraArgStr -UseStartProcess $UseStartProcess -KeepAlive $KeepAlive -TimeoutSec $Timeout -EnableAccel $Accel -EnableNet $Network
                     if ($qrc -ne 0) { Write-Host "QEMU Error: $qrc" -ForegroundColor Red }
                 }
                 else { Write-Host "Image not found." -ForegroundColor Red }
@@ -497,16 +556,15 @@ try {
 
     # 3. CLI Mode
     if (-not $SkipBuild) {
-        $rc = Start-Build -ScriptDir $scriptDir -BuilderDir $builderDir -KernelPath $kernelPath -DiskImage $diskImage -InitrdPath $initrdPath -IsFullBuild $FullBuild -IsRelease $Release
+        $rc = Start-Build -ScriptDir $scriptDir -BuilderDir $builderDir -KernelPath $kernelPath -DiskImage $diskImage -InitrdPath $initrdPath -IsFullBuild $FullBuild -IsRelease $Release -RunCheck $Check
         if ($rc -ne 0) { throw "Build failed with exit code $rc" }
     }
 
     if ($BuildOnly) { Write-Host "Build complete."; exit 0 }
 
     if (-not (Test-Path $diskImage)) { throw "Disk image missing. Run without -SkipBuild." }
-    if ($Debug) { Write-Host "DEBUG: EffectiveExtraArgs = $($EffectiveExtraArgs -join '|')" -ForegroundColor Yellow }
 
-    $qrc = Start-QEMU -DiskImage $diskImage -OvmfPath $ovmfPath -QemuExe $QemuPath -IsDebug $Debug -IsNoGraphic $NoGraphic -Mem $Memory -CpuCores $Cores -ExtraArgs $EffectiveExtraArgs -ExtraArgString $combinedExtraArgStr -UseStartProcess $UseStartProcess -KeepAlive $KeepAlive
+    $qrc = Start-QEMU -DiskImage $diskImage -OvmfPath $ovmfPath -QemuExe $QemuPath -IsDebug $Debug -IsNoGraphic $NoGraphic -Mem $Memory -CpuCores $Cores -ExtraArgs $EffectiveExtraArgs -ExtraArgString $combinedExtraArgStr -UseStartProcess $UseStartProcess -KeepAlive $KeepAlive -TimeoutSec $Timeout -EnableAccel $Accel -EnableNet $Network
     if ($qrc -ne 0) { throw "QEMU exited with code $qrc" }
 
 }
@@ -515,7 +573,7 @@ catch {
     exit 1
 }
 finally {
-    # --- Robust Cleanup on Interruption (Ctrl+C) ---
+    # --- Robust Cleanup on Interruption ---
     if ($script:currentLogJob) {
         try {
             if ($script:currentLogJob.State -eq 'Running') { Stop-Job $script:currentLogJob -Force -ErrorAction SilentlyContinue }

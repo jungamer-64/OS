@@ -36,18 +36,7 @@ jump_to_usermode_asm:
     mov ax, 0x10
     mov ss, ax
     
-    ; [PHASE 4 FIX] Set DS, ES, FS, GS to user data selector BEFORE iretq
-    ; These are not automatically set by iretq and must be correct for Ring 3
-    mov ax, 0x23      ; User data selector
-    mov ds, ax
-    mov es, ax
-    xor ax, ax        ; Clear FS/GS (or set to 0x23 if needed)
-    mov fs, ax
-    mov gs, ax
-    
-    ; Debug marker 1
-    SERIAL_CHAR 'J'
-    SERIAL_CHAR '1'
+    SERIAL_CHAR 'A'
     
     ; Build iretq frame on KERNEL stack
     ; Stack layout after pushes:
@@ -64,59 +53,23 @@ jump_to_usermode_asm:
     push rax          ; CS (user code selector)
     push r13          ; RIP (entry point)
     
-    ; Debug marker 2 - just before iretq
-    SERIAL_CHAR 'J'
-    SERIAL_CHAR '2'
+    SERIAL_CHAR 'B'
     
-    ; Output current RSP (where iretq frame is)
-    ; RSP bits 31:28 -> hex digit
-    mov rax, rsp
-    shr rax, 28
-    and rax, 0xF
-    add al, '0'
-    cmp al, '9'
-    jle .digit1_ok
-    add al, 7   ; Convert to A-F
-.digit1_ok:
-    push rdx
-    push rax
-    mov dx, 0x3F8
-    pop rax
-    out dx, al
-    pop rdx
-    ; RSP bits 27:24
-    mov rax, rsp
-    shr rax, 24
-    and rax, 0xF
-    add al, '0'
-    cmp al, '9'
-    jle .digit2_ok
-    add al, 7
-.digit2_ok:
-    push rdx
-    push rax
-    mov dx, 0x3F8
-    pop rax
-    out dx, al
-    pop rdx
+    ; Set data segments to user data selector BEFORE iretq
+    ; DS, ES are not changed by iretq
+    mov ax, 0x23
+    mov ds, ax
+    mov es, ax
+    xor ax, ax        ; Clear FS/GS 
+    mov fs, ax
+    mov gs, ax
     
-    ; Separator
-    SERIAL_CHAR ':'
-    
-    ; Minimal debug - CR3 switch and immediate iretq test
-    ; CR3切り替え前の最終確認
-    SERIAL_CHAR 'J'
-    SERIAL_CHAR '3'
-    
-    ; [PHASE 3 CR3 switch enabled] 
-    ; Switch to user page table before iretq
-    mov cr3, r14
-    
-    ; Debug marker after CR3 switch (uses stack, but we're still Ring 0)
     SERIAL_CHAR 'C'
     
-    ; Final marker immediately before iretq
-    SERIAL_CHAR '!'
+    ; Switch CR3 to user page table
+    mov cr3, r14
+    
+    SERIAL_CHAR 'D'
     
     ; iretq will load SS:RSP, RFLAGS, CS:RIP from stack
     iretq

@@ -10,6 +10,7 @@ node_modules/
 *.img
 
 # QEMU logs and debug output
+logs/
 qemu.log
 qemu_*.log
 qemu_*.txt
