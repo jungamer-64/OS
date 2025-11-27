@@ -29,6 +29,7 @@ members = [
     "crates/programs/syscall_test",      # Syscall tests
     "crates/programs/io_uring_test",     # io_uring tests
     "crates/programs/hello",             # Hello world program
+    "crates/programs/bench_syscall",     # Syscall benchmark
 ]
 resolver = "2"
 

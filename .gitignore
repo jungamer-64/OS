@@ -15,6 +15,7 @@ logs/
 qemu.log
 qemu_*.log
 qemu_*.txt
+disasm.txt
 
 # Build artifacts
 build/

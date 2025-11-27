@@ -161,7 +161,7 @@ fn main() {
     let initrd_path = root_dir.join("target/initrd.cpio");
     println!("Creating initrd archive at {}", initrd_path.display());
     
-    let mkcpio_dir = root_dir.join("tools/mkcpio");
+    let mkcpio_dir = root_dir.join("tools/build/mkcpio");
     let status = Command::new("cargo")
         .current_dir(&mkcpio_dir)
         .env("CARGO_BUILD_TARGET", "") // Override workspace default target

@@ -186,27 +186,27 @@ pub unsafe extern "C" fn syscall_entry() {
         "and rsp, -16",           // Otherwise, align to 16-byte boundary
         "2:",
         
-        // === Save user context (8 registers = 64 bytes) ===
-        // After this, RSP is still 16-byte aligned (aligned - 64 = aligned)
+        // === Save user context (3 registers = 24 bytes) ===
+        // Optimized: Only save essential registers for sysret
+        // Callee-saved registers (rbp, rbx, r12-r14) are handled by the Rust
+        // compiler in the handler function, so we don't need to save them here.
+        //
+        // WARNING: This optimization assumes that NO context switch (task switch)
+        // occurs during syscall handling. If the scheduler can preempt during
+        // a syscall, the full register save must be restored.
         "push r15",          // User RSP (saved earlier)
         "push rcx",          // User RIP (saved by CPU on syscall)
         "push r11",          // User RFLAGS (saved by CPU on syscall)
         
-        // Save callee-saved registers
-        "push rbp",
-        "push rbx",
-        "push r12",
-        "push r13",
-        "push r14",
-        
         // === C ABI alignment requirement ===
-        // System V AMD64 ABI requires RSP to be at (16*N + 8) before 'call'
-        // because 'call' pushes an 8-byte return address.
+        // System V AMD64 ABI requires RSP to be 16-byte aligned at 'call' instruction.
+        // 'call' pushes 8-byte return address, so RSP must be 16*N before call.
         // 
-        // Current state after 8 pushes (64 bytes): RSP is 16-byte aligned
-        // We need RSP = 16*N + 8 before call
+        // Current state after 3 pushes (24 bytes from aligned):
+        //   RSP % 16 = (aligned - 24) % 16 = -8 % 16 = 8
+        // We need RSP % 16 = 0 before call
         // Solution: sub 8 bytes for alignment
-        "sub rsp, 8",        // Alignment padding (now 16*N + 8 after we push more)
+        "sub rsp, 8",        // Alignment padding (now 16-byte aligned)
         
         // === Prepare arguments for C calling convention ===
         // Syscall ABI:
@@ -227,10 +227,10 @@ pub unsafe extern "C" fn syscall_entry() {
         //   [stack] = arg6 (from R9)
         
         // Save arg6 to stack (will be 7th C argument on stack)
-        // After this push: RSP = 16*N + 8 - 8 = 16*N, but we need 16*N + 8
-        // So push one more 8-byte padding
-        "push r9",           // arg6 to stack
-        "sub rsp, 8",        // Extra padding to make RSP = 16*N + 8
+        // After this push: RSP = 16*N - 8
+        // Then push padding to restore alignment
+        "push r9",           // arg6 to stack (RSP = 16*N - 8)
+        "sub rsp, 8",        // Extra padding to make RSP = 16*N
         
         // Shuffle registers (must be done in correct order to not overwrite sources)
         "mov r9, r8",        // arg5 (C arg6 = R9)
@@ -241,21 +241,18 @@ pub unsafe extern "C" fn syscall_entry() {
         "mov rdi, rax",      // syscall_num (C arg1 = RDI)
         
         // === Call the syscall handler ===
-        // Stack: 8 (sub) + 8 (push r9) + 8 (push 0) = 24 bytes from aligned
-        // 64 (original pushes) + 24 = 88 bytes = 16*5 + 8 ✓
+        // Stack layout (from aligned RSP):
+        //   - 3 pushes (24 bytes): r15, rcx, r11
+        //   - sub 8 (alignment): 8 bytes
+        //   - push r9 (arg6): 8 bytes  
+        //   - sub 8 (padding): 8 bytes
+        // Total: 56 bytes from aligned, RSP is now 16-byte aligned
         "call {syscall_handler}",
         
         // === Result is in RAX, preserve it ===
         
         // === Remove stack adjustments ===
-        "add rsp, 24",       // Remove: padding (8) + push 0 (8) + push r9 (8)
-        
-        // === Restore callee-saved registers (in reverse order) ===
-        "pop r14",
-        "pop r13",
-        "pop r12",
-        "pop rbx",
-        "pop rbp",
+        "add rsp, 24",       // Remove: padding (8) + arg6 (8) + alignment padding (8)
         
         // === Restore user context ===
         "pop r11",          // User RFLAGS

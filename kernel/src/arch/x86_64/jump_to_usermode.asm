@@ -110,61 +110,10 @@ jump_to_usermode_asm:
     ; After this, we can only access user-mapped memory
     mov cr3, r8
     
-    SERIAL_CHAR_NOSTACK '!'   ; Mark: CR3 switched
-    
     ; [DEBUG TEST] After CR3 switch, verify we can still read from stack
     mov rax, [rsp]        ; This tests if user page table has the mapping
     
     SERIAL_CHAR_NOSTACK 'G'
-    
-    ; [DEBUG] Try to read from GDT to verify it's mapped in user page table
-    ; Get GDTR and try to read GDT base
-    sub rsp, 16
-    sgdt [rsp]
-    mov rbx, [rsp + 2]    ; Get GDT base address (64-bit)
-    add rsp, 16
-    
-    SERIAL_CHAR_NOSTACK 'J'   ; Mark: about to test GDT access
-    
-    ; Try to read from GDT base address - this will fault if not mapped!
-    ; If this succeeds, GDT is accessible from user page table
-    mov rax, [rbx]        ; Read first entry of GDT
-    
-    SERIAL_CHAR_NOSTACK 'K'   ; Mark: GDT read successful
-    
-    ; [DEBUG] Output hex byte of CS value (should be 0x1B)
-    ; Read CS from iretq frame [rsp+8]
-    mov rax, [rsp+8]
-    ; Output low byte as ASCII
-    and al, 0xFF
-    add al, 0x40   ; Convert to ASCII (0x1B + 0x40 = '[')
-    SERIAL_CHAR_NOSTACK al
-    
-    ; [DEBUG] Output hex byte of SS value (should be 0x13)
-    mov rax, [rsp+32]
-    and al, 0xFF
-    add al, 0x40   ; Convert to ASCII (0x13 + 0x40 = 'S')
-    SERIAL_CHAR_NOSTACK al
-    
-    ; Final marker before iretq
-    SERIAL_CHAR_NOSTACK 'H'
-    
-    ; [DEBUG] Dump GDTR to verify correct GDT is loaded
-    ; Read GDTR: sgdt stores limit (16 bits) and base (64 bits) = 10 bytes total
-    ; We'll use a small temporary area on the stack (already in user stack)
-    sub rsp, 16           ; Make room for GDTR (10 bytes, rounded to 16)
-    sgdt [rsp]            ; Store GDTR
-    
-    ; Output GDT base address (just the low 2 bytes to see if it's our GDT 0x27d000)
-    mov ax, [rsp + 4]     ; Low word of base (should be 0xd000 for 0x27d000)
-    shr ax, 8             ; Get high byte of low word (should be 0xd0 = 208)
-    add al, 0x20          ; Add offset to make printable
-    SERIAL_CHAR_NOSTACK al
-    
-    add rsp, 16           ; Restore stack
-    
-    ; [DEBUG] Output 'I' right before iretq
-    SERIAL_CHAR_NOSTACK 'I'
     
     ; IRETQ will:
     ; - Pop RIP from [RSP+0]   = entry_point
