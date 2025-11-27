@@ -84,7 +84,7 @@ find_ovmf() {
     fi
 
     # 1. Local project path
-    local local_path="$SCRIPT_DIR/ovmf-x64/OVMF.fd"
+    local local_path="$(dirname "$SCRIPT_DIR")/assets/firmware/ovmf-x64/OVMF.fd"
     if [ -f "$local_path" ]; then
         echo "$local_path"
         return
@@ -417,7 +417,7 @@ main_logic() {
     check_prereqs
     OVMF_PATH=$(find_ovmf)
     if [ -z "$OVMF_PATH" ]; then
-        log_err "OVMF firmware not found. Please install 'ovmf' package or place OVMF.fd in ./ovmf-x64/"
+        log_err "OVMF firmware not found. Please install 'ovmf' package or place OVMF.fd in ./assets/firmware/ovmf-x64/"
         exit 1
     fi
 

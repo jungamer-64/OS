@@ -5,9 +5,9 @@
 # This workspace contains the Tiny OS kernel and userland programs.
 # The workspace is organized as follows:
 #
-# - kernel/              - The OS kernel (Ring 0, no_std)
-# - userland/libuser/    - Standard library for userland programs
-# - userland/programs/   - Userland programs (Ring 3, no_std)
+# - crates/kernel/              - The OS kernel (Ring 0, no_std)
+# - crates/libuser/             - Standard library for userland programs
+# - crates/programs/            - Userland programs (Ring 3, no_std)
 #
 # IMPORTANT: Kernel and userland are strictly separated:
 # - Kernel MUST NOT depend on userland crates
@@ -21,13 +21,14 @@
 
 [workspace]
 members = [
-    "kernel",                     # OS kernel
-    "userland/libuser",           # Userland standard library
-    "userland/programs/shell",    # Interactive shell
-    "userland/programs/test",     # Test program
-    "userland/programs/init",     # Init process
-    "userland/programs/syscall_test", # Syscall tests
-    "userland/programs/io_uring_test", # io_uring tests
+    "crates/kernel",                     # OS kernel
+    "crates/libuser",                    # Userland standard library
+    "crates/programs/shell",             # Interactive shell
+    "crates/programs/test",              # Test program
+    "crates/programs/init",              # Init process
+    "crates/programs/syscall_test",      # Syscall tests
+    "crates/programs/io_uring_test",     # io_uring tests
+    "crates/programs/hello",             # Hello world program
 ]
 resolver = "2"
 

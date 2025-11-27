@@ -124,9 +124,9 @@ function Clear-BuildArtifacts {
     Write-Host "Cleaning build artifacts..." -ForegroundColor Yellow
     
     $dirsToClean = @(
-        $ScriptDir,                          # Root
-        (Join-Path $ScriptDir "builder"),    # Builder
-        (Join-Path $ScriptDir "kernel")      # Kernel
+        $ScriptDir,                                        # Root
+        (Join-Path $ScriptDir "tools\build\builder"),      # Builder
+        (Join-Path $ScriptDir "crates\kernel")             # Kernel
     )
 
     foreach ($dir in $dirsToClean) {
@@ -140,10 +140,10 @@ function Clear-BuildArtifacts {
         }
     }
     
-    # Clean userland targets
-    $userlandDir = Join-Path $ScriptDir "userland"
-    if (Test-Path $userlandDir) {
-        Get-ChildItem -Path $userlandDir -Recurse -Directory -Filter "target" | ForEach-Object {
+    # Clean programs targets
+    $programsDir = Join-Path $ScriptDir "crates\programs"
+    if (Test-Path $programsDir) {
+        Get-ChildItem -Path $programsDir -Recurse -Directory -Filter "target" | ForEach-Object {
             Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
@@ -173,7 +173,7 @@ function Start-Build {
     # --- Static Analysis (Clippy) ---
     if ($RunCheck) {
         Write-Host "Running Cargo Clippy..." -ForegroundColor Cyan
-        Push-Location (Join-Path $ScriptDir "kernel")
+        Push-Location (Join-Path $ScriptDir "crates\kernel")
         try {
             $clippyArgs = @("clippy")
             if (Test-Path "x86_64-rany_os.json") {
@@ -250,7 +250,7 @@ function Start-Build {
     }
     else {
         Write-Host "Building kernel (Quick Mode)..." -ForegroundColor Cyan
-        Push-Location (Join-Path $ScriptDir "kernel")
+        Push-Location (Join-Path $ScriptDir "crates\kernel")
         try {
             if (-not (Test-Path "x86_64-rany_os.json")) {
                 Write-Host "Error: Target JSON not found." -ForegroundColor Red
@@ -378,7 +378,9 @@ function Start-QEMU {
     
     Write-Host "Starting QEMU..." -ForegroundColor Green
     
-    $logDir = Join-Path $PSScriptRoot "logs"
+    # Get project root from scriptDir (which now points to project root)
+    $projectRoot = (Get-Item $PSScriptRoot).Parent.Parent.FullName
+    $logDir = Join-Path $projectRoot "logs"
     if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
     
     # --- Enhanced Log Management (History) ---
@@ -565,11 +567,43 @@ function Start-QEMU {
 $__pushedScriptDir = $false
 
 try {
+    # $PSScriptRoot is tools/scripts, so we need to navigate to project root
     $scriptDir = $PSScriptRoot
     if (-not $scriptDir) { $scriptDir = Get-Location }
     
-    Push-Location $scriptDir
+    # Navigate to project root (two levels up from tools/scripts)
+    $projectRoot = (Get-Item $scriptDir).Parent.Parent.FullName
+    
+    Push-Location $projectRoot
     $__pushedScriptDir = $true
+
+    # --- Path Configuration (new directory structure) ---
+    # Kernel: crates/kernel
+    # Builder: tools/build/builder
+    # Programs: crates/programs
+    # Firmware: assets/firmware/ovmf-x64
+    
+    $buildProfile = if ($Release) { "release" } else { "debug" }
+    $kernelDir = Join-Path $projectRoot "crates\kernel"
+    $builderDir = Join-Path $projectRoot "tools\build\builder"
+    $programsDir = Join-Path $projectRoot "crates\programs"
+    
+    $kernelPath = Join-Path $projectRoot "target\x86_64-rany_os\$buildProfile\tiny_os"
+    $diskImage = Join-Path $projectRoot "target\x86_64-rany_os\$buildProfile\boot-uefi-tiny_os.img"
+    $initrdPath = Join-Path $projectRoot "target\initrd.cpio"
+    
+    # OVMF Firmware Path
+    $ovmfPath = if ($OverrideOvmfPath -ne "") { 
+        $OverrideOvmfPath 
+    } else { 
+        Join-Path $projectRoot "assets\firmware\ovmf-x64\OVMF.fd"
+    }
+    
+    # Log directory (in project root)
+    $logDir = Join-Path $projectRoot "logs"
+    
+    # Determine execution mode
+    $UseStartProcess = -not $InlineQemu
 
     # --- Parameter Validation ---
     if ($Memory -notmatch '^\d+[MG]$') {
@@ -579,17 +613,6 @@ try {
         Write-Warning "Cores cannot be less than 1. Resetting to 1."
         $Cores = 1
     }
-
-    # Configuration
-    $buildProfile = if ($Release) { "release" } else { "debug" }
-    $kernelPath = Join-Path $scriptDir "target\x86_64-rany_os\$buildProfile\tiny_os"
-    $ovmfPath = if ($OverrideOvmfPath) { $OverrideOvmfPath } else { Join-Path $scriptDir "ovmf-x64\OVMF.fd" }
-    $diskImage = Join-Path $scriptDir "target\x86_64-rany_os\$buildProfile\boot-uefi-tiny_os.img"
-    $initrdPath = Join-Path $scriptDir "target\initrd.cpio"
-    $builderDir = Join-Path $scriptDir "builder"
-    
-    # -NoGraphic の場合は直接実行モードを使用（Ctrl+Cが効くように）
-    $UseStartProcess = (-not $InlineQemu) -and (-not $NoGraphic)
 
     # Pre-flight Checks
     if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) { throw "rustup not found in PATH." }
@@ -611,7 +634,7 @@ try {
         $normalized = [regex]::Replace($combinedExtraArgStr, '(-nographic)(\s*-nographic)+', '$1', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
         $EffectiveExtraArgs = Parse-ArgumentString $normalized
     }
-    
+
     if ($NoGraphic -and ($null -ne $EffectiveExtraArgs)) {
         $EffectiveExtraArgs = $EffectiveExtraArgs | Where-Object { $_ -ne '-nographic' }
     }
@@ -623,20 +646,21 @@ try {
         Write-Host "Hardware: $Memory RAM, $Cores Core(s)" -ForegroundColor DarkGray
         Write-Host "Features: $(if($Accel){'Accel '}else{''})$(if($Network){'Net '}else{''})$(if($Check){'Clippy'}else{''})" -ForegroundColor DarkGray
         Write-Host "QEMU: $QemuPath" -ForegroundColor DarkGray
+        Write-Host "Project Root: $projectRoot" -ForegroundColor DarkGray
         Write-Host "---------------------`n" -ForegroundColor DarkGray
     }
 
     # 1. Clean Mode
-    if ($Clean) { Clear-BuildArtifacts -ScriptDir $scriptDir; exit 0 }
+    if ($Clean) { Clear-BuildArtifacts -ScriptDir $projectRoot; exit 0 }
 
     # 2. Menu Mode
     if ($Menu) {
         while ($true) {
             Show-Menu
             $choice = Read-Host "Select option (1-8)"
-            
+        
             $mFull = $false; $mBuildOnly = $false; $mSkip = $false; $mDebug = $false; $mRelease = $false
-            
+        
             switch ($choice) {
                 "1" { }
                 "2" { $mFull = $true }
@@ -644,16 +668,17 @@ try {
                 "4" { $mSkip = $true }
                 "5" { $mDebug = $true }
                 "6" { $mRelease = $true }
-                "7" { Clear-BuildArtifacts -ScriptDir $scriptDir; Pause; continue }
+                "7" { Clear-BuildArtifacts -ScriptDir $projectRoot; Pause; continue }
                 "8" { Write-Host "Goodbye."; exit 0 }
                 default { continue }
             }
 
-            $mKernelPath = if ($mRelease) { Join-Path $scriptDir "target\x86_64-rany_os\release\tiny_os" } else { $kernelPath }
-            $mDiskImage = if ($mRelease) { Join-Path $scriptDir "target\x86_64-rany_os\release\boot-uefi-tiny_os.img" } else { $diskImage }
+            $mBuildProfile = if ($mRelease) { "release" } else { "debug" }
+            $mKernelPath = Join-Path $projectRoot "target\x86_64-rany_os\$mBuildProfile\tiny_os"
+            $mDiskImage = Join-Path $projectRoot "target\x86_64-rany_os\$mBuildProfile\boot-uefi-tiny_os.img"
 
             if (-not $mSkip) {
-                $rc = Start-Build -ScriptDir $scriptDir -BuilderDir $builderDir -KernelPath $mKernelPath -DiskImage $mDiskImage -InitrdPath $initrdPath -IsFullBuild $mFull -IsRelease $mRelease -RunCheck $Check
+                $rc = Start-Build -ScriptDir $projectRoot -BuilderDir $builderDir -KernelPath $mKernelPath -DiskImage $mDiskImage -InitrdPath $initrdPath -IsFullBuild $mFull -IsRelease $mRelease -RunCheck $Check
                 if ($rc -ne 0) { Write-Host "Build Failed." -ForegroundColor Red; Pause; continue }
             }
 
@@ -670,7 +695,7 @@ try {
 
     # 3. CLI Mode
     if (-not $SkipBuild) {
-        $rc = Start-Build -ScriptDir $scriptDir -BuilderDir $builderDir -KernelPath $kernelPath -DiskImage $diskImage -InitrdPath $initrdPath -IsFullBuild $FullBuild -IsRelease $Release -RunCheck $Check
+        $rc = Start-Build -ScriptDir $projectRoot -BuilderDir $builderDir -KernelPath $kernelPath -DiskImage $diskImage -InitrdPath $initrdPath -IsFullBuild $FullBuild -IsRelease $Release -RunCheck $Check
         if ($rc -ne 0) { throw "Build failed with exit code $rc" }
     }
 
@@ -680,7 +705,6 @@ try {
 
     $qrc = Start-QEMU -DiskImage $diskImage -OvmfPath $ovmfPath -QemuExe $QemuPath -IsDebug $Debug -IsNoGraphic $NoGraphic -Mem $Memory -CpuCores $Cores -ExtraArgs $EffectiveExtraArgs -ExtraArgString $combinedExtraArgStr -UseStartProcess $UseStartProcess -KeepAlive $KeepAlive -TimeoutSec $Timeout -EnableAccel $Accel -EnableNet $Network
     if ($qrc -ne 0) { throw "QEMU exited with code $qrc" }
-
 }
 catch {
     Write-Host "Error: $_" -ForegroundColor Red
@@ -704,7 +728,7 @@ finally {
         }
         catch {}
     }
-    
+
     if ($__pushedScriptDir) {
         try { Pop-Location } catch {}
     }

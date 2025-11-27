@@ -6,18 +6,18 @@ A minimal OS kernel written in Rust with strict kernel/userland separation.
 
 ```
 .
-├── kernel/                 # OS Kernel (Ring 0)
-│   ├── src/
-│   │   ├── main.rs        # Kernel entry point
-│   │   ├── kernel/        # Kernel modules
-│   │   │   ├── syscall/   # System call implementation
-│   │   │   ├── process/   # Process management
-│   │   │   └── mm/        # Memory management
-│   │   └── arch/          # Architecture-specific code
-│   └── build.rs           # Kernel build script
-│
-├── userland/              # Userland Programs (Ring 3)
-│   ├── libuser/           # User standard library
+├── crates/                 # All Rust crates
+│   ├── kernel/            # OS Kernel (Ring 0)
+│   │   ├── src/
+│   │   │   ├── main.rs    # Kernel entry point
+│   │   │   ├── kernel/    # Kernel modules
+│   │   │   │   ├── syscall/   # System call implementation
+│   │   │   │   ├── process/   # Process management
+│   │   │   │   └── mm/        # Memory management
+│   │   │   └── arch/      # Architecture-specific code
+│   │   └── build.rs       # Kernel build script
+│   │
+│   ├── libuser/           # User standard library (Ring 3)
 │   │   └── src/
 │   │       ├── syscall.rs # System call wrappers
 │   │       ├── io.rs      # I/O functions
@@ -25,14 +25,52 @@ A minimal OS kernel written in Rust with strict kernel/userland separation.
 │   │       ├── mem.rs     # Memory management
 │   │       ├── alloc.rs   # Global allocator
 │   │       └── lib.rs     # Library root
-│   └── programs/          # User programs
-│       └── shell/         # Interactive shell
+│   │
+│   └── programs/          # User programs (Ring 3)
+│       ├── shell/         # Interactive shell
+│       ├── init/          # Init process
+│       ├── test/          # Test program
+│       ├── syscall_test/  # Syscall tests
+│       ├── io_uring_test/ # io_uring tests
+│       └── hello/         # Hello world program
 │
 ├── docs/                  # Documentation
-│   └── syscall_interface.md  # System call specification
+│   ├── design/           # Design documents
+│   │   ├── syscall_interface.md
+│   │   ├── RING_SEPARATION_DESIGN.md
+│   │   └── ...
+│   ├── guides/           # Development guides
+│   │   ├── SAFETY_GUIDELINES.md
+│   │   ├── RUN_QEMU_COMMAND_REFERENCE.md
+│   │   └── ...
+│   ├── implementation/   # Implementation details
+│   └── changelogs/       # Change logs
 │
-├── build_userland.ps1     # Userland build script
-└── Cargo.toml             # Workspace configuration
+├── tools/                 # Development tools
+│   ├── build/            # Build tools
+│   │   ├── builder/
+│   │   └── mkcpio/
+│   ├── scripts/          # Build and test scripts
+│   │   ├── run_qemu.ps1
+│   │   ├── run_qemu.sh
+│   │   └── generate_font.py
+│   ├── mockbin/
+│   └── tests/
+│
+├── tests/                 # Integration tests
+│   ├── integration/      # Integration test suite
+│   │   ├── basic_boot.rs
+│   │   ├── vga_buffer.rs
+│   │   └── ...
+│   └── README.md         # Test documentation
+│
+├── assets/               # Project assets
+│   ├── firmware/        # UEFI firmware
+│   │   └── ovmf-x64/
+│   └── fonts/           # Font resources
+│
+├── run_qemu.ps1          # Wrapper script (forwards to tools/scripts/)
+└── Cargo.toml            # Workspace configuration
 ```
 
 ## System Requirements
@@ -163,8 +201,9 @@ Kernel Space: 0xFFFF_8000_0000_0000 ~ 0xFFFF_FFFF_FFFF_FFFF
 
 ## Documentation
 
-- [System Call Interface](docs/syscall_interface.md) - Complete syscall specification
-- [Implementation Plan](docs/implementation_plan.md) - Development roadmap (if exists)
+- [System Call Interface](docs/design/syscall_interface.md) - Complete syscall specification
+- [Safety Guidelines](docs/guides/SAFETY_GUIDELINES.md) - Safety and security guidelines
+- [Run QEMU Reference](docs/guides/RUN_QEMU_COMMAND_REFERENCE.md) - QEMU execution guide
 - Code Documentation - Run `cargo doc --open`
 
 ## Testing
