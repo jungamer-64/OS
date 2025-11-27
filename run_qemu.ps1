@@ -191,10 +191,10 @@ function Start-Build {
         Write-Host "Running full build pipeline..." -ForegroundColor Cyan
         Push-Location $BuilderDir
         try {
-            $cmdArgs = @("run", "nightly", "cargo", "run")
+            $cmdArgs = @("run")
             if ($IsRelease) { $cmdArgs += "--release" }
             
-            & rustup @cmdArgs | Out-Host
+            & cargo @cmdArgs | Out-Host
             return $LASTEXITCODE
         }
         finally { Pop-Location }
@@ -204,43 +204,106 @@ function Start-Build {
         Push-Location (Join-Path $ScriptDir "kernel")
         try {
             if (-not (Test-Path "x86_64-rany_os.json")) {
-                Write-Host "Error: Target JSON not found." -ForegroundColor Red; return 1
+                Write-Host "Error: Target JSON not found." -ForegroundColor Red
+                return 1
             }
 
-            $buildArgs = @("run", "nightly", "cargo", "build", "--target", "x86_64-rany_os.json")
+            $buildArgs = @("build", "--target", "x86_64-rany_os.json")
             if ($IsRelease) { $buildArgs += "--release" }
             
-            & rustup @buildArgs | Out-Host
+            & cargo @buildArgs | Out-Host
             if ($LASTEXITCODE -ne 0) { return $LASTEXITCODE }
         }
         finally { Pop-Location }
 
         Write-Host "Creating EFI disk image..." -ForegroundColor Cyan
         
-        Push-Location $BuilderDir
+        # CRITICAL: Builder must be completely isolated from workspace
+        # Copy builder to temp directory to avoid .cargo/config.toml inheritance
+        $tempBuilderDir = Join-Path $env:TEMP "builder_isolated"
+        
         try {
-            # Builder needs nightly (for bootloader crate) but WITHOUT build-std
-            $bArgs = @("run", "nightly", "cargo", "-Zbuild-std=", "run")
-            if ($IsRelease) { $bArgs += "--release" }
-            $bArgs += "--"; $bArgs += "--kernel-path"; $bArgs += $KernelPath
-            $bArgs += "--output-path"; $bArgs += $DiskImage
+            # Clean and copy builder to isolated location
+            if (Test-Path $tempBuilderDir) {
+                Remove-Item -Path $tempBuilderDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
             
-            if (Test-Path $InitrdPath) {
-                Write-Host "  Including initrd: $InitrdPath" -ForegroundColor Green
-                $bArgs += "--ramdisk"; $bArgs += $InitrdPath
+            Write-Host "  Isolating builder from workspace..." -ForegroundColor DarkGray
+            Copy-Item -Path $BuilderDir -Destination $tempBuilderDir -Recurse -Force
+            
+            # Remove any .cargo directory that might have been copied
+            $tempCargoDir = Join-Path $tempBuilderDir ".cargo"
+            if (Test-Path $tempCargoDir) {
+                Remove-Item -Path $tempCargoDir -Recurse -Force -ErrorAction SilentlyContinue
             }
-            else {
-                Write-Host "  Warning: No initrd found." -ForegroundColor DarkYellow
-            }
+            
+            Push-Location $tempBuilderDir
+            try {
+                Write-Host "  Building builder tool (isolated)..." -ForegroundColor DarkGray
+                
+                # Build builder - use cmd to avoid PowerShell stderr issues
+                # IMPORTANT: Pipe to Out-Null to prevent output from being captured as return value
+                $builderBuildArgs = "build"
+                if ($IsRelease) { $builderBuildArgs += " --release" }
+                
+                # Run cargo directly without capturing stderr as error
+                $env:CARGO_TERM_COLOR = "always"
+                cmd /c "cargo $builderBuildArgs 2>&1" | Out-Host
+                $builderBuildResult = $LASTEXITCODE
+                
+                # Check if executable was created (more reliable than LASTEXITCODE from cmd)
+                $builderExe = if ($IsRelease) { 
+                    Join-Path $tempBuilderDir "target\release\builder.exe"
+                }
+                else { 
+                    Join-Path $tempBuilderDir "target\debug\builder.exe"
+                }
+                
+                if (-not (Test-Path $builderExe)) {
+                    Write-Host "Failed to build builder - executable not found (exit code: $builderBuildResult)" -ForegroundColor Red
+                    return 1
+                }
+                
+                Write-Host "  Builder compiled successfully" -ForegroundColor Green
+                
+                # Run builder
+                $bArgs = @(
+                    "--kernel-path", $KernelPath,
+                    "--output-path", $DiskImage
+                )
+                
+                if (Test-Path $InitrdPath) {
+                    Write-Host "  Including initrd: $InitrdPath" -ForegroundColor Green
+                    $bArgs += "--ramdisk", $InitrdPath
+                }
+                else {
+                    Write-Host "  Warning: No initrd found." -ForegroundColor DarkYellow
+                }
 
-            & rustup @bArgs | Out-Host
-            return $LASTEXITCODE
+                # IMPORTANT: Pipe to Out-Host to prevent output from being captured as return value
+                & $builderExe @bArgs | Out-Host
+                $builderExitCode = $LASTEXITCODE
+                
+                if ($builderExitCode -ne 0) {
+                    Write-Host "  Builder failed with exit code: $builderExitCode" -ForegroundColor Red
+                    return $builderExitCode
+                }
+                
+                if (Test-Path $DiskImage) {
+                    Write-Host "  EFI disk image created successfully" -ForegroundColor Green
+                    return 0
+                }
+                else {
+                    Write-Host "  Builder completed but disk image not found: $DiskImage" -ForegroundColor Red
+                    return 1
+                }
+            }
+            finally { Pop-Location }
         }
         catch {
             Write-Host "Error running builder: $_" -ForegroundColor Red
             return 1
         }
-        finally { Pop-Location }
     }
 }
 
