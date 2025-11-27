@@ -1,5 +1,5 @@
 ; jump_to_usermode.asm
-; NASM assembly for user mode transition using SYSRET
+; NASM assembly for user mode transition using IRETQ
 ;
 ; Arguments (System V AMD64 ABI):
 ; rdi = entry_point (RIP)
@@ -7,18 +7,13 @@
 ; rdx = user_cr3 (CR3)
 ; rcx = rflags (RFLAGS)
 ;
-; SYSRET behavior (64-bit mode):
-; - RCX -> RIP (user entry point)
-; - R11 -> RFLAGS
-; - CS = STAR[63:48] + 16 = 0x08 + 16 = 0x18 (with RPL=3 -> 0x1B)
-; - SS = STAR[63:48] + 8  = 0x08 + 8  = 0x10 (with RPL=3 -> 0x13)
-; - Does NOT change RSP (must be set before SYSRET)
-; - Does NOT change CR3 (must be set before SYSRET)
+; IRETQ pops from stack (in order): RIP, CS, RFLAGS, RSP, SS
+; This allows atomic transition to user mode after CR3 switch.
 ;
-; GDT Layout (SYSRET-compatible):
+; GDT Layout:
 ;   0x08: kernel_code
-;   0x10: user_data (SYSRET SS) -> 0x13 with RPL=3
-;   0x18: user_code (SYSRET CS) -> 0x1B with RPL=3
+;   0x10: user_data -> 0x13 with RPL=3
+;   0x18: user_code -> 0x1B with RPL=3
 ;   0x20: kernel_data
 ;   0x28: TSS
 
@@ -41,17 +36,18 @@ global jump_to_usermode_asm
 jump_to_usermode_asm:
     cli
     
-    ; Save arguments - we need to reorganize for SYSRET
-    ; SYSRET expects: RCX = RIP, R11 = RFLAGS
-    ; So we need:
-    ;   rdi -> RCX (entry_point -> RIP for sysret)
-    ;   rsi -> RSP (user_stack)
-    ;   rdx -> CR3 (user_cr3)
-    ;   rcx -> R11 (rflags -> RFLAGS for sysret)
+    ; Arguments:
+    ;   rdi = entry_point
+    ;   rsi = user_stack (RSP for user mode)
+    ;   rdx = user_cr3
+    ;   rcx = rflags
     
     SERIAL_CHAR 'A'
     
-    ; Set up data segments BEFORE CR3 switch (while still accessible)
+    ; Save CR3 value for later
+    mov r8, rdx       ; r8 = user_cr3
+    
+    ; Set up data segments (while still in kernel)
     ; user_data selector = 0x10 (base) | 0x03 (RPL) = 0x13
     mov ax, 0x13
     mov ds, ax
@@ -62,35 +58,36 @@ jump_to_usermode_asm:
     
     SERIAL_CHAR 'B'
     
-    ; Set up for SYSRET:
-    ; RCX = entry point (will be loaded into RIP)
-    ; R11 = RFLAGS (will be loaded into RFLAGS)  
-    ; RSP = user stack (sysret does not change RSP)
-    mov r11, rcx      ; RFLAGS -> R11
-    mov rcx, rdi      ; entry_point -> RCX
+    ; Build IRETQ frame on current (kernel) stack
+    ; Stack layout for iretq (from top):
+    ;   [RSP+32] SS     = 0x13 (user_data | RPL3)
+    ;   [RSP+24] RSP    = user_stack
+    ;   [RSP+16] RFLAGS = rflags
+    ;   [RSP+8]  CS     = 0x1B (user_code | RPL3)
+    ;   [RSP+0]  RIP    = entry_point
     
-    ; Set user stack BEFORE CR3 switch
-    ; After CR3 switch, we can't access kernel stack anymore
-    mov rsp, rsi
+    push qword 0x13        ; SS: user_data | RPL3
+    push rsi               ; RSP: user_stack
+    push rcx               ; RFLAGS
+    push qword 0x1B        ; CS: user_code | RPL3  
+    push rdi               ; RIP: entry_point
     
     SERIAL_CHAR 'C'
     
-    ; Switch to user page table
-    ; CR3 switch is the point of no return - after this, we can only
-    ; execute the remaining instructions and SYSRET
-    mov cr3, rdx
+    ; Switch CR3 to user page table
+    ; The iretq instruction itself is still in the current (kernel) page table
+    ; at this point, which is fine because we're about to execute it
+    mov cr3, r8
     
-    ; Output 'D' without using stack (no push/pop after CR3 switch)
+    ; At this point:
+    ; - CR3 points to user page table
+    ; - The iretq frame is on the kernel stack (which is identity-mapped
+    ;   or mapped in the user page table via PHASE 3 workaround)
+    ; - iretq will atomically load RIP, CS, RFLAGS, RSP, SS and jump to user mode
+    
+    ; Output 'D' - after this, iretq will transfer to user mode
     mov dx, 0x3F8
     mov al, 'D'
     out dx, al
     
-    ; SYSRET will:
-    ; - Load RIP from RCX (entry_point)
-    ; - Load RFLAGS from R11
-    ; - Load CS from STAR[63:48] + 16 = 0x08 + 16 = 0x18 (with RPL=3 -> 0x1B)
-    ; - Load SS from STAR[63:48] + 8  = 0x08 + 8  = 0x10 (with RPL=3 -> 0x13)
-    ; - Switch to Ring 3
-    ; RSP was already set to user_stack
-    ; CR3 was already set to user_cr3
-    o64 sysret
+    iretq

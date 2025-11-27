@@ -39,7 +39,9 @@ param(
     [switch]$Check       # Run cargo clippy before build
 )
 
-$ErrorActionPreference = "Stop"
+# Note: "Continue" allows cargo warnings (stderr) to pass through without terminating
+# Use try/catch for actual error handling instead
+$ErrorActionPreference = "Continue"
 
 # Global state for cleanup on interruption
 $script:currentQemuProc = $null
@@ -258,7 +260,9 @@ function Start-Build {
             $buildArgs = @("build", "--target", "x86_64-rany_os.json")
             if ($IsRelease) { $buildArgs += "--release" }
             
-            & cargo @buildArgs | Out-Host
+            # Redirect stderr to stdout to prevent PowerShell from treating warnings as errors
+            $env:CARGO_TERM_COLOR = "always"
+            & cargo @buildArgs 2>&1 | Out-Host
             if ($LASTEXITCODE -ne 0) { return $LASTEXITCODE }
         }
         finally { Pop-Location }
