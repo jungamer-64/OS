@@ -9,10 +9,12 @@ use x86_64::VirtAddr;
 use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use alloc::boxed::Box;
 use alloc::alloc::{alloc_zeroed, Layout};
 use spin::Mutex;
 use lazy_static::lazy_static;
 use crate::kernel::fs::FileDescriptor;
+use crate::kernel::io_uring::IoUringContext;
 
 pub mod lifecycle;
 pub mod switch;
@@ -124,6 +126,8 @@ pub struct Process {
     file_descriptors: BTreeMap<u64, Arc<Mutex<dyn FileDescriptor>>>,
     next_fd: u64,
     fpu_state: FpuState,
+    /// io_uring context for async I/O (optional, created on demand)
+    io_uring_ctx: Option<Box<IoUringContext>>,
 }
 
 impl Drop for Process {
@@ -209,6 +213,7 @@ impl Process {
             file_descriptors: BTreeMap::new(),
             next_fd: 0,
             fpu_state: FpuState::default(),
+            io_uring_ctx: None,
         }
     }
     
@@ -334,6 +339,39 @@ impl Process {
     /// Get const pointer to FPU state data for restoring
     pub(crate) fn fpu_state_ptr(&self) -> *const u8 {
         self.fpu_state.data.as_ptr()
+    }
+
+    // ========================================================================
+    // io_uring methods
+    // ========================================================================
+    
+    /// Initialize or get the io_uring context
+    /// 
+    /// Creates a new io_uring context if one doesn't exist.
+    /// Returns mutable reference to the context.
+    pub fn io_uring_setup(&mut self) -> &mut IoUringContext {
+        if self.io_uring_ctx.is_none() {
+            self.io_uring_ctx = Some(Box::new(IoUringContext::new()));
+            crate::debug_println!("[Process] Created io_uring context for PID={}", self.pid.as_u64());
+        }
+        self.io_uring_ctx.as_mut().unwrap()
+    }
+    
+    /// Get the io_uring context if it exists
+    #[must_use]
+    pub fn io_uring(&self) -> Option<&IoUringContext> {
+        self.io_uring_ctx.as_ref().map(|b| &**b)
+    }
+    
+    /// Get mutable io_uring context if it exists
+    pub fn io_uring_mut(&mut self) -> Option<&mut IoUringContext> {
+        self.io_uring_ctx.as_mut().map(|b| &mut **b)
+    }
+    
+    /// Check if io_uring is initialized
+    #[must_use]
+    pub fn has_io_uring(&self) -> bool {
+        self.io_uring_ctx.is_some()
     }
 }
 
@@ -625,14 +663,19 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
         loop { x86_64::instructions::hlt(); }
     }
     
-    const USER_DATA_SELECTOR: u64 = 0x23;
+    // New SYSRET-compatible GDT layout:
+    //   0x08: kernel_code
+    //   0x10: user_data (with RPL=3 -> 0x13)
+    //   0x18: user_code (with RPL=3 -> 0x1B)
+    //   0x20: kernel_data
+    const USER_DATA_SELECTOR: u64 = 0x13;
     const USER_CODE_SELECTOR: u64 = 0x1B;
     
     let rflags: u64 = 0x202;
     
-    crate::debug_println!("[jump_to_usermode] About to switch CR3 and iretq:");
+    crate::debug_println!("[jump_to_usermode] About to use SYSRET:");
     crate::debug_println!("  RIP={:#x}, RSP={:#x}, RFLAGS={:#x}", entry_point.as_u64(), user_stack.as_u64(), rflags);
-    crate::debug_println!("  USER_CODE=0x1B, USER_DATA=0x23, CR3={:#x}", user_cr3);
+    crate::debug_println!("  USER_CODE=0x1B, USER_DATA=0x13, CR3={:#x}", user_cr3);
     
     use x86_64::instructions::tables::sgdt;
     let gdtr = sgdt();
@@ -648,11 +691,11 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
     }
     crate::debug_println!("[DEBUG] Current kernel RSP: {:#x}", current_rsp);
     
-    crate::debug_println!("[DEBUG] Building iretq frame:");
-    crate::debug_println!("[DEBUG]   entry_point (RIP): {:#x}", entry_point.as_u64());
+    crate::debug_println!("[DEBUG] Building SYSRET frame:");
+    crate::debug_println!("[DEBUG]   entry_point (RIP->RCX): {:#x}", entry_point.as_u64());
     crate::debug_println!("[DEBUG]   user_stack (RSP): {:#x}", user_stack.as_u64());
     crate::debug_println!("[DEBUG]   user_cr3: {:#x}", user_cr3);
-    crate::debug_println!("[DEBUG]   rflags: {:#x}", rflags);
+    crate::debug_println!("[DEBUG]   rflags (->R11): {:#x}", rflags);
     
     let current_ss: u16;
     let current_ds: u16;
@@ -670,10 +713,10 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
     crate::debug_println!("[DEBUG] Current SS: {:#x}, DS: {:#x}, ES: {:#x}", current_ss, current_ds, current_es);
     
     if current_ss == 0 {
-        crate::debug_println!("[WARNING] SS is NULL! Setting to kernel data selector 0x10");
+        crate::debug_println!("[WARNING] SS is NULL! Setting to kernel data selector 0x20");
         unsafe {
             core::arch::asm!(
-                "mov ax, 0x10",
+                "mov ax, 0x20",
                 "mov ss, ax",
                 options(nomem, nostack)
             );
@@ -684,7 +727,7 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
         fn jump_to_usermode_asm(entry_point: u64, user_stack: u64, user_cr3: u64, rflags: u64) -> !;
     }
     
-    crate::debug_println!("[jump_to_usermode] Using external NASM function (with DS/ES/FS/GS setup)");
+    crate::debug_println!("[jump_to_usermode] Using external NASM function with SYSRET");
     unsafe {
         jump_to_usermode_asm(
             entry_point.as_u64(),

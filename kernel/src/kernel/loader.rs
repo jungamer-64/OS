@@ -3,7 +3,7 @@
 
 use x86_64::VirtAddr;
 // use crate::kernel::process::{Process, ProcessId};
-use crate::kernel::mm::user_paging::{map_user_code, map_user_stack, USER_CODE_BASE};
+use crate::kernel::mm::user_paging::{map_user_code, map_user_stack, USER_CODE_BASE, DEFAULT_USER_STACK_SIZE};
 use x86_64::structures::paging::{OffsetPageTable, FrameAllocator, Size4KiB};
 
 /// Loaded program information
@@ -62,7 +62,7 @@ where
     
     // Map stack
     let stack_top = unsafe {
-        map_user_stack(mapper, 64 * 1024, frame_allocator)
+        map_user_stack(mapper, DEFAULT_USER_STACK_SIZE, frame_allocator)
             .map_err(|_| LoadError::MappingFailure)?
     };
     

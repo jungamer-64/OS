@@ -205,7 +205,9 @@ pub fn create_user_process(path: &str) -> Result<(ProcessId, VirtAddr, VirtAddr,
             
             crate::debug_println!("[VALIDATION] Checking user page table mappings:");
             dump_page_table_entry(&user_mapper, loaded_program.entry_point, "User Code Entry");
-            dump_page_table_entry(&user_mapper, loaded_program.stack_top, "User Stack Top");
+            // Check first mapped stack page (stack_top - 4096 is the first mapped page)
+            let first_stack_page = x86_64::VirtAddr::new(loaded_program.stack_top.as_u64() - 0x1000);
+            dump_page_table_entry(&user_mapper, first_stack_page, "User Stack (first mapped page)");
             
             // [PHASE 3] Check if kernel stack is accessible in user page table
             let kernel_rsp: u64;
@@ -215,16 +217,21 @@ pub fn create_user_process(path: &str) -> Result<(ProcessId, VirtAddr, VirtAddr,
         }
         
         // Update process entry point and stack
-        // [PHASE 3 FIX] Adjust stack top to be within mapped range
-        // User stack is mapped at 0x6fffffff0000 ~ 0x6fffffffFFFF (16 pages = 65536 bytes)
-        // Stack top should be 0x6fffffffFFFF + 1 - 8 = 0x6ffffffff000 + 0xFF8 = 0x6fffffffffF8
-        // But for safety, use 0x6ffffffff000 which is definitely mapped
-        let adjusted_stack_top = loaded_program.stack_top.as_u64() - 4096; // One page below boundary
-        crate::debug_println!("[PHASE 3 FIX] Adjusting stack top from {:#x} to {:#x}", 
-            loaded_program.stack_top.as_u64(), adjusted_stack_top);
+        // Stack memory layout:
+        //   USER_STACK_TOP (0x700000000000) = boundary (not mapped)
+        //   Mapped pages: 0x6fffffff0000 to 0x6ffffffffffff (16 pages = 64KB)  
+        //   Guard page: 0x6fffffffef000 (unmapped - catches stack overflow)
+        //
+        // RSP should point to USER_STACK_TOP (0x700000000000).
+        // When first push occurs, RSP decrements by 8 -> 0x6ffffffffffff8,
+        // which is within the mapped stack region.
+        // 
+        // Note: loaded_program.stack_top is already USER_STACK_TOP from map_user_stack()
+        let stack_top = loaded_program.stack_top.as_u64();
+        crate::debug_println!("[Process] Using stack top: {:#x}", stack_top);
         
         process.registers_mut().rip = loaded_program.entry_point.as_u64();
-        process.registers_mut().rsp = adjusted_stack_top;
+        process.registers_mut().rsp = stack_top;
     }
     
     // Setup initial kernel stack context for switching
@@ -324,13 +331,18 @@ pub fn create_user_process(path: &str) -> Result<(ProcessId, VirtAddr, VirtAddr,
         
         // [PHASE 3] Map user stack to kernel page table
         crate::debug_println!("[PHASE 3] Mapping user stack to kernel page table...");
-        let user_stack_top = x86_64::VirtAddr::new(user_stack.as_u64());
+        
+        // Stack layout:
+        //   user_stack (RSP) points to USER_STACK_TOP (0x700000000000)
+        //   Mapped pages: 0x6fffffff0000 to 0x6ffffffffffff (16 pages = 64KB)
+        // 
+        // We need to map from 0x6ffffffffffff down to 0x6fffffff0000
+        // Start at (user_stack - 1) to get the first mapped address
+        let first_mapped_page = x86_64::VirtAddr::new(user_stack.as_u64() - 4096);
         let user_stack_pages = 16; // 64KB stack
         
-        // Map from stack_top down to stack_top - (16 * 4096)
-        // Include the page containing stack_top itself (i=0)
         for i in 0..user_stack_pages {
-            let virt = user_stack_top - (i * 4096u64);
+            let virt = first_mapped_page - (i * 4096u64);
             
             // Translate in user page table
             use x86_64::structures::paging::mapper::TranslateResult;
@@ -360,7 +372,8 @@ pub fn create_user_process(path: &str) -> Result<(ProcessId, VirtAddr, VirtAddr,
                     }
                 }
                 _ => {
-                    // No more stack pages
+                    // No more stack pages or not mapped
+                    crate::debug_println!("[PHASE 3] Stack page {:#x} not mapped in user page table", virt.as_u64());
                     break;
                 }
             }

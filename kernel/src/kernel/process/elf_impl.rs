@@ -66,14 +66,13 @@ where
         }
     }
     
-    // 5. Setup stack (64KB, growing downward from high address)
-    const STACK_SIZE: u64 = 64 * 1024;
-    const STACK_TOP: u64 = 0x0000_7000_0000_0000; // 128 TiB
+    // 5. Setup stack (using configured default size, growing downward from high address)
+    use crate::kernel::mm::user_paging::DEFAULT_USER_STACK_SIZE;
     
     let stack_top = unsafe {
         crate::kernel::mm::user_paging::map_user_stack(
             mapper,
-            STACK_SIZE as usize,
+            DEFAULT_USER_STACK_SIZE,
             frame_allocator,
         ).map_err(|_| ElfError::MapFailed)?
     };
@@ -128,20 +127,31 @@ where
     let phys_mem_offset = crate::kernel::mm::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
     
     // Map pages for this segment and keep track of frames for data copy
+    // Handle already-mapped pages (e.g., when multiple segments share a page)
     let mut frames: alloc::vec::Vec<(Page<Size4KiB>, PhysFrame<Size4KiB>)> = alloc::vec::Vec::new();
     
     for page in Page::range_inclusive(start_page, end_page) {
-        let frame = frame_allocator
-            .allocate_frame()
-            .ok_or(ElfError::MapFailed)?;
-        
-        frames.push((page, frame));
-        
-        unsafe {
-            mapper
-                .map_to(page, frame, flags, frame_allocator)
-                .map_err(|_| ElfError::MapFailed)?
-                .flush();
+        // Check if page is already mapped
+        use x86_64::structures::paging::Translate;
+        if let TranslateResult::Mapped { frame, .. } = mapper.translate(page.start_address()) {
+            // Page already mapped, use existing frame
+            let phys_frame = PhysFrame::containing_address(frame.start_address());
+            frames.push((page, phys_frame));
+            crate::debug_println!("[ELF] Page 0x{:x} already mapped, reusing frame", page.start_address().as_u64());
+        } else {
+            // Allocate new frame
+            let frame = frame_allocator
+                .allocate_frame()
+                .ok_or(ElfError::MapFailed)?;
+            
+            frames.push((page, frame));
+            
+            unsafe {
+                mapper
+                    .map_to(page, frame, flags, frame_allocator)
+                    .map_err(|_| ElfError::MapFailed)?
+                    .flush();
+            }
         }
     }
     

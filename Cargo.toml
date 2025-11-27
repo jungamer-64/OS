@@ -27,6 +27,7 @@ members = [
     "userland/programs/test",     # Test program
     "userland/programs/init",     # Init process
     "userland/programs/syscall_test", # Syscall tests
+    "userland/programs/io_uring_test", # io_uring tests
 ]
 resolver = "2"
 

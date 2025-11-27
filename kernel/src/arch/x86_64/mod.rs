@@ -10,12 +10,16 @@ pub mod gdt;
 pub mod interrupts;
 pub mod pic;
 pub mod syscall;
+/// Optimized syscall entry for io_uring operations
+pub mod syscall_fast;
 /// CR3 switching diagnostic tests (Phase 3 preparation)
 pub mod cr3_test;
 /// Task State Segment (Phase 2: Process Management)
 pub mod tss;
 /// FPU/SSE state management (Phase 2: Process Management)
 pub mod fpu;
+/// CPU feature detection (using raw-cpuid)
+pub mod cpu_features;
 
 pub use cpu::{X86Cpu, InterruptFlags, critical_section};
 pub use cpu::read_timestamp;
@@ -26,3 +30,4 @@ pub use interrupts::init_idt;
 pub use cr3_test::run_cr3_diagnostic_tests;
 pub use tss::{init as init_tss, update_kernel_stack};
 pub use fpu::{init as init_fpu, save_fpu_state, restore_fpu_state};
+pub use cpu_features::{detect as detect_cpu_features, get as get_cpu_features};

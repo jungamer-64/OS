@@ -33,26 +33,27 @@ pub fn init() {
         let selectors = gdt::selectors();
         
         // IMPORTANT: Star::write requires base selectors WITHOUT RPL bits
-        // User segments have RPL=3 (Ring 3) in lower 2 bits:
-        //   user_code.0 = 0x1B (base 0x18 + RPL 0x03)
-        //   user_data.0 = 0x23 (base 0x20 + RPL 0x03)
-        // SYSRET will automatically add RPL=3 when returning to user mode
+        // New SYSRET-compatible GDT layout:
+        //   0x08: kernel_code
+        //   0x10: user_data (with RPL=3 -> 0x13)
+        //   0x18: user_code (with RPL=3 -> 0x1B)
+        //   0x20: kernel_data
+        // SYSRET will automatically set RPL=3 when returning to user mode
         
         use x86_64::structures::gdt::SegmentSelector;
         let user_code_base = SegmentSelector(selectors.user_code.0 & !0x03);
         let user_data_base = SegmentSelector(selectors.user_data.0 & !0x03);
         
         // STAR MSR format (Intel SDM Vol. 2B, SYSCALL/SYSRET):
-        // Bits [63:48]: SYSRET CS selector (user_code_base)
-        // Bits [47:32]: SYSCALL CS selector (kernel_code)
+        // Bits [63:48]: SYSRET CS selector base (we use kernel_code = 0x08)
+        // Bits [47:32]: SYSCALL CS selector (kernel_code = 0x08)
         // Bits [31:0]:  Reserved
         //
-        // SYSRET behavior:
-        //   CS = STAR[63:48] + 16     (user code with RPL=3)
-        //   SS = STAR[63:48] + 8      (user data with RPL=3)
+        // SYSRET behavior (64-bit mode):
+        //   CS = STAR[63:48] + 16 = 0x08 + 16 = 0x18 (with RPL=3 -> 0x1B)
+        //   SS = STAR[63:48] + 8  = 0x08 + 8  = 0x10 (with RPL=3 -> 0x13)
         //
-        // Therefore: STAR[63:48] must be set to (user_code_base - 16)
-        // In our case: user_code_base = 0x18, so STAR[63:48] = 0x08
+        // Our GDT satisfies this: user_code at 0x18, user_data at 0x10
         
         debug_println!("[DEBUG] Setting up STAR MSR:");
         debug_println!("  kernel_code: 0x{:X}", selectors.kernel_code.0);
@@ -202,10 +203,10 @@ pub unsafe extern "C" fn syscall_entry() {
         // System V AMD64 ABI requires RSP to be at (16*N + 8) before 'call'
         // because 'call' pushes an 8-byte return address.
         // 
-        // Current state: RSP is 16-byte aligned (after 64 bytes of pushes)
-        // Required: RSP = 16*N + 8
-        // Solution: Push 8 more bytes as padding
-        "sub rsp, 8",        // Padding for alignment
+        // Current state after 8 pushes (64 bytes): RSP is 16-byte aligned
+        // We need RSP = 16*N + 8 before call
+        // Solution: sub 8 bytes for alignment
+        "sub rsp, 8",        // Alignment padding (now 16*N + 8 after we push more)
         
         // === Prepare arguments for C calling convention ===
         // Syscall ABI:
@@ -225,8 +226,13 @@ pub unsafe extern "C" fn syscall_entry() {
         //   R9  = arg5 (from R8)
         //   [stack] = arg6 (from R9)
         
-        // Save original values before shuffling
-        "push r9",           // Save arg6 to stack (will be 7th C arg)
+        // Save arg6 to stack (will be 7th C argument on stack)
+        // After this push: RSP = 16*N + 8 - 8 = 16*N, but we need 16*N + 8
+        // So push one more 8-byte padding
+        "push r9",           // arg6 to stack
+        "sub rsp, 8",        // Extra padding to make RSP = 16*N + 8
+        
+        // Shuffle registers (must be done in correct order to not overwrite sources)
         "mov r9, r8",        // arg5 (C arg6 = R9)
         "mov r8, r10",       // arg4 (C arg5 = R8)
         "mov rcx, rdx",      // arg3 (C arg4 = RCX)
@@ -235,14 +241,14 @@ pub unsafe extern "C" fn syscall_entry() {
         "mov rdi, rax",      // syscall_num (C arg1 = RDI)
         
         // === Call the syscall handler ===
-        // Stack is now properly aligned: (16*N + 8) after sub + push
-        // After 'call' pushes return address: (16*N)
+        // Stack: 8 (sub) + 8 (push r9) + 8 (push 0) = 24 bytes from aligned
+        // 64 (original pushes) + 24 = 88 bytes = 16*5 + 8 ✓
         "call {syscall_handler}",
         
         // === Result is in RAX, preserve it ===
         
-        // === Remove arg6 from stack and padding ===
-        "add rsp, 16",       // Remove arg6 push (8) + alignment padding (8)
+        // === Remove stack adjustments ===
+        "add rsp, 24",       // Remove: padding (8) + push 0 (8) + push r9 (8)
         
         // === Restore callee-saved registers (in reverse order) ===
         "pop r14",
@@ -333,7 +339,8 @@ use spin::Mutex;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 // Current kernel stack (atomic for lock-free access from assembly)
-static CURRENT_KERNEL_STACK: AtomicUsize = AtomicUsize::new(0);
+// pub(super) for syscall_fast.rs access
+pub(super) static CURRENT_KERNEL_STACK: AtomicUsize = AtomicUsize::new(0);
 
 lazy_static! {
     static ref KERNEL_SYSCALL_STACK: Mutex<usize> = Mutex::new(get_fallback_kernel_stack_top());
@@ -585,5 +592,13 @@ pub enum SyscallNumber {
     Mmap = 9,
     /// Unmap memory
     Munmap = 10,
+    /// Create pipe
+    Pipe = 11,
+    /// Initialize io_uring
+    IoUringSetup = 12,
+    /// Submit/complete io_uring operations
+    IoUringEnter = 13,
+    /// Register io_uring resources
+    IoUringRegister = 14,
 }
 

@@ -18,3 +18,4 @@ pub mod scheduler;
 pub mod security;  // Phase 3: Security module
 // pub mod usermode;
 pub mod loader;
+pub mod io_uring;  // io_uring-style async I/O

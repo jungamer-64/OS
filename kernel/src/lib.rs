@@ -19,6 +19,7 @@ pub mod errors;
 pub mod qemu;
 pub mod arch;
 pub mod kernel;
+pub mod abi;  // Shared ABI definitions for user/kernel interface
 
 
 use core::panic::PanicInfo;

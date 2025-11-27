@@ -144,6 +144,8 @@ pub mod alloc;
 pub mod constants;
 pub mod util;
 pub mod sync;
+pub mod io_uring;
+pub mod async_io;
 // pub mod testing;  // TODO: Fix compilation
 // pub mod debug;    // TODO: Fix compilation
 

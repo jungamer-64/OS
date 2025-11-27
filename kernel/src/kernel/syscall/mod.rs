@@ -707,6 +707,132 @@ pub fn sys_munmap(addr: u64, len: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6
     SUCCESS
 }
 
+// ============================================================================
+// io_uring System Calls
+// ============================================================================
+
+/// sys_io_uring_setup - Set up io_uring for the current process
+///
+/// # Arguments
+/// * `entries` - Number of entries (must be power of 2, max 256)
+/// * `params_ptr` - Pointer to IoUringParams structure (for future use)
+///
+/// # Returns
+/// * Success: Returns addresses packed in a structure
+/// * Error: EINVAL, ENOMEM
+///
+/// # Note
+/// Currently, we use a fixed ring size of 256. The entries parameter
+/// is validated but ignored.
+pub fn sys_io_uring_setup(entries: u64, _params_ptr: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    use crate::kernel::process::PROCESS_TABLE;
+    
+    // Validate entries (must be power of 2, reasonable size)
+    if entries == 0 || entries > 256 || !entries.is_power_of_two() {
+        debug_println!("[SYSCALL] io_uring_setup: invalid entries {}", entries);
+        return EINVAL;
+    }
+    
+    let mut table = PROCESS_TABLE.lock();
+    let process = match table.current_process_mut() {
+        Some(p) => p,
+        None => return ESRCH,
+    };
+    
+    // Initialize io_uring context
+    let ctx = process.io_uring_setup();
+    
+    // Return the SQ header address (user will mmap the rest)
+    // In a real implementation, we'd return a file descriptor
+    // and the user would mmap the rings via that fd.
+    // For now, we return the kernel address (only works if user/kernel share address space)
+    let sq_header = ctx.sq_header_addr();
+    
+    debug_println!("[SYSCALL] io_uring_setup: initialized, sq_header=0x{:x}", sq_header);
+    
+    // Return the address as a positive value
+    // In a real implementation, this would be a file descriptor
+    sq_header as SyscallResult
+}
+
+/// sys_io_uring_enter - Submit I/O and optionally wait for completions
+///
+/// This is the main io_uring syscall. It:
+/// 1. Processes pending submissions from the SQ
+/// 2. Optionally waits for a minimum number of completions
+///
+/// # Arguments
+/// * `fd` - io_uring file descriptor (ignored for now, we use process context)
+/// * `to_submit` - Number of submissions to process (0 = process all available)
+/// * `min_complete` - Minimum completions to wait for (0 = don't wait)
+/// * `flags` - Operation flags (IORING_ENTER_GETEVENTS, etc.)
+/// * `sig` - Signal mask (ignored for now)
+/// * `sigsz` - Signal mask size (ignored for now)
+///
+/// # Returns
+/// * Success: Number of completions available
+/// * Error: EINVAL, EAGAIN, etc.
+pub fn sys_io_uring_enter(
+    _fd: u64,
+    to_submit: u64,
+    min_complete: u64,
+    _flags: u64,
+    _sig: u64,
+    _sigsz: u64,
+) -> SyscallResult {
+    use crate::kernel::process::PROCESS_TABLE;
+    
+    let mut table = PROCESS_TABLE.lock();
+    let process = match table.current_process_mut() {
+        Some(p) => p,
+        None => return ESRCH,
+    };
+    
+    // Check if io_uring is set up
+    let ctx = match process.io_uring_mut() {
+        Some(ctx) => ctx,
+        None => {
+            debug_println!("[SYSCALL] io_uring_enter: io_uring not set up");
+            return EINVAL;
+        }
+    };
+    
+    // Process submissions and completions
+    let completed = ctx.enter(min_complete as u32);
+    
+    debug_println!(
+        "[SYSCALL] io_uring_enter: to_submit={}, min_complete={}, completed={}",
+        to_submit, min_complete, completed
+    );
+    
+    completed as SyscallResult
+}
+
+/// sys_io_uring_register - Register resources with io_uring
+///
+/// Used to register buffers or file descriptors for zero-copy operations.
+///
+/// # Arguments
+/// * `fd` - io_uring file descriptor
+/// * `opcode` - Registration operation
+/// * `arg` - Operation-specific argument
+/// * `nr_args` - Number of arguments
+///
+/// # Returns
+/// * Success: 0
+/// * Error: ENOSYS (not implemented)
+pub fn sys_io_uring_register(
+    _fd: u64,
+    _opcode: u64,
+    _arg: u64,
+    _nr_args: u64,
+    _arg5: u64,
+    _arg6: u64,
+) -> SyscallResult {
+    debug_println!("[SYSCALL] io_uring_register: not implemented yet");
+    ENOSYS
+}
+
 /// Syscall handler function type
 type SyscallHandler = fn(u64, u64, u64, u64, u64, u64) -> SyscallResult;
 
@@ -724,6 +850,9 @@ static SYSCALL_TABLE: &[SyscallHandler] = &[
     sys_mmap,     // 9
     sys_munmap,   // 10
     sys_pipe,     // 11
+    sys_io_uring_setup,     // 12 - io_uring initialization
+    sys_io_uring_enter,     // 13 - io_uring submit/complete
+    sys_io_uring_register,  // 14 - io_uring resource registration
 ];
 
 /// Dispatch a syscall to its handler

@@ -135,25 +135,32 @@ lazy_static! {
         let mut gdt = GlobalDescriptorTable::new();
         
         // IMPORTANT: The order of segments MUST follow the SYSRET instruction requirements:
-        // - user_code segment MUST be at (kernel_code + 16)
-        // - user_data segment MUST be at (kernel_code + 24)
+        // SYSRET (64-bit mode) behavior:
+        //   CS = STAR[63:48] + 16 (with RPL=3)
+        //   SS = STAR[63:48] + 8  (with RPL=3)
         //
-        // Correct order (satisfies SYSRET):
-        //   0x08: kernel_code (Ring 0 code)
-        //   0x10: kernel_data (Ring 0 data)
-        //   0x18: user_code   (Ring 3 code) = kernel_code + 16 ✓
-        //   0x20: user_data   (Ring 3 data) = kernel_code + 24 ✓
+        // We want: CS = user_code (0x18), SS = user_data (0x10)
+        // So: STAR[63:48] = 0x08 (kernel_code)
+        //     CS = 0x08 + 16 = 0x18 ✓
+        //     SS = 0x08 + 8  = 0x10 ✓
+        //
+        // CORRECTED GDT layout for SYSRET compatibility:
+        //   0x08: kernel_code (Ring 0 code) - SYSCALL entry CS
+        //   0x10: user_data   (Ring 3 data) - SYSRET SS (= kernel_code + 8)
+        //   0x18: user_code   (Ring 3 code) - SYSRET CS (= kernel_code + 16)
+        //   0x20: kernel_data (Ring 0 data)
+        //   0x28: TSS
         //
         // Reference: Intel SDM Vol. 2B, SYSRET instruction
         
         let kernel_code = gdt.append(Descriptor::kernel_code_segment());
-        let kernel_data = gdt.append(Descriptor::kernel_data_segment());
         
-        // Use manually created user segments with guaranteed Present bit
-        // This ensures compatibility with Long Mode (64-bit) requirements
-        crate::debug_println!("[GDT] Using manually created user segment descriptors");
-        let user_code = gdt.append(create_user_code_descriptor());
-        let user_data = gdt.append(create_user_data_descriptor());
+        // User segments come BEFORE kernel_data for SYSRET compatibility
+        crate::debug_println!("[GDT] Using SYSRET-compatible segment order");
+        let user_data = gdt.append(create_user_data_descriptor());  // 0x10 (SYSRET SS)
+        let user_code = gdt.append(create_user_code_descriptor());  // 0x18 (SYSRET CS)
+        
+        let kernel_data = gdt.append(Descriptor::kernel_data_segment()); // 0x20
         
         // TSS - now uses the new tss.rs module (Phase 2)
         // We get a reference to the TSS from the tss module
@@ -162,28 +169,26 @@ lazy_static! {
         
         // DEBUG: Print selector values
         crate::debug_println!("[GDT DEBUG] Kernel code selector: {:#x}", kernel_code.0);
-        crate::debug_println!("[GDT DEBUG] Kernel data selector: {:#x}", kernel_data.0);
-        crate::debug_println!("[GDT DEBUG] User code selector: {:#x}", user_code.0);
         crate::debug_println!("[GDT DEBUG] User data selector: {:#x}", user_data.0);
+        crate::debug_println!("[GDT DEBUG] User code selector: {:#x}", user_code.0);
+        crate::debug_println!("[GDT DEBUG] Kernel data selector: {:#x}", kernel_data.0);
         crate::debug_println!("[GDT DEBUG] TSS selector: {:#x}", tss.0);
         
         // Verify SYSRET offset requirements
         // Note: User segments have DPL=3 (Ring 3) in the lower 2 bits,
         // so we need to mask them out for comparison:
-        //   user_code.0 = 0x1B (0b0001_1011) = base(0x18) + RPL(0x03)
-        //   user_data.0 = 0x23 (0b0010_0011) = base(0x20) + RPL(0x03)
         let user_code_base = user_code.0 & !0x03;  // Mask out RPL bits
         let user_data_base = user_data.0 & !0x03;
         
         assert_eq!(
+            user_data_base, 
+            kernel_code.0 + 8,
+            "SYSRET requirement violated: user_data must be kernel_code + 8"
+        );
+        assert_eq!(
             user_code_base, 
             kernel_code.0 + 16,
             "SYSRET requirement violated: user_code must be kernel_code + 16"
-        );
-        assert_eq!(
-            user_data_base, 
-            kernel_code.0 + 24,
-            "SYSRET requirement violated: user_data must be kernel_code + 24"
         );
         
         (gdt, Selectors {

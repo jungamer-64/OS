@@ -1,77 +1,121 @@
+//! Shell Program - io_uring Test Version
+//! 
+//! Temporarily using shell to test io_uring high-level API
+
 #![no_std]
 #![no_main]
 
 use libuser::io::println;
-use libuser::process::{fork, wait, exit};
-use libuser::syscall::{pipe, read, write};
+use libuser::process::exit;
+use libuser::async_io::{AsyncContext, AsyncOp};
 use core::panic::PanicInfo;
 
 #[no_mangle]
 #[link_section = ".text.entry"]
 pub extern "C" fn _start() -> ! {
-    println("Hello from Userland Shell!");
-    println("=== Testing IPC Pipes ===\n");
+    println("=== io_uring Test (Shell) ===");
     
-    // Create a pipe
-    let mut pipefd = [0u64; 2];
-    if let Err(_) = pipe(&mut pipefd) {
-        println("Failed to create pipe");
-        exit(1);
-    }
+    test_context_setup();
+    test_single_nop();
+    test_write();
     
-    println("Pipe created successfully");
+    println("=== io_uring Tests Complete ===");
+    exit(0);
+}
+
+fn test_context_setup() {
+    println("[TEST] AsyncContext::new()");
     
-    // Fork
-    let pid = match fork() {
-        Ok(p) => p,
-        Err(_) => {
-            println("Fork failed!");
+    match AsyncContext::new() {
+        Ok(ctx) => {
+            println("  Context created successfully");
+            println("  [PASS]");
+            drop(ctx);
+        }
+        Err(e) => {
+            println("  [FAIL] Context creation failed");
             exit(1);
+        }
+    }
+}
+
+fn test_single_nop() {
+    println("[TEST] Single NOP operation");
+    
+    let mut ctx = match AsyncContext::new() {
+        Ok(c) => c,
+        Err(_) => {
+            println("  [SKIP] Setup failed");
+            return;
         }
     };
     
-    if pid == 0 {
-        // Child process: write to pipe
-        println("[Child] Writing to pipe...");
-        
-        let message = b"Hello from child process!";
-        match write(pipefd[1], message) {
-            Ok(n) => {
-                println("[Child] Wrote bytes to pipe");
-                n
-            }
-            Err(_) => {
-                println("[Child] Write failed");
-                exit(1);
-            }
-        };
-        
-        println("[Child] Exiting");
-        exit(0);
-    } else {
-        // Parent process: read from pipe
-        println("[Parent] Reading from pipe...");
-        
-        let mut buffer = [0u8; 64];
-        match read(pipefd[0], &mut buffer) {
-            Ok(n) if n > 0 => {
-                println("[Parent] Read bytes from pipe");
-                
-                // Print as string
-                if let Ok(_s) = core::str::from_utf8(&buffer[..n]) {
-                    println("[Parent] Message received from child");
-                }
-            }
-            _ => {
-                println("[Parent] Read failed");
-            }
+    let ud = ctx.alloc_user_data();
+    match ctx.submit(AsyncOp::nop(ud)) {
+        Ok(_) => println("  Submitted NOP"),
+        Err(_) => {
+            println("  [FAIL] Submit failed");
+            return;
         }
-        
-        // Wait for child
-        let _ = wait(pid as i64, None);
-        println("[Parent] Child terminated");
-        println("\n=== Pipe Test Complete ===");
-        exit(0);
+    }
+    
+    match ctx.flush() {
+        Ok(n) => println("  Flush OK"),
+        Err(_) => {
+            println("  [FAIL] Flush failed");
+            return;
+        }
+    }
+    
+    if let Some(result) = ctx.get_completion() {
+        if result.is_ok() {
+            println("  [PASS]");
+        } else {
+            println("  [FAIL] Bad result");
+        }
+    } else {
+        println("  [FAIL] No completion");
+    }
+}
+
+fn test_write() {
+    println("[TEST] Single write operation");
+    
+    let mut ctx = match AsyncContext::new() {
+        Ok(c) => c,
+        Err(_) => {
+            println("  [SKIP] Setup failed");
+            return;
+        }
+    };
+    
+    let message = b"Hello from io_uring!\n";
+    let ud = ctx.alloc_user_data();
+    
+    match ctx.submit(AsyncOp::write(1, message, ud)) {
+        Ok(_) => {}
+        Err(_) => {
+            println("  [FAIL] Submit failed");
+            return;
+        }
+    }
+    
+    match ctx.flush() {
+        Ok(_) => {}
+        Err(_) => {
+            println("  [FAIL] Flush failed");
+            return;
+        }
+    }
+    
+    if let Some(result) = ctx.get_completion() {
+        if result.is_ok() {
+            println("  [PASS]");
+        } else {
+            println("  [FAIL] Write failed");
+        }
+    } else {
+        println("  [FAIL] No completion");
     }
 }
 

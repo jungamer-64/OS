@@ -71,15 +71,13 @@ pub unsafe fn restore_fpu_state(buffer: *const u8) {
 /// Should only be called once during CPU initialization.
 #[allow(dead_code)]
 pub unsafe fn init() {
-    use raw_cpuid::CpuId;
+    use crate::arch::x86_64::cpu_features;
     
-    let cpuid = CpuId::new();
+    // Detect CPU features once using centralized detection
+    let features = cpu_features::detect();
     
     // Check for basic FPU support (should always be present on x86_64)
-    let has_fpu = cpuid.get_feature_info()
-        .map_or(false, |f| f.has_fpu());
-    
-    if !has_fpu {
+    if !features.has_fpu {
         crate::debug_println!("[FPU] ERROR: No FPU detected!");
         return;
     }
@@ -98,12 +96,7 @@ pub unsafe fn init() {
     crate::debug_println!("[FPU] x87 FPU enabled");
     
     // Check and enable SSE
-    let has_sse = cpuid.get_feature_info()
-        .map_or(false, |f| f.has_sse());
-    let has_sse2 = cpuid.get_feature_info()
-        .map_or(false, |f| f.has_sse2());
-    
-    if has_sse && has_sse2 {
+    if features.has_sse && features.has_sse2 {
         unsafe {
             core::arch::asm!(
                 "mov rax, cr4",
@@ -119,12 +112,7 @@ pub unsafe fn init() {
     }
     
     // Check and enable AVX
-    let has_avx = cpuid.get_feature_info()
-        .map_or(false, |f| f.has_avx());
-    let has_xsave = cpuid.get_feature_info()
-        .map_or(false, |f| f.has_xsave());
-    
-    if has_avx && has_xsave {
+    if features.has_avx && features.has_xsave {
         unsafe {
             core::arch::asm!(
                 // Enable XSAVE (CR4.OSXSAVE = 1, bit 18)
@@ -149,15 +137,15 @@ pub unsafe fn init() {
         }
         crate::debug_println!("[FPU] AVX/XSAVE enabled");
     } else {
-        if !has_xsave {
+        if !features.has_xsave {
             crate::debug_println!("[FPU] XSAVE not available");
         }
-        if !has_avx {
+        if !features.has_avx {
             crate::debug_println!("[FPU] AVX not available");
         }
     }
     
     // Log feature summary
     crate::debug_println!("[FPU] Initialization complete - FPU: {}, SSE: {}, AVX: {}, XSAVE: {}",
-        has_fpu, has_sse && has_sse2, has_avx, has_xsave);
+        features.has_fpu, features.has_sse && features.has_sse2, features.has_avx, features.has_xsave);
 }
