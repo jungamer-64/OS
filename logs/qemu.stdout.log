@@ -102,27 +102,3 @@ Section headers: 4
 Loadable segments: 2
 Total memory: 2350 bytes
 File type: 0x2
-============================
-[SECURITY] W^X verification: PASSED
-[ELF] Loading ELF binary, entry=0x400000
-[ELF] Found 2 program headers
-[ELF] Memory range: 0x400000 - 0x401292 (4754 bytes)
-[ELF] Loading segment 0: vaddr=0x400000, size=0x69c, flags=R-X
-[ELF] Copied 1692 bytes to segment 0
-[ELF] Loading segment 1: vaddr=0x401000, size=0x292, flags=R--
-[ELF] Copied 658 bytes to segment 1
-[User Paging] Mapping stack: 65536 bytes (16 pages) at 0x6fffffff0000
-[User Paging] Guard page at 0x6ffffffef000 (unmapped)
-[User Paging] Stack mapped successfully, top=0x700000000000
-[create_user_process] PML4 Entry 0 after load: PageTableEntry { addr: PhysAddr(0x102000), flags: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | ACCESSED) }
-[USER PT FIX] Setting USER_ACCESSIBLE on user page table hierarchy...
-[USER PT FIX] PML4[0] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | ACCESSED)
-[USER PT FIX] PML4[0] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | ACCESSED)
-[USER PT FIX] PDPT[0] before: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | ACCESSED)
-[USER PT FIX] PDPT[0] after: PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE | ACCESSED)
-[USER PT FIX] PD[2] before: PageTableFlags(PRESENT | USER_ACCESSIBLE)
-[USER PT FIX] PD[2] after: PageTableFlags(PRESENT | USER_ACCESSIBLE)
-[USER PT FIX] PT[0] before: PageTableFlags(PRESENT | USER_ACCESSIBLE)
-[USER PT FIX] PT[0] after: PageTableFlags(PRESENT | USER_ACCESSIBLE)
-[USER PT FIX] PT[1] before: PageTableFlags(PRESENT | USER_ACCESSIBLE | NO_EXECUTE)
-[USER PT FIX] PT[1] after: PageTableFlags(PRESENT | USER_ACCESSIBL

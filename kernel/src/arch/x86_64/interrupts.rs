@@ -84,9 +84,6 @@ extern "x86-interrupt" fn double_fault_handler(
         ArchCpu::halt();
     }
 }
-        ArchCpu::halt();
-    }
-}
 
 extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
