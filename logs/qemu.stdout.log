@@ -11,21 +11,21 @@ TRACE: switching to new level 4 table
 INFO : New page table at: PhysFrame[4KiB](0x101000)
 INFO : Elf file loaded at Pointer {
     addr: 0x0000000005a31000,
-    metadata: 4365576,
+    metadata: 4366008,
 }
 INFO : virtual_address_offset: 0x0
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 200000, physical_addr: 200000, file_size: 10864, mem_size: 10864, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 10870, virtual_addr: 211870, physical_addr: 211870, file_size: 60a27, mem_size: 60a27, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 71298, virtual_addr: 273298, physical_addr: 273298, file_size: 128, mem_size: 9e08, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 200000, physical_addr: 200000, file_size: 10854, mem_size: 10854, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 10860, virtual_addr: 211860, physical_addr: 211860, file_size: 60a48, mem_size: 60a48, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 712a8, virtual_addr: 2732a8, physical_addr: 2732a8, file_size: 128, mem_size: 9df8, align: 1000 })
 INFO : Mapping bss section
-INFO : Entry point at: 0x212970
+INFO : Entry point at: 0x212960
 INFO : Creating GDT at PhysAddr(0x128000)
 INFO : Map framebuffer
 INFO : Map physical memory
 INFO : Allocate bootinfo
 INFO : Create Memory Map
 INFO : Create bootinfo
-INFO : Jumping to kernel entry point at VirtAddr(0x212970)
+INFO : Jumping to kernel entry point at VirtAddr(0x212960)
 [KERNEL] Entry point reached
 [GDT] Using SYSRET-compatible segment order
 [GDT DEBUG] Kernel code selector: 0x8
@@ -59,7 +59,7 @@ INFO : Jumping to kernel entry point at VirtAddr(0x212970)
 [OK] Kernel syscall stack initialized at 0x277090
 [OK] Syscall mechanism initialized
   STAR: kernel_cs=0x8, user_cs=0x1b
-  LSTAR: 0x251064
+  LSTAR: 0x251054
 [OK] Physical memory offset initialized: 0x20000000000
 [OK] Console initialized
 [OK] Paging & Global Frame Allocator initialized
@@ -230,16 +230,16 @@ File type: 0x2
 [TSS] Setting kernel stack to 0x200009040c0
 [TSS] Updated kernel stack to 0x200009040c0
 [Kernel] Jumping to first user process...
-[jump_to_usermode] About to use SYSRET:
+[jump_to_usermode] About to use IRETQ:
   RIP=0x400000, RSP=0x700000000000, RFLAGS=0x202
   USER_CODE=0x1B, USER_DATA=0x13, CR3=0x537000
 [DEBUG] GDT base: 0x27d000, limit: 0x37
 [DEBUG] Current kernel RSP: 0x100000146f0
-[DEBUG] Building SYSRET frame:
-[DEBUG]   entry_point (RIP->RCX): 0x400000
+[DEBUG] Building IRETQ frame:
+[DEBUG]   entry_point (RIP): 0x400000
 [DEBUG]   user_stack (RSP): 0x700000000000
 [DEBUG]   user_cr3: 0x537000
-[DEBUG]   rflags (->R11): 0x202
+[DEBUG]   rflags: 0x202
 [DEBUG] Current SS: 0x10, DS: 0x10, ES: 0x10
-[jump_to_usermode] Using external NASM function with SYSRET
+[jump_to_usermode] Using external NASM function with IRETQ
 ABCD[GPF!]

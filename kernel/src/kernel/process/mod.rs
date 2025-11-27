@@ -673,7 +673,7 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
     
     let rflags: u64 = 0x202;
     
-    crate::debug_println!("[jump_to_usermode] About to use SYSRET:");
+    crate::debug_println!("[jump_to_usermode] About to use IRETQ:");
     crate::debug_println!("  RIP={:#x}, RSP={:#x}, RFLAGS={:#x}", entry_point.as_u64(), user_stack.as_u64(), rflags);
     crate::debug_println!("  USER_CODE=0x1B, USER_DATA=0x13, CR3={:#x}", user_cr3);
     
@@ -691,11 +691,11 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
     }
     crate::debug_println!("[DEBUG] Current kernel RSP: {:#x}", current_rsp);
     
-    crate::debug_println!("[DEBUG] Building SYSRET frame:");
-    crate::debug_println!("[DEBUG]   entry_point (RIP->RCX): {:#x}", entry_point.as_u64());
+    crate::debug_println!("[DEBUG] Building IRETQ frame:");
+    crate::debug_println!("[DEBUG]   entry_point (RIP): {:#x}", entry_point.as_u64());
     crate::debug_println!("[DEBUG]   user_stack (RSP): {:#x}", user_stack.as_u64());
     crate::debug_println!("[DEBUG]   user_cr3: {:#x}", user_cr3);
-    crate::debug_println!("[DEBUG]   rflags (->R11): {:#x}", rflags);
+    crate::debug_println!("[DEBUG]   rflags: {:#x}", rflags);
     
     let current_ss: u16;
     let current_ds: u16;
@@ -727,7 +727,7 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
         fn jump_to_usermode_asm(entry_point: u64, user_stack: u64, user_cr3: u64, rflags: u64) -> !;
     }
     
-    crate::debug_println!("[jump_to_usermode] Using external NASM function with SYSRET");
+    crate::debug_println!("[jump_to_usermode] Using external NASM function with IRETQ");
     unsafe {
         jump_to_usermode_asm(
             entry_point.as_u64(),

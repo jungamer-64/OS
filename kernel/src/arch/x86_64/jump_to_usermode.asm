@@ -8,7 +8,10 @@
 ; rcx = rflags (RFLAGS)
 ;
 ; IRETQ pops from stack (in order): RIP, CS, RFLAGS, RSP, SS
-; This allows atomic transition to user mode after CR3 switch.
+;
+; CRITICAL: After CR3 switch, we cannot access kernel stack anymore.
+; So we build the IRETQ frame on the USER stack before CR3 switch,
+; then switch CR3 and RSP together, and execute iretq.
 ;
 ; GDT Layout:
 ;   0x08: kernel_code
@@ -22,7 +25,7 @@ BITS 64
 global jump_to_usermode_asm
 
 ; Serial port output for debugging (port 0x3F8)
-; Clobbers: none (saves and restores rax, rdx)
+; Clobbers: none (saves and restores rax, rdx - but avoids stack if stack_safe=0)
 %macro SERIAL_CHAR 1
     push rax
     push rdx
@@ -33,21 +36,31 @@ global jump_to_usermode_asm
     pop rax
 %endmacro
 
+; Serial output without using stack (safe after CR3 switch)
+%macro SERIAL_CHAR_NOSTACK 1
+    mov dx, 0x3F8
+    mov al, %1
+    out dx, al
+%endmacro
+
 jump_to_usermode_asm:
     cli
     
     ; Arguments:
     ;   rdi = entry_point
-    ;   rsi = user_stack (RSP for user mode)
+    ;   rsi = user_stack (RSP for user mode, points to top of mapped stack)
     ;   rdx = user_cr3
     ;   rcx = rflags
     
     SERIAL_CHAR 'A'
     
-    ; Save CR3 value for later
+    ; Save CR3 and rflags values
     mov r8, rdx       ; r8 = user_cr3
+    mov r9, rcx       ; r9 = rflags
+    mov r10, rdi      ; r10 = entry_point
+    mov r11, rsi      ; r11 = user_stack (original, will be updated)
     
-    ; Set up data segments (while still in kernel)
+    ; Set up data segments (while still in kernel, before CR3 switch)
     ; user_data selector = 0x10 (base) | 0x03 (RPL) = 0x13
     mov ax, 0x13
     mov ds, ax
@@ -58,36 +71,43 @@ jump_to_usermode_asm:
     
     SERIAL_CHAR 'B'
     
-    ; Build IRETQ frame on current (kernel) stack
-    ; Stack layout for iretq (from top):
+    ; Build IRETQ frame on USER stack (currently accessible via kernel page table)
+    ; We write to the user stack addresses which are mapped in both page tables
+    ; Stack layout for iretq (grows down, so we build from top):
     ;   [RSP+32] SS     = 0x13 (user_data | RPL3)
-    ;   [RSP+24] RSP    = user_stack
+    ;   [RSP+24] RSP    = user_stack (the final RSP after iretq)
     ;   [RSP+16] RFLAGS = rflags
     ;   [RSP+8]  CS     = 0x1B (user_code | RPL3)
     ;   [RSP+0]  RIP    = entry_point
     
-    push qword 0x13        ; SS: user_data | RPL3
-    push rsi               ; RSP: user_stack
-    push rcx               ; RFLAGS
-    push qword 0x1B        ; CS: user_code | RPL3  
-    push rdi               ; RIP: entry_point
+    ; Calculate where to put the frame (5 qwords = 40 bytes below user_stack)
+    mov rsi, r11          ; rsi = user_stack top
+    sub rsi, 40           ; rsi = address for iretq frame
+    
+    ; Write IRETQ frame to user stack (in kernel page table, user stack is accessible)
+    mov qword [rsi + 32], 0x13   ; SS
+    mov [rsi + 24], r11          ; RSP (original user_stack, where we'll end up)
+    mov [rsi + 16], r9           ; RFLAGS
+    mov qword [rsi + 8], 0x1B    ; CS
+    mov [rsi + 0], r10           ; RIP (entry_point)
     
     SERIAL_CHAR 'C'
     
+    ; Now switch RSP to point to the iretq frame on user stack
+    ; This is safe because user stack is mapped in kernel page table too (PHASE 3)
+    mov rsp, rsi
+    
     ; Switch CR3 to user page table
-    ; The iretq instruction itself is still in the current (kernel) page table
-    ; at this point, which is fine because we're about to execute it
+    ; After this, we can only access user-mapped memory
     mov cr3, r8
     
-    ; At this point:
-    ; - CR3 points to user page table
-    ; - The iretq frame is on the kernel stack (which is identity-mapped
-    ;   or mapped in the user page table via PHASE 3 workaround)
-    ; - iretq will atomically load RIP, CS, RFLAGS, RSP, SS and jump to user mode
+    SERIAL_CHAR_NOSTACK 'D'
     
-    ; Output 'D' - after this, iretq will transfer to user mode
-    mov dx, 0x3F8
-    mov al, 'D'
-    out dx, al
-    
+    ; IRETQ will:
+    ; - Pop RIP from [RSP+0]   = entry_point
+    ; - Pop CS  from [RSP+8]   = 0x1B (user_code | RPL3)  
+    ; - Pop RFLAGS from [RSP+16] = rflags
+    ; - Pop RSP from [RSP+24] = user_stack (original top)
+    ; - Pop SS  from [RSP+32] = 0x13 (user_data | RPL3)
+    ; And jump to user mode Ring 3
     iretq
