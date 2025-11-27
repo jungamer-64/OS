@@ -100,6 +100,103 @@ pub fn create_user_process(path: &str) -> Result<(ProcessId, VirtAddr, VirtAddr,
         
         crate::debug_println!("[create_user_process] PML4 Entry 0 after load: {:?}", l4_table[0]);
         
+        // [PHASE 3 CRITICAL] Set USER_ACCESSIBLE on user page table hierarchy for 0x400000
+        // This is needed because the ELF loader uses existing kernel PDPT/PD entries
+        // which don't have USER_ACCESSIBLE flag
+        unsafe {
+            use x86_64::structures::paging::PageTableFlags;
+            
+            fn add_user_flag_to_entry(entry: &mut x86_64::structures::paging::page_table::PageTableEntry) {
+                if !entry.is_unused() {
+                    let old_flags = entry.flags();
+                    if !old_flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                        if let Ok(frame) = entry.frame() {
+                            let new_flags = old_flags | PageTableFlags::USER_ACCESSIBLE;
+                            entry.set_addr(frame.start_address(), new_flags);
+                        }
+                    }
+                }
+            }
+            
+            let phys_offset = VirtAddr::new(PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed));
+            
+            crate::debug_println!("[USER PT FIX] Setting USER_ACCESSIBLE on user page table hierarchy...");
+            
+            // PML4[0] for user code (0x400000)
+            crate::debug_println!("[USER PT FIX] PML4[0] before: {:?}", l4_table[0].flags());
+            add_user_flag_to_entry(&mut l4_table[0]);
+            crate::debug_println!("[USER PT FIX] PML4[0] after: {:?}", l4_table[0].flags());
+            
+            // PDPT level
+            if let Ok(pdpt_frame) = l4_table[0].frame() {
+                let pdpt_ptr = (phys_offset + pdpt_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+                let pdpt = &mut *pdpt_ptr;
+                crate::debug_println!("[USER PT FIX] PDPT[0] before: {:?}", pdpt[0].flags());
+                add_user_flag_to_entry(&mut pdpt[0]);
+                crate::debug_println!("[USER PT FIX] PDPT[0] after: {:?}", pdpt[0].flags());
+                
+                // PD level (0x400000 >> 21 = 2)
+                if let Ok(pd_frame) = pdpt[0].frame() {
+                    let pd_ptr = (phys_offset + pd_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+                    let pd = &mut *pd_ptr;
+                    crate::debug_println!("[USER PT FIX] PD[2] before: {:?}", pd[2].flags());
+                    add_user_flag_to_entry(&mut pd[2]);
+                    crate::debug_println!("[USER PT FIX] PD[2] after: {:?}", pd[2].flags());
+                    
+                    // PT level (0x400000 >> 12 & 0x1FF = 0)
+                    if let Ok(pt_frame) = pd[2].frame() {
+                        let pt_ptr = (phys_offset + pt_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+                        let pt = &mut *pt_ptr;
+                        crate::debug_println!("[USER PT FIX] PT[0] before: {:?}", pt[0].flags());
+                        add_user_flag_to_entry(&mut pt[0]);
+                        crate::debug_println!("[USER PT FIX] PT[0] after: {:?}", pt[0].flags());
+                        // Also check PT[1] for 0x401000
+                        crate::debug_println!("[USER PT FIX] PT[1] before: {:?}", pt[1].flags());
+                        add_user_flag_to_entry(&mut pt[1]);
+                        crate::debug_println!("[USER PT FIX] PT[1] after: {:?}", pt[1].flags());
+                    }
+                }
+            }
+            
+            // PML4[223] for user stack (0x6ffffffff000)
+            crate::debug_println!("[USER PT FIX] PML4[223] before: {:?}", l4_table[223].flags());
+            add_user_flag_to_entry(&mut l4_table[223]);
+            crate::debug_println!("[USER PT FIX] PML4[223] after: {:?}", l4_table[223].flags());
+            
+            if let Ok(pdpt_frame) = l4_table[223].frame() {
+                let pdpt_ptr = (phys_offset + pdpt_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+                let pdpt = &mut *pdpt_ptr;
+                crate::debug_println!("[USER PT FIX] PDPT[511] before: {:?}", pdpt[511].flags());
+                add_user_flag_to_entry(&mut pdpt[511]);
+                crate::debug_println!("[USER PT FIX] PDPT[511] after: {:?}", pdpt[511].flags());
+                
+                if let Ok(pd_frame) = pdpt[511].frame() {
+                    let pd_ptr = (phys_offset + pd_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+                    let pd = &mut *pd_ptr;
+                    crate::debug_println!("[USER PT FIX] PD[511] before: {:?}", pd[511].flags());
+                    add_user_flag_to_entry(&mut pd[511]);
+                    crate::debug_println!("[USER PT FIX] PD[511] after: {:?}", pd[511].flags());
+                    
+                    if let Ok(pt_frame) = pd[511].frame() {
+                        let pt_ptr = (phys_offset + pt_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+                        let pt = &mut *pt_ptr;
+                        // [CRITICAL FIX] Update ALL stack pages, not just PT[511]
+                        // Stack grows downward: 0x6ffffffff000 (PT[511]) down to 0x6fffffff0000 (PT[496])
+                        // 16 pages total
+                        crate::debug_println!("[USER PT FIX] Updating all stack PT entries (496-511)...");
+                        for idx in 496..=511 {
+                            if !pt[idx].is_unused() {
+                                crate::debug_println!("[USER PT FIX] Stack PT[{}] before: {:?}", idx, pt[idx].flags());
+                                add_user_flag_to_entry(&mut pt[idx]);
+                                crate::debug_println!("[USER PT FIX] Stack PT[{}] after: {:?}", idx, pt[idx].flags());
+                            }
+                        }
+                        crate::debug_println!("[USER PT FIX] Stack PT entries updated");
+                    }
+                }
+            }
+        }
+        
         // Phase 3 preparation: Validate user page table structure
         unsafe {
             use crate::kernel::mm::dump_page_table_entry;
@@ -314,6 +411,17 @@ pub fn create_user_process(path: &str) -> Result<(ProcessId, VirtAddr, VirtAddr,
                 crate::debug_println!("[PHASE 3] PD[{}] before: flags={:?}", pd_idx_code, pd[pd_idx_code].flags());
                 add_user_accessible_to_entry(&mut pd[pd_idx_code]);
                 crate::debug_println!("[PHASE 3] PD[{}] after: flags={:?}", pd_idx_code, pd[pd_idx_code].flags());
+                
+                // Also check PT level for entry 0
+                if let Ok(pt_frame) = pd[pd_idx_code].frame() {
+                    let pt_ptr = (phys_mem_offset + pt_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+                    let pt = &mut *pt_ptr;
+                    let pt_idx_code = 0usize;  // 0x400000 & 0xFFF >> 12 = 0
+                    crate::debug_println!("[PHASE 3] PT[{}] before: flags={:?}", pt_idx_code, pt[pt_idx_code].flags());
+                    add_user_accessible_to_entry(&mut pt[pt_idx_code]);
+                    crate::debug_println!("[PHASE 3] PT[{}] after: flags={:?}", pt_idx_code, pt[pt_idx_code].flags());
+                }
+                
                 crate::debug_println!("[PHASE 3] User code page table hierarchy updated with USER_ACCESSIBLE");
             } else {
                 crate::debug_println!("[PHASE 3] ERROR: PD[{}] frame not found", pd_idx_code);
@@ -348,6 +456,23 @@ pub fn create_user_process(path: &str) -> Result<(ProcessId, VirtAddr, VirtAddr,
                 crate::debug_println!("[PHASE 3] PD[{}] before: flags={:?}", pd_idx_stack, pd[pd_idx_stack].flags());
                 add_user_accessible_to_entry(&mut pd[pd_idx_stack]);
                 crate::debug_println!("[PHASE 3] PD[{}] after: flags={:?}", pd_idx_stack, pd[pd_idx_stack].flags());
+                
+                // PT level check and update for ALL stack pages (not just PT[511])
+                // Stack grows downward: 0x6ffffffff000 (PT[511]) down to 0x6fffffff0000 (PT[496])
+                if let Ok(pt_frame) = pd[pd_idx_stack].frame() {
+                    let pt_ptr = (phys_mem_offset + pt_frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+                    let pt = &mut *pt_ptr;
+                    crate::debug_println!("[PHASE 3] Updating kernel PT entries (496-511) for stack...");
+                    for idx in 496..=511 {
+                        if !pt[idx].is_unused() {
+                            add_user_accessible_to_entry(&mut pt[idx]);
+                        }
+                    }
+                    crate::debug_println!("[PHASE 3] Kernel stack PT entries updated");
+                } else {
+                    crate::debug_println!("[PHASE 3] ERROR: Stack PT frame not found");
+                }
+                
                 crate::debug_println!("[PHASE 3] User stack page table hierarchy updated with USER_ACCESSIBLE");
             } else {
                 crate::debug_println!("[PHASE 3] ERROR: Stack PD frame not found");

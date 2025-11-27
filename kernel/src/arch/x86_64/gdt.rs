@@ -72,20 +72,25 @@ fn create_user_data_descriptor() -> Descriptor {
     // P: 1 (Present) ← CRITICAL!
     // AVL: 0
     // L: 0 (data segments don't use L bit in 64-bit mode)
-    // D/B: 1 (32-bit operands)
+    // D/B: 0 (should be 0 for 64-bit mode compatibility)
     // G: 1 (granularity)
     //
-    // Result: 0x00CF_F200_0000_FFFF
-    //         = 0b0000_0000_1100_1111_1111_0010_0000_0000_0000_0000_0000_0000_1111_1111_1111_1111
+    // Result: 0x00AF_F200_0000_FFFF (changed from 0x00CF to 0x00AF)
+    //   Flags byte (bits 55-52): 0xA = 0b1010
+    //     G=1, D/B=0, L=1, AVL=0
+    //   Wait, for data segment L should be 0...
+    //   Let's use: 0x008F_F200_0000_FFFF
+    //     Flags: 0x8 = 0b1000 -> G=1, D/B=0, L=0, AVL=0
     //
-    // Breaking down bit 47 (Present):
-    //   Bits 47-40 = 0xF2 = 0b1111_0010
-    //                        ^--- Bit 47 (P) = 1 ✓
-    //                         ^^- Bits 46-45 (DPL) = 11 (3) ✓
-    //                           ^- Bit 44 (S) = 1 ✓
-    //                            ^^^^- Bits 43-40 (Type) = 0010 (0x2) ✓
+    // Actually, the standard approach for 64-bit user data segment:
+    // - Use same flags as kernel data but with DPL=3
+    // - Kernel data uses 0x00CF9300... (D/B=1, G=1)
+    // - For 64-bit, data segments can have D/B=1 (it's ignored)
+    // 
+    // The real issue might be elsewhere. Let's try D/B=0 just to be safe.
+    // 0x008F_F200_0000_FFFF: G=1, D/B=0, L=0, AVL=0
     
-    let descriptor_value: u64 = 0x00CF_F200_0000_FFFF;
+    let descriptor_value: u64 = 0x008F_F200_0000_FFFF;
     
     unsafe {
         // SAFETY: We manually constructed a valid data segment descriptor

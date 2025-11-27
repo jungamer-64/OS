@@ -12,6 +12,7 @@ BITS 64
 global jump_to_usermode_asm
 
 ; Serial port output for debugging (port 0x3F8)
+; Clobbers: none (saves and restores rax, rdx)
 %macro SERIAL_CHAR 1
     push rax
     push rdx
@@ -25,29 +26,28 @@ global jump_to_usermode_asm
 jump_to_usermode_asm:
     cli
     
-    ; Debug: Mark entry point
-    SERIAL_CHAR 'N'
-    SERIAL_CHAR '1'
-    SERIAL_CHAR ':'
-    
     ; Save arguments FIRST (before any stack operations)
-    ; mov r10, rdx      ; CR3 (NOT USED - Phase 3: postponed to Phase 4)
     mov r11, rsi      ; User stack
     mov r12, rcx      ; RFLAGS
     mov r13, rdi      ; Entry point
-    
-    SERIAL_CHAR 'N'
-    SERIAL_CHAR '2'
-    SERIAL_CHAR ':'
+    mov r14, rdx      ; User CR3 (save for later use)
     
     ; CRITICAL: Ensure SS is set to kernel data selector (0x10)
-    ; Long Mode allows SS=NULL for CPL=0, but we need valid SS for push operations
     mov ax, 0x10
     mov ss, ax
     
-    SERIAL_CHAR 'N'
-    SERIAL_CHAR '3'
-    SERIAL_CHAR ':'
+    ; [PHASE 4 FIX] Set DS, ES, FS, GS to user data selector BEFORE iretq
+    ; These are not automatically set by iretq and must be correct for Ring 3
+    mov ax, 0x23      ; User data selector
+    mov ds, ax
+    mov es, ax
+    xor ax, ax        ; Clear FS/GS (or set to 0x23 if needed)
+    mov fs, ax
+    mov gs, ax
+    
+    ; Debug marker 1
+    SERIAL_CHAR 'J'
+    SERIAL_CHAR '1'
     
     ; Build iretq frame on KERNEL stack
     ; Stack layout after pushes:
@@ -58,158 +58,65 @@ jump_to_usermode_asm:
     ;   [RSP+0]:  RIP = entry_point
     mov rax, 0x23
     push rax          ; SS (user data selector)
-    
-    SERIAL_CHAR 'N'
-    SERIAL_CHAR '4'
-    SERIAL_CHAR ':'
-    
     push r11          ; RSP (user stack)
     push r12          ; RFLAGS
     mov rax, 0x1B
     push rax          ; CS (user code selector)
     push r13          ; RIP (entry point)
     
-    SERIAL_CHAR 'N'
-    SERIAL_CHAR '5'
-    SERIAL_CHAR ':'
+    ; Debug marker 2 - just before iretq
+    SERIAL_CHAR 'J'
+    SERIAL_CHAR '2'
     
-    ; NOTE: Do NOT modify DS/ES/FS/GS before iretq!
-    ; In Long Mode, when CPL=0, the data segment registers can remain
-    ; at kernel selector (0x10) or NULL (0x00). After iretq transitions
-    ; to Ring 3, the CPU will use the SS selector loaded from the stack.
-    ; 
-    ; Modifying DS to a Ring 3 selector while at Ring 0 can cause issues
-    ; with subsequent memory accesses through DS (including the stack!).
-    ;
-    ; SOLUTION: Leave DS/ES/FS/GS unchanged. After iretq, if user code
-    ; needs them, it can set them up itself. In Long Mode, DS/ES/FS/GS
-    ; are largely ignored for memory addressing anyway (except for TLS).
-    
-    ; [PHASE 3] CR3 switching postponed to Phase 4
-    ; Instead, user code is mapped to kernel page table
-    ; mov cr3, r10
-    
-    ; Debug: About to execute iretq
-    SERIAL_CHAR 'N'
-    SERIAL_CHAR '6'
-    SERIAL_CHAR ':'
-    
-    ; Debug: Dump stack frame before iretq
-    ; [RSP+0] = RIP
-    ; [RSP+8] = CS
-    ; [RSP+16] = RFLAGS
-    ; [RSP+24] = RSP
-    ; [RSP+32] = SS
-    
-    ; Print RSP value
-    SERIAL_CHAR 'S'
-    SERIAL_CHAR '='
+    ; Output current RSP (where iretq frame is)
+    ; RSP bits 31:28 -> hex digit
     mov rax, rsp
-    ; Print high byte of RSP (simplified - just show it's not 0)
-    shr rax, 12
-    and al, 0x0F
+    shr rax, 28
+    and rax, 0xF
     add al, '0'
     cmp al, '9'
-    jle .print_rsp
-    add al, 7
-.print_rsp:
-    push rax
+    jle .digit1_ok
+    add al, 7   ; Convert to A-F
+.digit1_ok:
     push rdx
+    push rax
     mov dx, 0x3F8
+    pop rax
     out dx, al
     pop rdx
-    pop rax
-    
-    SERIAL_CHAR ':'
-    
-    ; Print SS from stack (should be 0x23)
-    SERIAL_CHAR 'S'
-    SERIAL_CHAR 'S'
-    SERIAL_CHAR '='
-    mov rax, [rsp+32]
-    ; Print low nibble
-    and al, 0x0F
+    ; RSP bits 27:24
+    mov rax, rsp
+    shr rax, 24
+    and rax, 0xF
     add al, '0'
     cmp al, '9'
-    jle .print_ss
+    jle .digit2_ok
     add al, 7
-.print_ss:
-    push rax
+.digit2_ok:
     push rdx
+    push rax
     mov dx, 0x3F8
+    pop rax
     out dx, al
     pop rdx
-    pop rax
     
+    ; Separator
     SERIAL_CHAR ':'
     
-    ; Print CS from stack (should be 0x1B)  
+    ; Minimal debug - CR3 switch and immediate iretq test
+    ; CR3切り替え前の最終確認
+    SERIAL_CHAR 'J'
+    SERIAL_CHAR '3'
+    
+    ; [PHASE 3 CR3 switch enabled] 
+    ; Switch to user page table before iretq
+    mov cr3, r14
+    
+    ; Debug marker after CR3 switch (uses stack, but we're still Ring 0)
     SERIAL_CHAR 'C'
-    SERIAL_CHAR 'S'
-    SERIAL_CHAR '='
-    mov rax, [rsp+8]
-    ; Print low nibble
-    and al, 0x0F
-    add al, '0'
-    cmp al, '9'
-    jle .print_cs_low
-    add al, 7
-.print_cs_low:
-    push rax
-    push rdx
-    mov dx, 0x3F8
-    out dx, al
-    pop rdx  
-    pop rax
     
-    ; Print high nibble of CS
-    mov rax, [rsp+8]
-    shr al, 4
-    and al, 0x0F
-    add al, '0'
-    cmp al, '9'
-    jle .print_cs_high
-    add al, 7
-.print_cs_high:
-    push rax
-    push rdx
-    mov dx, 0x3F8
-    out dx, al
-    pop rdx
-    pop rax
-    
-    SERIAL_CHAR ':'
-    
-    ; Print RIP from stack (should be 0x400000)
-    SERIAL_CHAR 'R'
-    SERIAL_CHAR 'I'
-    SERIAL_CHAR 'P'
-    SERIAL_CHAR '='
-    mov rax, [rsp]
-    shr rax, 20     ; Get bits 23-20 (should show '4' for 0x400000)
-    and al, 0x0F
-    add al, '0'
-    cmp al, '9'
-    jle .print_rip
-    add al, 7
-.print_rip:
-    push rax
-    push rdx
-    mov dx, 0x3F8
-    out dx, al
-    pop rdx
-    pop rax
-    
-    SERIAL_CHAR ':'
-    
-    ; NOTE: Do NOT use 'call' here! It would corrupt the iretq stack frame
-    ; by pushing a return address onto the stack.
+    ; Final marker immediately before iretq
+    SERIAL_CHAR '!'
     
     ; iretq will load SS:RSP, RFLAGS, CS:RIP from stack
-    ; Stack layout at this point:
-    ;   [RSP+0]:  RIP = entry_point (r13)
-    ;   [RSP+8]:  CS  = 0x1B
-    ;   [RSP+16]: RFLAGS = 0x202
-    ;   [RSP+24]: RSP = user_stack (r11)
-    ;   [RSP+32]: SS  = 0x23
     iretq

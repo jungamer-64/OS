@@ -468,13 +468,14 @@ where
     }
     crate::debug_println!("[create_user_page_table] Found {} kernel entries", count);
     
-    crate::debug_println!("[create_user_page_table] Copying kernel entries (1-511)");
+    crate::debug_println!("[create_user_page_table] Copying kernel entries (0-511)");
     let mut copied_entries = 0;
-    for i in 1..512 {
+    // Include entry 0 for kernel code during iretq transition
+    for i in 0..512 {
         if !kernel_pt[i].is_unused() {
             page_table[i] = kernel_pt[i].clone();
             copied_entries += 1;
-            if i == 511 || (i >= 2 && i <= 6) {
+            if i <= 6 || i == 511 {
                 crate::debug_println!(
                     "  [COPY] Entry {}: {:#x} -> flags: {:?}",
                     i,

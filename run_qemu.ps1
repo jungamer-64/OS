@@ -183,9 +183,14 @@ function Start-Build {
         finally { Pop-Location }
 
         Write-Host "Creating EFI disk image..." -ForegroundColor Cyan
+        
+        # Build and run builder independently
+        # Builder needs nightly (for bootloader crate) but WITHOUT build-std
+        # We use -Zbuild-std= (empty) to override the workspace config's build-std setting
+        
         Push-Location $BuilderDir
         try {
-            $bArgs = @("run", "nightly", "cargo", "run")
+            $bArgs = @("run", "nightly", "cargo", "-Zbuild-std=", "run")
             if ($IsRelease) { $bArgs += "--release" }
             $bArgs += "--"; $bArgs += "--kernel-path"; $bArgs += $KernelPath
             $bArgs += "--output-path"; $bArgs += $DiskImage
@@ -200,6 +205,10 @@ function Start-Build {
 
             & rustup @bArgs | Out-Host
             return $LASTEXITCODE
+        }
+        catch {
+            Write-Host "Error running builder: $_" -ForegroundColor Red
+            return 1
         }
         finally { Pop-Location }
     }

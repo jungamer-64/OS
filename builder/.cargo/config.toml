@@ -1,9 +1,0 @@
-# Builder specific config - use native target
-# This overrides the workspace config to prevent -Zbuild-std from being used
-
-[build]
-target = "x86_64-pc-windows-msvc"
-
-# Explicitly disable build-std for builder
-[unstable]
-# Empty to override parent

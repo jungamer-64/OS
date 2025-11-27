@@ -17,6 +17,7 @@ lazy_static! {
             idt.double_fault.set_handler_fn(double_fault_handler)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
         }
+        idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
         // Timer Interrupt (IRQ0 -> 32)
         idt[32].set_handler_fn(timer_interrupt_handler);
@@ -38,6 +39,49 @@ extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) 
         for byte in b"[EXCEPTION] BREAKPOINT\n" {
             serial.write(*byte);
         }
+    }
+}
+
+extern "x86-interrupt" fn general_protection_fault_handler(
+    stack_frame: InterruptStackFrame, error_code: u64)
+{
+    use crate::arch::x86_64::port::PortWriteOnly;
+    use crate::arch::{Cpu, ArchCpu};
+    
+    ArchCpu::disable_interrupts();
+    
+    // Read CR3 to see which page table was active
+    let cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
+    let rsp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack));
+    }
+    
+    // シリアル出力 - 詳細情報付き
+    crate::debug_println!("[EXCEPTION] GENERAL PROTECTION FAULT");
+    crate::debug_println!("  Error code: {:#x}", error_code);
+    crate::debug_println!("  RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+    crate::debug_println!("  RSP: {:#x}", rsp);
+    crate::debug_println!("  CR3: {:#x}", cr3);
+    crate::debug_println!("  CS: {:?}", stack_frame.code_segment);
+    crate::debug_println!("  Flags: {:#x}", stack_frame.cpu_flags);
+    
+    // Try to decode error code for segment selector issues
+    let segment_selector = error_code & 0xFFFF;
+    let external = (error_code >> 0) & 1;
+    let idt = (error_code >> 1) & 1;
+    let ldt = (error_code >> 2) & 1;
+    let selector_index = (error_code >> 3) & 0x1FFF;
+    
+    crate::debug_println!("  Error code decode:");
+    crate::debug_println!("    External: {}", external);
+    crate::debug_println!("    IDT: {}", idt);
+    crate::debug_println!("    LDT: {}", ldt);
+    crate::debug_println!("    Selector index: {:#x}", selector_index);
+    crate::debug_println!("    Full selector: {:#x}", segment_selector);
+    
+    loop {
+        ArchCpu::halt();
     }
 }
 
@@ -79,6 +123,15 @@ extern "x86-interrupt" fn page_fault_handler(
     use crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR;
     use crate::kernel::mm::PHYS_MEM_OFFSET;
     use x86_64::structures::paging::OffsetPageTable;
+    
+    // [DEBUG] Immediate serial output to see if we reach here
+    unsafe {
+        use crate::arch::x86_64::port::PortWriteOnly;
+        let mut serial = PortWriteOnly::<u8>::new(0x3F8);
+        for byte in b"PF!" {
+            serial.write(*byte);
+        }
+    }
     
     // Get the faulting address from CR2
     let fault_addr = Cr2::read().unwrap_or(VirtAddr::new(0));
