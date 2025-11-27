@@ -97,11 +97,23 @@ jump_to_usermode_asm:
     ; This is safe because user stack is mapped in kernel page table too (PHASE 3)
     mov rsp, rsi
     
+    ; [DEBUG TEST] Output 'E' to verify RSP switch was successful
+    SERIAL_CHAR_NOSTACK 'E'
+    
+    ; [DEBUG TEST] Verify we can read from the iretq frame location
+    ; Try to read RIP value from [rsp]
+    mov rax, [rsp]        ; This should work if mapping is correct
+    
+    SERIAL_CHAR_NOSTACK 'F'
+    
     ; Switch CR3 to user page table
     ; After this, we can only access user-mapped memory
     mov cr3, r8
     
-    SERIAL_CHAR_NOSTACK 'D'
+    ; [DEBUG TEST] After CR3 switch, verify we can still read from stack
+    mov rax, [rsp]        ; This tests if user page table has the mapping
+    
+    SERIAL_CHAR_NOSTACK 'G'
     
     ; IRETQ will:
     ; - Pop RIP from [RSP+0]   = entry_point

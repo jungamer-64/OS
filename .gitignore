@@ -11,12 +11,14 @@ node_modules/
 
 # QEMU logs and debug output
 logs/
+.logs/
 qemu.log
 qemu_*.log
 qemu_*.txt
 
 # Build artifacts
 build/
+.build/
 *.bin
 
 # Backup files
