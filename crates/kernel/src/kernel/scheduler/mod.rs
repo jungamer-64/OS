@@ -1,9 +1,8 @@
 //! Process Scheduler
 
 use crate::kernel::process::{ProcessId, PROCESS_TABLE};
-use spin::Mutex;
+use spin::{Mutex, Lazy};
 use alloc::vec::Vec;
-use lazy_static::lazy_static;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Simple round-robin scheduler
@@ -55,11 +54,9 @@ impl RoundRobinScheduler {
     }
 }
 
-lazy_static! {
-    /// Global round-robin scheduler instance.
-    pub static ref SCHEDULER: Mutex<RoundRobinScheduler> = 
-        Mutex::new(RoundRobinScheduler::new());
-}
+/// Global round-robin scheduler instance.
+pub static SCHEDULER: Lazy<Mutex<RoundRobinScheduler>> = 
+    Lazy::new(|| Mutex::new(RoundRobinScheduler::new()));
 
 // ============================================================================
 // SQPOLL (Submission Queue Polling) Support
@@ -119,10 +116,8 @@ impl SqpollConfig {
     }
 }
 
-lazy_static! {
-    /// Global SQPOLL configuration
-    pub static ref SQPOLL: SqpollConfig = SqpollConfig::new();
-}
+/// Global SQPOLL configuration
+pub static SQPOLL: Lazy<SqpollConfig> = Lazy::new(SqpollConfig::new);
 
 /// Poll all ring buffers from SQPOLL-enabled processes
 ///
@@ -181,19 +176,37 @@ pub fn idle_with_sqpoll(max_iterations: usize) -> bool {
     found_work
 }
 
-/// Main kernel idle entry point with SQPOLL
+/// Main kernel idle entry point with SQPOLL and async runtime
 ///
 /// Call this instead of `hlt` in the main kernel loop.
+/// This function integrates:
+/// 1. Async runtime polling (kernel tasks)
+/// 2. SQPOLL for io_uring-style I/O
+/// 3. CPU halt when no work is available
 pub fn kernel_idle() {
-    // First, try SQPOLL
-    if SQPOLL.is_enabled() {
-        // Do a few poll iterations
-        if idle_with_sqpoll(10) {
-            // Work was found - don't halt, return to scheduler
-            return;
-        }
+    // First, poll the async runtime for pending kernel tasks
+    let async_work = crate::kernel::r#async::poll_runtime().is_some();
+    
+    // Then, try SQPOLL for user-space ring buffers
+    let sqpoll_work = if SQPOLL.is_enabled() {
+        idle_with_sqpoll(10)
+    } else {
+        false
+    };
+    
+    // If any work was done, return immediately to allow rescheduling
+    if async_work || sqpoll_work {
+        return;
     }
     
-    // No SQPOLL work - halt until next interrupt
+    // No work - halt until next interrupt
     x86_64::instructions::hlt();
+}
+
+/// Run async runtime until idle
+///
+/// Useful for batch processing of kernel tasks.
+/// Returns the number of tasks that completed.
+pub fn run_async_tasks() -> usize {
+    crate::kernel::r#async::run_runtime_until_idle()
 }

@@ -11,8 +11,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::boxed::Box;
 use alloc::alloc::{alloc_zeroed, Layout};
-use spin::Mutex;
-use lazy_static::lazy_static;
+use spin::{Mutex, Lazy};
 use crate::kernel::fs::FileDescriptor;
 use crate::kernel::io_uring::IoUringContext;
 use crate::arch::x86_64::syscall_ring::RingContext;
@@ -590,9 +589,7 @@ impl ProcessTable {
     }
 }
 
-lazy_static! {
-    pub static ref PROCESS_TABLE: Mutex<ProcessTable> = Mutex::new(ProcessTable::new());
-}
+pub static PROCESS_TABLE: Lazy<Mutex<ProcessTable>> = Lazy::new(|| Mutex::new(ProcessTable::new()));
 
 const USER_STACK_SIZE: usize = 64 * 1024;
 const KERNEL_STACK_SIZE: usize = 16 * 1024;

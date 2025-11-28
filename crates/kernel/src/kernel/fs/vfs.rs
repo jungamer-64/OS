@@ -1,7 +1,6 @@
 use super::FileSystem;
-use spin::Mutex;
+use spin::{Mutex, Lazy};
 use alloc::boxed::Box;
-use lazy_static::lazy_static;
 
 /// Virtual Filesystem
 pub struct Vfs {
@@ -31,7 +30,5 @@ impl Vfs {
     }
 }
 
-lazy_static! {
-    /// Global VFS instance
-    pub static ref VFS: Mutex<Vfs> = Mutex::new(Vfs::new());
-}
+/// Global VFS instance
+pub static VFS: Lazy<Mutex<Vfs>> = Lazy::new(|| Mutex::new(Vfs::new()));
