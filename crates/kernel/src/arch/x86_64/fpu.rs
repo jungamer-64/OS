@@ -1,3 +1,4 @@
+// kernel/src/arch/x86_64/fpu.rs
 //! FPU/SSE state management
 //!
 //! This module provides functions to save and restore FPU/SSE/AVX state

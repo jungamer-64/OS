@@ -1,4 +1,4 @@
-// crates/kernel/src/arch/x86_64/per_cpu.rs
+// kernel/src/arch/x86_64/per_cpu.rs
 //! Per-CPU Data Management
 //!
 //! This module implements per-CPU data structures using the GS segment register.

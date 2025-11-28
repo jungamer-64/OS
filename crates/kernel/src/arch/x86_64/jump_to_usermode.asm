@@ -1,4 +1,4 @@
-; crates/kernel/arch/x86_64/jump_to_usermode.asm
+; kernel/arch/x86_64/jump_to_usermode.asm
 ; NASM assembly for user mode transition using IRETQ
 ;
 ; Arguments (System V AMD64 ABI):

@@ -1,4 +1,4 @@
-// crates/kernel/src/arch/x86_64/gdt.rs
+// kernel/src/arch/x86_64/gdt.rs
 //! Global Descriptor Table (GDT)
 //!
 //! GDT と TSS (Task State Segment) を設定します。

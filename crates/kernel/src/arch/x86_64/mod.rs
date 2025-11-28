@@ -1,4 +1,4 @@
-// crates/kernel/src/arch/x86_64/mod.rs
+// kernel/src/arch/x86_64/mod.rs
 //! x86_64 architecture-specific implementations.
 
 /// CPU operations and control.

@@ -1,4 +1,4 @@
-// crates/kernel/src/arch/x86_64/syscall.rs
+// kernel/src/arch/x86_64/syscall.rs
 //! System Call Mechanism for `x86_64`
 //!
 //! This module implements the syscall/sysret mechanism for transitioning

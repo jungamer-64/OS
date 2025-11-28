@@ -1,3 +1,4 @@
+// kernel/src/arch/x86_64/cpu_features.rs
 //! CPU feature detection using raw-cpuid
 //!
 //! This module provides a centralized way to detect and cache CPU features

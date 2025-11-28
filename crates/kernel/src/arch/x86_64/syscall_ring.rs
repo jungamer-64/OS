@@ -1,4 +1,4 @@
-// crates/kernel/src/arch/x86_64/syscall_ring.rs
+// kernel/src/arch/x86_64/syscall_ring.rs
 //! Ring Buffer Based Syscall System
 //!
 //! This module implements a revolutionary syscall mechanism that completely
