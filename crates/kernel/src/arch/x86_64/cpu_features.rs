@@ -5,8 +5,7 @@
 //! redundant CPUID calls.
 
 use raw_cpuid::CpuId;
-use lazy_static::lazy_static;
-use spin::Mutex;
+use spin::{Mutex, Lazy};
 
 /// CPU feature information
 #[derive(Debug, Clone, Copy)]
@@ -25,10 +24,8 @@ pub struct CpuFeatures {
     pub has_tsc: bool,
 }
 
-lazy_static! {
-    /// Cached CPU features
-    static ref CPU_FEATURES: Mutex<Option<CpuFeatures>> = Mutex::new(None);
-}
+/// Cached CPU features
+static CPU_FEATURES: Lazy<Mutex<Option<CpuFeatures>>> = Lazy::new(|| Mutex::new(None));
 
 /// Detect CPU features and cache the results
 ///

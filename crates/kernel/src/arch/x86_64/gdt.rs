@@ -7,8 +7,7 @@
 use x86_64::structures::gdt::{GlobalDescriptorTable, Descriptor, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::VirtAddr;
-use lazy_static::lazy_static;
-use spin::Mutex;
+use spin::{Mutex, Lazy};
 
 /// ダブルフォールト用の IST インデックス
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
@@ -128,81 +127,79 @@ pub struct Selectors {
     pub tss: SegmentSelector,
 }
 
-lazy_static! {
-    static ref GDT: (GlobalDescriptorTable, Selectors) = {
-        // GlobalDescriptorTable in x86_64 0.15.2 has a fixed size
-        // We need to ensure it's large enough for all segments including TSS (2 entries)
-        let mut gdt = GlobalDescriptorTable::new();
-        
-        // IMPORTANT: The order of segments MUST follow the SYSRET instruction requirements:
-        // SYSRET (64-bit mode) behavior:
-        //   CS = STAR[63:48] + 16 (with RPL=3)
-        //   SS = STAR[63:48] + 8  (with RPL=3)
-        //
-        // We want: CS = user_code (0x18), SS = user_data (0x10)
-        // So: STAR[63:48] = 0x08 (kernel_code)
-        //     CS = 0x08 + 16 = 0x18 ✓
-        //     SS = 0x08 + 8  = 0x10 ✓
-        //
-        // CORRECTED GDT layout for SYSRET compatibility:
-        //   0x08: kernel_code (Ring 0 code) - SYSCALL entry CS
-        //   0x10: user_data   (Ring 3 data) - SYSRET SS (= kernel_code + 8)
-        //   0x18: user_code   (Ring 3 code) - SYSRET CS (= kernel_code + 16)
-        //   0x20: kernel_data (Ring 0 data)
-        //   0x28: TSS
-        //
-        // Reference: Intel SDM Vol. 2B, SYSRET instruction
-        
-        let kernel_code = gdt.append(Descriptor::kernel_code_segment());
-        
-        // User segments come BEFORE kernel_data for SYSRET compatibility
-        crate::debug_println!("[GDT] Using SYSRET-compatible segment order");
-        let user_data = gdt.append(create_user_data_descriptor());  // 0x10 (SYSRET SS)
-        let user_code = gdt.append(create_user_code_descriptor());  // 0x18 (SYSRET CS)
-        
-        let kernel_data = gdt.append(Descriptor::kernel_data_segment()); // 0x20
-        
-        // TSS - now uses the new tss.rs module (Phase 2)
-        // We get a reference to the TSS from the tss module
-        let tss_ref = unsafe { &*(&*super::tss::TSS.lock() as *const _) };
-        let tss = gdt.append(Descriptor::tss_segment(tss_ref));
-        
-        // DEBUG: Print selector values
-        crate::debug_println!("[GDT DEBUG] Kernel code selector: {:#x}", kernel_code.0);
-        crate::debug_println!("[GDT DEBUG] User data selector: {:#x}", user_data.0);
-        crate::debug_println!("[GDT DEBUG] User code selector: {:#x}", user_code.0);
-        crate::debug_println!("[GDT DEBUG] Kernel data selector: {:#x}", kernel_data.0);
-        crate::debug_println!("[GDT DEBUG] TSS selector: {:#x}", tss.0);
-        
-        // Verify SYSRET offset requirements
-        // Note: User segments have DPL=3 (Ring 3) in the lower 2 bits,
-        // so we need to mask them out for comparison:
-        let user_code_base = user_code.0 & !0x03;  // Mask out RPL bits
-        let user_data_base = user_data.0 & !0x03;
-        
-        assert_eq!(
-            user_data_base, 
-            kernel_code.0 + 8,
-            "SYSRET requirement violated: user_data must be kernel_code + 8"
-        );
-        assert_eq!(
-            user_code_base, 
-            kernel_code.0 + 16,
-            "SYSRET requirement violated: user_code must be kernel_code + 16"
-        );
-        
-        (gdt, Selectors {
-            kernel_code,
-            kernel_data,
-            user_code,
-            user_data,
-            tss,
-        })
-    };
+static GDT: Lazy<(GlobalDescriptorTable, Selectors)> = Lazy::new(|| {
+    // GlobalDescriptorTable in x86_64 0.15.2 has a fixed size
+    // We need to ensure it's large enough for all segments including TSS (2 entries)
+    let mut gdt = GlobalDescriptorTable::new();
     
-    /// システムコール用のカーネルスタック（後でプロセスごとに管理）
-    pub static ref SYSCALL_KERNEL_STACK: Mutex<VirtAddr> = Mutex::new(VirtAddr::new(0));
-}
+    // IMPORTANT: The order of segments MUST follow the SYSRET instruction requirements:
+    // SYSRET (64-bit mode) behavior:
+    //   CS = STAR[63:48] + 16 (with RPL=3)
+    //   SS = STAR[63:48] + 8  (with RPL=3)
+    //
+    // We want: CS = user_code (0x18), SS = user_data (0x10)
+    // So: STAR[63:48] = 0x08 (kernel_code)
+    //     CS = 0x08 + 16 = 0x18 ✓
+    //     SS = 0x08 + 8  = 0x10 ✓
+    //
+    // CORRECTED GDT layout for SYSRET compatibility:
+    //   0x08: kernel_code (Ring 0 code) - SYSCALL entry CS
+    //   0x10: user_data   (Ring 3 data) - SYSRET SS (= kernel_code + 8)
+    //   0x18: user_code   (Ring 3 code) - SYSRET CS (= kernel_code + 16)
+    //   0x20: kernel_data (Ring 0 data)
+    //   0x28: TSS
+    //
+    // Reference: Intel SDM Vol. 2B, SYSRET instruction
+    
+    let kernel_code = gdt.append(Descriptor::kernel_code_segment());
+    
+    // User segments come BEFORE kernel_data for SYSRET compatibility
+    crate::debug_println!("[GDT] Using SYSRET-compatible segment order");
+    let user_data = gdt.append(create_user_data_descriptor());  // 0x10 (SYSRET SS)
+    let user_code = gdt.append(create_user_code_descriptor());  // 0x18 (SYSRET CS)
+    
+    let kernel_data = gdt.append(Descriptor::kernel_data_segment()); // 0x20
+    
+    // TSS - now uses the new tss.rs module (Phase 2)
+    // We get a reference to the TSS from the tss module
+    let tss_ref = unsafe { &*(&*super::tss::TSS.lock() as *const _) };
+    let tss = gdt.append(Descriptor::tss_segment(tss_ref));
+    
+    // DEBUG: Print selector values
+    crate::debug_println!("[GDT DEBUG] Kernel code selector: {:#x}", kernel_code.0);
+    crate::debug_println!("[GDT DEBUG] User data selector: {:#x}", user_data.0);
+    crate::debug_println!("[GDT DEBUG] User code selector: {:#x}", user_code.0);
+    crate::debug_println!("[GDT DEBUG] Kernel data selector: {:#x}", kernel_data.0);
+    crate::debug_println!("[GDT DEBUG] TSS selector: {:#x}", tss.0);
+    
+    // Verify SYSRET offset requirements
+    // Note: User segments have DPL=3 (Ring 3) in the lower 2 bits,
+    // so we need to mask them out for comparison:
+    let user_code_base = user_code.0 & !0x03;  // Mask out RPL bits
+    let user_data_base = user_data.0 & !0x03;
+    
+    assert_eq!(
+        user_data_base, 
+        kernel_code.0 + 8,
+        "SYSRET requirement violated: user_data must be kernel_code + 8"
+    );
+    assert_eq!(
+        user_code_base, 
+        kernel_code.0 + 16,
+        "SYSRET requirement violated: user_code must be kernel_code + 16"
+    );
+    
+    (gdt, Selectors {
+        kernel_code,
+        kernel_data,
+        user_code,
+        user_data,
+        tss,
+    })
+});
+
+/// システムコール用のカーネルスタック（後でプロセスごとに管理）
+pub static SYSCALL_KERNEL_STACK: Lazy<Mutex<VirtAddr>> = Lazy::new(|| Mutex::new(VirtAddr::new(0)));
 
 /// セグメントセレクタを取得
 pub fn selectors() -> &'static Selectors {

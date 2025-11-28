@@ -5,29 +5,26 @@
 
 use x86_64::VirtAddr;
 use x86_64::structures::tss::TaskStateSegment;
-use lazy_static::lazy_static;
-use spin::Mutex;
+use spin::{Mutex, Lazy};
 
-lazy_static! {
-    /// Global Task State Segment
-    ///
-    /// The TSS contains the privilege stack table which is used by the CPU
-    /// to determine which kernel stack to use when transitioning from user mode.
-    pub static ref TSS: Mutex<TaskStateSegment> = {
-        let mut tss = TaskStateSegment::new();
-        
-        // Initialize privilege_stack_table[0] with a temporary value
-        // This will be updated when the first process is created
-        // For now, use a dummy address (will be replaced before use)
-        tss.privilege_stack_table[0] = VirtAddr::new(0);
-        
-        // The interrupt stack table is used for specific interrupts that need
-        // dedicated stacks (e.g., double fault, NMI)
-        // We'll set these up later if needed
-        
-        Mutex::new(tss)
-    };
-}
+/// Global Task State Segment
+///
+/// The TSS contains the privilege stack table which is used by the CPU
+/// to determine which kernel stack to use when transitioning from user mode.
+pub static TSS: Lazy<Mutex<TaskStateSegment>> = Lazy::new(|| {
+    let mut tss = TaskStateSegment::new();
+    
+    // Initialize privilege_stack_table[0] with a temporary value
+    // This will be updated when the first process is created
+    // For now, use a dummy address (will be replaced before use)
+    tss.privilege_stack_table[0] = VirtAddr::new(0);
+    
+    // The interrupt stack table is used for specific interrupts that need
+    // dedicated stacks (e.g., double fault, NMI)
+    // We'll set these up later if needed
+    
+    Mutex::new(tss)
+});
 
 /// Update the kernel stack pointer in the TSS
 ///

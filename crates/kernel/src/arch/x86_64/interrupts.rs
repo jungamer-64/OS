@@ -7,25 +7,23 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, Pag
 use x86_64::VirtAddr;
 use crate::arch::x86_64::gdt;
 use crate::arch::Cpu;
-use lazy_static::lazy_static;
+use spin::Lazy;
 
-lazy_static! {
-    static ref IDT: InterruptDescriptorTable = {
-        let mut idt = InterruptDescriptorTable::new();
-        idt.breakpoint.set_handler_fn(breakpoint_handler);
-        unsafe {
-            idt.double_fault.set_handler_fn(double_fault_handler)
-                .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
-        }
-        idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
-        idt.page_fault.set_handler_fn(page_fault_handler);
-        // Timer Interrupt (IRQ0 -> 32)
-        idt[32].set_handler_fn(timer_interrupt_handler);
-        // Keyboard Interrupt (IRQ1 -> 33)
-        idt[33].set_handler_fn(keyboard_interrupt_handler);
-        idt
-    };
-}
+static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
+    let mut idt = InterruptDescriptorTable::new();
+    idt.breakpoint.set_handler_fn(breakpoint_handler);
+    unsafe {
+        idt.double_fault.set_handler_fn(double_fault_handler)
+            .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+    }
+    idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
+    idt.page_fault.set_handler_fn(page_fault_handler);
+    // Timer Interrupt (IRQ0 -> 32)
+    idt[32].set_handler_fn(timer_interrupt_handler);
+    // Keyboard Interrupt (IRQ1 -> 33)
+    idt[33].set_handler_fn(keyboard_interrupt_handler);
+    idt
+});
 
 /// IDT を初期化
 pub fn init_idt() {
@@ -192,9 +190,8 @@ extern "x86-interrupt" fn page_fault_handler(
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     use crate::arch::x86_64::pic::PICS;
     
-    // Timer tick - trigger process scheduler
-    // Note: We should only schedule if we're in user mode (not in kernel critical sections)
-    // For now, we'll just trigger scheduling unconditionally
+    // Update async timer tick counter and wake sleeping tasks
+    crate::kernel::r#async::tick();
     
     // Send EOI first to allow nested interrupts if needed
     unsafe {
