@@ -1,3 +1,4 @@
+// kernel/src/kernel/task/mod.rs
 //! タスク管理
 use crate::kernel::core::{Task, TaskId, TaskState, Priority};
 

@@ -1,4 +1,4 @@
-// crates/kernel/src/kernel/process/mod.rs
+// kernel/src/kernel/process/mod.rs
 //! Process management module
 //!
 //! This module provides process structure and lifecycle management

@@ -1,4 +1,4 @@
-// src/mm/allocator.rs
+// kernel/src/kernel/mm/allocator.rs
 //! メモリアロケータ
 //!
 //! ヒープ割り当てを管理します。

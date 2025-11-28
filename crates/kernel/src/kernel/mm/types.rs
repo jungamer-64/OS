@@ -1,4 +1,4 @@
-// src/kernel/mm/types.rs
+// kernel/src/kernel/mm/types.rs
 //! 型安全なメモリ管理型定義
 //!
 //! このモジュールは、メモリアドレス、サイズ、ページフレーム番号などを

@@ -1,3 +1,4 @@
+// kernel/src/kernel/fs/pipe.rs
 use super::{FileDescriptor, FileResult, FileError};
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;

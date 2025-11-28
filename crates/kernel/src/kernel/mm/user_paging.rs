@@ -1,4 +1,4 @@
-// crates/kernel/src/kernel/mm/user_paging.rs
+// kernel/src/kernel/mm/user_paging.rs
 //! User space page table management
 //!
 //! This module provides functions for creating and managing user space

@@ -1,4 +1,4 @@
-// crates/kernel/src/lib.rs
+// kernel/src/lib.rs
 //! Tiny OS - 理想的な Rust カーネル
 //!
 //! trait ベースの抽象化と型安全性を最大化したカーネルアーキテクチャ

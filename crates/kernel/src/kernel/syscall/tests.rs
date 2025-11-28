@@ -1,3 +1,4 @@
+// kernel/src/kernel/syscall/tests.rs
 //! Security tests for system call pointer validation
 //!
 //! These tests verify that system calls properly validate user-provided pointers

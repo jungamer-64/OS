@@ -1,3 +1,4 @@
+// kernel/src/kernel/process/elf_loader.rs
 //! ELF (Executable and Linkable Format) loader
 //!
 //! This module provides functionality to load and execute ELF binaries.

@@ -1,3 +1,4 @@
+// kernel/src/qemu.rs
 //! Utilities for interacting with QEMU test infrastructure.
 
 use crate::arch::{Cpu, ArchCpu};

@@ -1,4 +1,4 @@
-// crates/kernel/src/kernel/syscall/mod.rs
+// kernel/src/kernel/syscall/mod.rs
 //! System call implementation module
 //!
 //! This module provides the kernel-side implementations of all system calls

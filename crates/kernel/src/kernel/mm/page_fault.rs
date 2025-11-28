@@ -1,4 +1,4 @@
-// src/kernel/mm/page_fault.rs
+// kernel/src/kernel/mm/page_fault.rs
 //! User-space page fault handling
 //!
 //! This module provides page fault handling for user-space processes,

@@ -1,3 +1,4 @@
+// kernel/src/kernel/process/elf_impl.rs
 //! ELF loading implementation
 //!
 //! This module extends the ELF structures with actual loading logic.

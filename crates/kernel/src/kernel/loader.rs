@@ -1,4 +1,4 @@
-// src/kernel/loader.rs
+// kernel/src/kernel/loader.rs
 //! Simple program loader for Phase 2
 
 use x86_64::VirtAddr;

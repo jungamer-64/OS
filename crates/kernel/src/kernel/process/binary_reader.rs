@@ -1,3 +1,4 @@
+// kernel/src/kernel/process/binary_reader.rs
 //! Binary reader utilities for ELF loading
 //!
 //! Provides safe abstractions for reading binary data from byte slices.

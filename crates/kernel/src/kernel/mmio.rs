@@ -1,4 +1,4 @@
-// src/kernel/mmio.rs
+// kernel/src/kernel/mmio.rs
 //! MMIO (Memory Mapped I/O) 抽象化
 //!
 //! 型安全なメモリマップドレジスタアクセスを提供します。

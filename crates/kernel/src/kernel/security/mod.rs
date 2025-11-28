@@ -1,3 +1,4 @@
+// kernel/src/kernel/security/mod.rs
 //! Security validation and access control
 //!
 //! This module provides security checks for system calls and kernel operations.

@@ -1,4 +1,4 @@
-// src/kernel/mm/frame.rs
+// kernel/src/kernel/mm/frame.rs
 //! 物理フレーム管理
 //!
 //! ブートローダから渡されたメモリマップに基づいて、物理メモリフレームを管理します。

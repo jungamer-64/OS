@@ -1,3 +1,4 @@
+// kernel/src/kernel/bench.rs
 //! カーネルベンチマークフレームワーク
 //!
 //! TSC (Time Stamp Counter) を使用した高精度なパフォーマンス測定を提供します。

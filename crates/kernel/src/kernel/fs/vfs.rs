@@ -1,3 +1,4 @@
+// kernel/src/kernel/fs/vfs.rs
 use super::FileSystem;
 use spin::{Mutex, Lazy};
 use alloc::boxed::Box;

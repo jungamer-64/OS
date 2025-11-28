@@ -1,4 +1,4 @@
-// src/kernel/mm/paging.rs
+// kernel/src/kernel/mm/paging.rs
 //! ページング管理
 //!
 //! x86_64のページテーブル操作を提供します。

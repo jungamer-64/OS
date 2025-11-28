@@ -1,3 +1,4 @@
+// kernel/src/kernel/fs/mod.rs
 //! Filesystem abstraction layer
 
 // pub mod initrd;  // TODO: Implement
