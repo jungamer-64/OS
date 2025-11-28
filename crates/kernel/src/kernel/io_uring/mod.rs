@@ -43,6 +43,7 @@
 
 pub mod ring;
 pub mod handlers;
+pub mod handlers_v2;
 pub mod context;
 pub mod sqpoll;
 pub mod registered_buffers;
@@ -51,6 +52,7 @@ pub use ring::{IoUring, IoUringError};
 pub use context::IoUringContext;
 pub use sqpoll::{SqPollConfig, SqPollState, SqPollStats};
 pub use registered_buffers::{RegisteredBufferTable, RegisteredBufferStats};
+pub use handlers_v2::dispatch_sqe_v2;
 
 use crate::abi::io_uring::{SubmissionEntry, CompletionEntry, RingHeader, OpCode, RING_SIZE, RING_MASK};
 

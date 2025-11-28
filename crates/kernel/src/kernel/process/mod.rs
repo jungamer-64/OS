@@ -14,6 +14,7 @@ use alloc::alloc::{alloc_zeroed, Layout};
 use spin::{Mutex, Lazy};
 use crate::kernel::fs::FileDescriptor;
 use crate::kernel::io_uring::IoUringContext;
+use crate::kernel::capability::table::CapabilityTable;
 use crate::arch::x86_64::syscall_ring::RingContext;
 
 pub mod lifecycle;
@@ -130,6 +131,8 @@ pub struct Process {
     io_uring_ctx: Option<Box<IoUringContext>>,
     /// Ring-based syscall context for async message passing (new architecture)
     ring_ctx: Option<Box<RingContext>>,
+    /// Capability table for V2 resource management (Next-gen)
+    capability_table: CapabilityTable,
 }
 
 impl Drop for Process {
@@ -217,6 +220,7 @@ impl Process {
             fpu_state: FpuState::default(),
             io_uring_ctx: None,
             ring_ctx: None,
+            capability_table: CapabilityTable::new(),
         }
     }
     
@@ -513,6 +517,63 @@ impl Process {
         self.ring_ctx.as_ref()
             .filter(|ctx| ctx.exit_requested())
             .map(|ctx| ctx.exit_code())
+    }
+
+    // ========================================================================
+    // Capability Table methods (V2 Resource Management)
+    // ========================================================================
+
+    /// Get reference to the capability table
+    #[must_use]
+    pub fn capability_table(&self) -> &CapabilityTable {
+        &self.capability_table
+    }
+
+    /// Get mutable reference to the capability table
+    pub fn capability_table_mut(&mut self) -> &mut CapabilityTable {
+        &mut self.capability_table
+    }
+
+    /// Insert a capability into the process's table
+    ///
+    /// Returns a handle to the capability, or an error if the table is full.
+    pub fn insert_capability<R: crate::kernel::capability::ResourceKind, T: core::any::Any + Send + Sync>(
+        &self,
+        resource: Arc<T>,
+        rights: crate::kernel::capability::Rights,
+    ) -> Result<crate::kernel::capability::Handle<R>, crate::abi::error::SyscallError> {
+        self.capability_table.insert::<R, T>(resource, rights)
+    }
+
+    /// Get a capability entry by handle
+    pub fn get_capability<R: crate::kernel::capability::ResourceKind>(
+        &self,
+        handle: &crate::kernel::capability::Handle<R>,
+    ) -> Result<&crate::kernel::capability::table::CapabilityEntry, crate::abi::error::SyscallError> {
+        self.capability_table.get(handle)
+    }
+
+    /// Get a capability with rights verification
+    pub fn get_capability_with_rights<R: crate::kernel::capability::ResourceKind>(
+        &self,
+        handle: &crate::kernel::capability::Handle<R>,
+        required: crate::kernel::capability::Rights,
+    ) -> Result<&crate::kernel::capability::table::CapabilityEntry, crate::abi::error::SyscallError> {
+        self.capability_table.get_with_rights(handle, required)
+    }
+
+    /// Remove a capability from the process's table
+    pub fn remove_capability<R: crate::kernel::capability::ResourceKind>(
+        &self,
+        handle: crate::kernel::capability::Handle<R>,
+    ) -> Result<alloc::boxed::Box<crate::kernel::capability::table::CapabilityEntry>, crate::abi::error::SyscallError> {
+        self.capability_table.remove(handle)
+    }
+
+    /// Get the number of active capabilities
+    #[must_use]
+    pub fn capability_count(&self) -> u32 {
+        self.capability_table.count()
     }
 }
 

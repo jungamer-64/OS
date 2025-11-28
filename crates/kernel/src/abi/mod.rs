@@ -12,10 +12,37 @@
 //!
 //! This design allows batching of I/O operations, reducing syscall overhead
 //! from O(n) to O(1) for n operations.
+//!
+//! # V2 Architecture (Next Generation)
+//!
+//! The V2 ABI introduces:
+//! - **Capability-based resources**: Type-safe handles instead of integer FDs
+//! - **Typed errors**: `SyscallError` enum instead of errno
+//! - **ABI-safe Result**: `AbiResult<T, E>` for safe Result passing
+//! - **Registered buffers only**: No raw pointers in V2 mode
 
+// Legacy io_uring ABI (V1)
 pub mod io_uring;
 
+// Next-generation ABI (V2)
+pub mod error;
+pub mod io_uring_v2;
+pub mod native;
+pub mod result;
+
+// Re-export V1 types for compatibility
 pub use io_uring::{
-    SubmissionEntry, CompletionEntry, RingHeader,
-    OpCode, IoUringFlags, RING_SIZE, RING_MASK,
+    CompletionEntry, IoUringFlags, OpCode, RingHeader, SubmissionEntry, RING_MASK, RING_SIZE,
 };
+
+// Re-export V2 types
+pub use error::{ErrorCategory, SyscallError, SyscallResult};
+pub use io_uring_v2::{
+    CompletionEntryV2, ResultTag, RingHeaderV2, SubmissionEntryV2, V2Features,
+};
+pub use native::{
+    BufferHandle, BufferMarker, DirectoryHandle, DirectoryMarker, FileHandle, FileMarker, Handle,
+    PipeHandle, PipeMarker, ResourceId, ResourceMarker, SocketHandle, SocketMarker, SyscallCategory,
+    SyscallNumber,
+};
+pub use result::{AbiResult, AbiResultI32, AbiResultI64, AbiResultU64, AbiResultUnit, AbiResultUsize, CompactResult};
