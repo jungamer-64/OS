@@ -1,4 +1,4 @@
-// kernel/src/arch/x86_64/interrupts.rs
+// crates/kernel/src/arch/x86_64/interrupts.rs
 //! Interrupt Descriptor Table (IDT)
 //!
 //! 割り込みハンドラを設定します。

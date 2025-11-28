@@ -20,6 +20,10 @@ pub mod tss;
 pub mod fpu;
 /// CPU feature detection (using raw-cpuid)
 pub mod cpu_features;
+/// Per-CPU data management (Phase 3: swapgs-based syscall)
+pub mod per_cpu;
+/// Symmetric Multi-Processing support (Phase 3: SMP)
+pub mod smp;
 
 pub use cpu::{X86Cpu, InterruptFlags, critical_section};
 pub use cpu::read_timestamp;
@@ -31,3 +35,5 @@ pub use cr3_test::run_cr3_diagnostic_tests;
 pub use tss::{init as init_tss, update_kernel_stack};
 pub use fpu::{init as init_fpu, save_fpu_state, restore_fpu_state};
 pub use cpu_features::{detect as detect_cpu_features, get as get_cpu_features};
+pub use per_cpu::{init as init_per_cpu, update_kernel_stack as update_per_cpu_stack};
+pub use smp::{init as init_smp, cpu_count, current_cpu_id};

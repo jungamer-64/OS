@@ -1,4 +1,4 @@
-; src/arch/x86_64/cr3_test.asm
+; crates/kernel/src/arch/x86_64/cr3_test.asm
 ; NASM assembly for testing CR3 switch in isolation
 ; This helps diagnose the CR3 switching issue
 

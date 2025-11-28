@@ -223,7 +223,8 @@ impl AsyncContext {
     pub fn new() -> SyscallResult<Self> {
         let result = syscall::io_uring_setup(RING_SIZE as u32)?;
         
-        crate::println!("  [DEBUG] io_uring_setup returned {:#x}", result);
+        // Debug print removed - was causing GPF in fmt::write
+        // crate::println!("  [DEBUG] io_uring_setup returned {:#x}", result);
         
         Ok(Self {
             ring_base: result as *mut u8,
@@ -275,22 +276,17 @@ impl AsyncContext {
     ///
     /// Returns the user_data that can be used to correlate completions.
     pub fn submit(&mut self, op: AsyncOp) -> Result<u64, ()> {
-        crate::println!("  [DEBUG] submit: checking available...");
         if self.available() == 0 {
             return Err(());
         }
 
-        crate::println!("  [DEBUG] submit: creating sqe...");
         let sqe = op.to_sqe();
         let user_data = sqe.user_data;
         
-        crate::println!("  [DEBUG] submit: getting sq_header at {:#x}...", self.ring_base as u64);
         let header = self.sq_header();
-        crate::println!("  [DEBUG] submit: loading tail...");
         let tail = header.tail.load(Ordering::Relaxed);
         let index = (tail as usize) & RING_MASK;
         
-        crate::println!("  [DEBUG] submit: writing sqe to index {}...", index);
         unsafe {
             *self.sq_entries().add(index) = sqe;
         }
@@ -299,7 +295,6 @@ impl AsyncContext {
         header.tail.store(tail.wrapping_add(1), Ordering::Release);
         
         self.pending += 1;
-        crate::println!("  [DEBUG] submit: done");
         Ok(user_data)
     }
 

@@ -222,16 +222,31 @@ pub fn create_user_process(path: &str) -> Result<(ProcessId, VirtAddr, VirtAddr,
         //   Mapped pages: 0x6fffffff0000 to 0x6ffffffffffff (16 pages = 64KB)  
         //   Guard page: 0x6fffffffef000 (unmapped - catches stack overflow)
         //
-        // RSP should point to USER_STACK_TOP (0x700000000000).
-        // When first push occurs, RSP decrements by 8 -> 0x6ffffffffffff8,
-        // which is within the mapped stack region.
-        // 
+        // RSP alignment for x86_64 System V ABI:
+        //
+        // The ABI requires that at function entry (after CALL pushes return address),
+        // RSP is 16-byte aligned. Since _start is entered via IRETQ (not CALL),
+        // there's no return address on the stack.
+        //
+        // To maintain ABI compliance, we subtract 8 from stack_top to simulate
+        // the effect of a CALL instruction. This ensures:
+        //   - Initial RSP = stack_top - 8 (16-byte aligned, but offset by 8)
+        //   - After first PUSH in function prologue: RSP is 16-byte aligned
+        //   - movaps and other SSE instructions requiring 16-byte alignment work correctly
+        //
+        // Stack layout:
+        //   USER_STACK_TOP (0x700000000000) = boundary (not mapped)
+        //   Initial RSP = 0x6ffffffffffffff8 (stack_top - 8)
+        //   Mapped pages: 0x6fffffff00000 to 0x6ffffffffffff
+        //
         // Note: loaded_program.stack_top is already USER_STACK_TOP from map_user_stack()
         let stack_top = loaded_program.stack_top.as_u64();
-        crate::debug_println!("[Process] Using stack top: {:#x}", stack_top);
+        // Subtract 8 to simulate return address being pushed (ABI alignment)
+        let initial_rsp = stack_top - 8;
+        crate::debug_println!("[Process] Stack top: {:#x}, initial RSP: {:#x}", stack_top, initial_rsp);
         
         process.registers_mut().rip = loaded_program.entry_point.as_u64();
-        process.registers_mut().rsp = stack_top;
+        process.registers_mut().rsp = initial_rsp;
     }
     
     // Setup initial kernel stack context for switching
@@ -333,16 +348,20 @@ pub fn create_user_process(path: &str) -> Result<(ProcessId, VirtAddr, VirtAddr,
         crate::debug_println!("[PHASE 3] Mapping user stack to kernel page table...");
         
         // Stack layout:
-        //   user_stack (RSP) points to USER_STACK_TOP (0x700000000000)
-        //   Mapped pages: 0x6fffffff0000 to 0x6ffffffffffff (16 pages = 64KB)
+        //   USER_STACK_TOP (0x700000000000) = boundary (not mapped)
+        //   Mapped pages: from (USER_STACK_TOP - DEFAULT_USER_STACK_SIZE) to USER_STACK_TOP - 1
+        //   Note: user_stack.rsp is USER_STACK_TOP - 8 for ABI alignment, but we use USER_STACK_TOP for mapping
         // 
-        // We need to map from 0x6ffffffffffff down to 0x6fffffff0000
-        // Start at (user_stack - 1) to get the first mapped address
-        let first_mapped_page = x86_64::VirtAddr::new(user_stack.as_u64() - 4096);
-        let user_stack_pages = 16; // 64KB stack
+        // We need to map from USER_STACK_TOP - 4096 (first mapped page) down
+        use crate::kernel::mm::user_paging::{DEFAULT_USER_STACK_SIZE, USER_STACK_TOP};
+        let stack_top_for_mapping = x86_64::VirtAddr::new(USER_STACK_TOP);
+        let first_mapped_page = stack_top_for_mapping - 4096u64;
+        let user_stack_pages = DEFAULT_USER_STACK_SIZE / 4096; // Calculate from actual stack size
+        crate::debug_println!("[PHASE 3] Stack top: {:#x}, first mapped page: {:#x}", USER_STACK_TOP, first_mapped_page.as_u64());
+        crate::debug_println!("[PHASE 3] Will map {} stack pages ({} bytes)", user_stack_pages, DEFAULT_USER_STACK_SIZE);
         
         for i in 0..user_stack_pages {
-            let virt = first_mapped_page - (i * 4096u64);
+            let virt = first_mapped_page - (i as u64 * 4096u64);
             
             // Translate in user page table
             use x86_64::structures::paging::mapper::TranslateResult;

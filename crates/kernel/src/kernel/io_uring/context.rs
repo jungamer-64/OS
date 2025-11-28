@@ -2,22 +2,25 @@
 //! Per-process io_uring context
 //!
 //! Each process can have an io_uring context that manages its submission
-//! and completion queues.
+//! and completion queues, registered buffers, and SQPOLL configuration.
 
 use spin::Mutex;
 
 use super::ring::IoUring;
 use super::handlers::{dispatch_sqe, OpResult};
+use super::registered_buffers::{RegisteredBufferTable, RegisteredBufferStats};
 use crate::abi::io_uring::OpCode;
 use crate::debug_println;
 use crate::kernel::mm::BootInfoFrameAllocator;
+use crate::kernel::syscall::SyscallResult;
 
 /// Per-process io_uring context
 ///
 /// Manages the io_uring instance for a process, including:
 /// - The ring buffers
 /// - Pending async operations
-/// - Registered buffers and files (future)
+/// - Registered buffers for zero-copy I/O
+/// - SQPOLL configuration
 pub struct IoUringContext {
     /// The io_uring instance
     ring: IoUring,
@@ -27,6 +30,12 @@ pub struct IoUringContext {
     
     /// Maximum operations in flight (rate limiting)
     max_in_flight: u32,
+    
+    /// Registered buffers for zero-copy I/O
+    registered_buffers: RegisteredBufferTable,
+    
+    /// Whether SQPOLL is enabled for this context
+    sqpoll_enabled: bool,
 }
 
 impl IoUringContext {
@@ -44,7 +53,82 @@ impl IoUringContext {
             ring,
             in_flight: 0,
             max_in_flight: 256, // Match ring size
+            registered_buffers: RegisteredBufferTable::new(),
+            sqpoll_enabled: false,
         })
+    }
+    
+    /// Create a new io_uring context with SQPOLL enabled
+    pub fn new_with_sqpoll(allocator: &mut BootInfoFrameAllocator) -> Option<Self> {
+        let mut ctx = Self::new_with_allocator(allocator)?;
+        ctx.sqpoll_enabled = true;
+        Some(ctx)
+    }
+    
+    /// Register a buffer for zero-copy I/O
+    ///
+    /// # Arguments
+    /// * `user_addr` - User-space virtual address
+    /// * `len` - Buffer length in bytes
+    /// * `readable` - Allow kernel to write to buffer
+    /// * `writable` - Allow kernel to read from buffer
+    ///
+    /// # Returns
+    /// * `Ok(index)` - Buffer index for use in SQEs
+    /// * `Err(errno)` - Error code
+    pub fn register_buffer(
+        &mut self,
+        user_addr: u64,
+        len: usize,
+        readable: bool,
+        writable: bool,
+    ) -> Result<u32, SyscallResult> {
+        self.registered_buffers.register(user_addr, len, readable, writable)
+    }
+    
+    /// Register multiple buffers from a user-provided iovec array
+    pub fn register_buffers(&mut self, user_iov: u64, count: usize) -> Result<u32, SyscallResult> {
+        self.registered_buffers.register_buffers(user_iov, count)
+    }
+    
+    /// Unregister a buffer
+    pub fn unregister_buffer(&mut self, index: u32) -> Result<(), SyscallResult> {
+        self.registered_buffers.unregister(index)
+    }
+    
+    /// Unregister all buffers
+    pub fn unregister_all_buffers(&mut self) -> Result<(), SyscallResult> {
+        self.registered_buffers.unregister_all()
+    }
+    
+    /// Get a registered buffer by index
+    pub fn get_registered_buffer(&self, index: u32) -> Option<&super::registered_buffers::RegisteredBuffer> {
+        self.registered_buffers.get(index)
+    }
+    
+    /// Acquire a reference to a registered buffer
+    pub fn acquire_buffer(&self, index: u32) -> Option<super::registered_buffers::RegisteredBufferRef<'_>> {
+        self.registered_buffers.acquire(index)
+    }
+    
+    /// Get registered buffer statistics
+    pub fn buffer_stats(&self) -> RegisteredBufferStats {
+        self.registered_buffers.stats()
+    }
+    
+    /// Check if SQPOLL is enabled
+    pub fn is_sqpoll_enabled(&self) -> bool {
+        self.sqpoll_enabled
+    }
+    
+    /// Enable SQPOLL for this context
+    pub fn enable_sqpoll(&mut self) {
+        self.sqpoll_enabled = true;
+    }
+    
+    /// Disable SQPOLL for this context
+    pub fn disable_sqpoll(&mut self) {
+        self.sqpoll_enabled = false;
     }
     
     /// Process the submission queue

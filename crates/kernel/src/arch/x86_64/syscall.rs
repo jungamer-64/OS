@@ -1,8 +1,18 @@
-// kernel/src/arch/x86_64/syscall.rs
+// crates/kernel/src/arch/x86_64/syscall.rs
 //! System Call Mechanism for `x86_64`
 //!
 //! This module implements the syscall/sysret mechanism for transitioning
 //! between Ring 3 (user mode) and Ring 0 (kernel mode).
+//!
+//! # Architecture (Phase 3: swapgs-based Per-CPU)
+//!
+//! Uses `swapgs` instruction for SMP-safe kernel entry:
+//! 1. On syscall entry, `swapgs` swaps GS base with IA32_KERNEL_GS_BASE
+//! 2. Kernel accesses Per-CPU data via `gs:[offset]`
+//! 3. On sysret, `swapgs` restores user GS base
+//!
+//! This eliminates the global `CURRENT_KERNEL_STACK` variable and enables
+//! true multi-core support.
 
 #![allow(unsafe_op_in_unsafe_fn)] // naked_asm! requires this
 
@@ -11,7 +21,6 @@ use x86_64::registers::model_specific::{Efer, EferFlags, LStar, SFMask};
 use x86_64::registers::rflags::RFlags;
 use crate::arch::x86_64::gdt;
 use crate::debug_println;
-use crate::kernel::process::PROCESS_TABLE;
 
 /// Initialize the syscall mechanism
 ///
@@ -80,12 +89,13 @@ pub fn init() {
         // We clear the interrupt flag to disable interrupts during syscall handling
         SFMask::write(RFlags::INTERRUPT_FLAG);
         
-        // Initialize kernel stack for syscalls
-        init_kernel_stack();
+        // Initialize Per-CPU data (Phase 3: swapgs-based)
+        // This sets up IA32_KERNEL_GS_BASE for the boot CPU
+        super::per_cpu::init();
         
         let kernel_cs = u64::from(selectors.kernel_code.0);
         let user_cs = u64::from(selectors.user_code.0);
-        debug_println!("[OK] Syscall mechanism initialized");
+        debug_println!("[OK] Syscall mechanism initialized (swapgs-based)");
         debug_println!("  STAR: kernel_cs=0x{:x}, user_cs=0x{:x}", kernel_cs, user_cs);
         debug_println!("  LSTAR: 0x{:x}", syscall_entry as *const () as u64);
     }
@@ -137,9 +147,17 @@ fn dump_registers(context: &str) {
     debug_println!("  SS:  0x{:04x}", ss);
 }
 
-/// Syscall entry point
+/// Syscall entry point (Phase 3: swapgs-based Per-CPU)
 ///
 /// This is called when userspace executes the `syscall` instruction.
+/// 
+/// # Architecture
+///
+/// Uses `swapgs` to access Per-CPU data structure via GS segment:
+/// - `gs:[0x00]` = user_rsp_scratch (temporary RSP storage)
+/// - `gs:[0x08]` = kernel_stack_top
+///
+/// This design is SMP-safe: each CPU has its own Per-CPU data.
 /// 
 /// # Safety
 /// This function is unsafe because it directly manipulates CPU registers
@@ -151,226 +169,143 @@ fn dump_registers(context: &str) {
 /// - RCX: user RIP (saved by CPU)
 /// - R11: user RFLAGS (saved by CPU)
 /// - RSP: **still pointing to user stack** (not switched by CPU!)
-///
-/// The syscall instruction does NOT switch RSP automatically.
-/// We must:
-/// 1. Switch to kernel stack
-/// 2. Save user registers on kernel stack
-/// 3. Call the syscall handler
-/// 4. Restore user registers from kernel stack
-/// 5. Switch back to user stack
-/// 6. Return to user mode with sysret
 #[unsafe(naked)]
 pub unsafe extern "C" fn syscall_entry() {
     core::arch::naked_asm!(
-        // At this point:
-        // - CS/SS have been switched to kernel segments by CPU
-        // - RCX = user RIP, R11 = user RFLAGS (saved by CPU)
-        // - RSP still points to USER stack (dangerous!)
+        // ============================================================
+        // Phase 1: GS segment switch (swapgs)
+        // ============================================================
+        // Swap GS base: User GS <-> Kernel GS (IA32_KERNEL_GS_BASE)
+        // After this, GS points to Per-CPU data for this CPU
+        "swapgs",
         
-        // Save user RSP in a scratch register
-        "mov r15, rsp",
+        // ============================================================
+        // Phase 2: Save user RSP and switch to kernel stack
+        // ============================================================
+        // Save user RSP to Per-CPU scratch area
+        // gs:[0x00] = PerCpuData.user_rsp_scratch
+        "mov qword ptr gs:[0x00], rsp",
         
-        // Phase 2: Load kernel stack
-        // CURRENT_KERNEL_STACK is updated during:
-        // - init_kernel_stack() (boot time) -> fallback stack
-        // - set_kernel_stack() (context switch) -> process kernel stack
-        "mov rsp, qword ptr [rip + {current_stack}]",
+        // Load kernel stack from Per-CPU data
+        // gs:[0x08] = PerCpuData.kernel_stack_top
+        "mov rsp, qword ptr gs:[0x08]",
         
-        // === CRITICAL: Align stack BEFORE pushing ===
-        // The kernel stack should already be 16-byte aligned from initialization,
-        // but we verify and align if necessary.
-        // This MUST happen before any push operations.
-        "test rsp, 15",           // Check if RSP & 0xF == 0
-        "jz 2f",                  // If aligned, skip
-        "and rsp, -16",           // Otherwise, align to 16-byte boundary
+        // ============================================================
+        // Phase 3: Stack alignment verification (debug mode)
+        // ============================================================
+        // Kernel stack should already be 16-byte aligned from initialization
+        // But verify and align if necessary (should not happen)
+        "test rsp, 15",
+        "jz 2f",
+        "and rsp, -16",
         "2:",
         
-        // === Save user context (3 registers = 24 bytes) ===
-        // Optimized: Only save essential registers for sysret
-        // Callee-saved registers (rbp, rbx, r12-r14) are handled by the Rust
-        // compiler in the handler function, so we don't need to save them here.
+        // ============================================================
+        // Phase 4: Save minimal context
+        // ============================================================
+        // Only save what's needed for sysret:
+        // - User RSP (from scratch area)
+        // - User RIP (RCX, saved by CPU)
+        // - User RFLAGS (R11, saved by CPU)
         //
-        // WARNING: This optimization assumes that NO context switch (task switch)
-        // occurs during syscall handling. If the scheduler can preempt during
-        // a syscall, the full register save must be restored.
-        "push r15",          // User RSP (saved earlier)
-        "push rcx",          // User RIP (saved by CPU on syscall)
-        "push r11",          // User RFLAGS (saved by CPU on syscall)
+        // Callee-saved registers (rbp, rbx, r12-r14) are handled by
+        // the Rust compiler in syscall_handler.
+        "push qword ptr gs:[0x00]",  // User RSP (3rd from top)
+        "push rcx",                   // User RIP (2nd from top)  
+        "push r11",                   // User RFLAGS (top of saved context)
         
-        // === C ABI alignment requirement ===
-        // System V AMD64 ABI requires RSP to be 16-byte aligned at 'call' instruction.
-        // 'call' pushes 8-byte return address, so RSP must be 16*N before call.
-        // 
-        // Current state after 3 pushes (24 bytes from aligned):
-        //   RSP % 16 = (aligned - 24) % 16 = -8 % 16 = 8
-        // We need RSP % 16 = 0 before call
-        // Solution: sub 8 bytes for alignment
-        "sub rsp, 8",        // Alignment padding (now 16-byte aligned)
+        // ============================================================
+        // Phase 5: C ABI stack alignment
+        // ============================================================
+        // System V AMD64 ABI requires RSP to be 16-byte aligned at 'call'.
+        // After 3 pushes (24 bytes), we need 8 more for alignment.
+        "sub rsp, 8",
         
-        // === Prepare arguments for C calling convention ===
-        // Syscall ABI:
-        //   RAX = syscall number
-        //   RDI = arg1, RSI = arg2, RDX = arg3, R10 = arg4, R8 = arg5, R9 = arg6
-        // 
-        // C calling convention (System V AMD64):
-        //   RDI = arg1, RSI = arg2, RDX = arg3, RCX = arg4, R8 = arg5, R9 = arg6
-        //
-        // syscall_handler(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6)
-        // So we need:
-        //   RDI = syscall_num (from RAX)
-        //   RSI = arg1 (from RDI)
-        //   RDX = arg2 (from RSI)
-        //   RCX = arg3 (from RDX)
-        //   R8  = arg4 (from R10)
-        //   R9  = arg5 (from R8)
-        //   [stack] = arg6 (from R9)
+        // ============================================================
+        // Phase 6: Prepare arguments for syscall_handler
+        // ============================================================
+        // Syscall ABI -> C ABI register mapping:
+        //   RAX -> RDI (syscall number)
+        //   RDI -> RSI (arg1)
+        //   RSI -> RDX (arg2)
+        //   RDX -> RCX (arg3)
+        //   R10 -> R8  (arg4)
+        //   R8  -> R9  (arg5)
+        //   R9  -> stack (arg6)
         
-        // Save arg6 to stack (will be 7th C argument on stack)
-        // After this push: RSP = 16*N - 8
-        // Then push padding to restore alignment
-        "push r9",           // arg6 to stack (RSP = 16*N - 8)
-        "sub rsp, 8",        // Extra padding to make RSP = 16*N
+        // Push arg6 to stack
+        "push r9",
+        "sub rsp, 8",  // Alignment padding
         
-        // Shuffle registers (must be done in correct order to not overwrite sources)
-        "mov r9, r8",        // arg5 (C arg6 = R9)
-        "mov r8, r10",       // arg4 (C arg5 = R8)
-        "mov rcx, rdx",      // arg3 (C arg4 = RCX)
-        "mov rdx, rsi",      // arg2 (C arg3 = RDX)
-        "mov rsi, rdi",      // arg1 (C arg2 = RSI)
-        "mov rdi, rax",      // syscall_num (C arg1 = RDI)
+        // Shuffle registers (order matters!)
+        "mov r9, r8",    // arg5
+        "mov r8, r10",   // arg4
+        "mov rcx, rdx",  // arg3
+        "mov rdx, rsi",  // arg2
+        "mov rsi, rdi",  // arg1
+        "mov rdi, rax",  // syscall number
         
-        // === Call the syscall handler ===
-        // Stack layout (from aligned RSP):
-        //   - 3 pushes (24 bytes): r15, rcx, r11
-        //   - sub 8 (alignment): 8 bytes
-        //   - push r9 (arg6): 8 bytes  
-        //   - sub 8 (padding): 8 bytes
-        // Total: 56 bytes from aligned, RSP is now 16-byte aligned
+        // ============================================================
+        // Phase 7: Call Rust handler
+        // ============================================================
         "call {syscall_handler}",
         
-        // === Result is in RAX, preserve it ===
+        // ============================================================
+        // Phase 8: Clean up and restore
+        // ============================================================
+        // Result is in RAX
         
-        // === Remove stack adjustments ===
-        "add rsp, 24",       // Remove: padding (8) + arg6 (8) + alignment padding (8)
+        // Remove call adjustments
+        "add rsp, 24",   // padding(8) + arg6(8) + alignment(8)
         
-        // === Restore user context ===
-        "pop r11",          // User RFLAGS
-        "pop rcx",          // User RIP
-        "pop r15",          // User RSP
+        // Restore user context
+        "pop r11",       // User RFLAGS
+        "pop rcx",       // User RIP
+        "pop rsp",       // User RSP (direct restore, no need for scratch)
         
-        // === Switch back to user stack ===
-        "mov rsp, r15",
+        // ============================================================
+        // Phase 9: Return to user mode
+        // ============================================================
+        // Restore user GS base before returning
+        "swapgs",
         
-        // === Return to user mode ===
         // sysretq will:
-        // - Load RCX into RIP (user return address)
+        // - Load RCX into RIP
         // - Load R11 into RFLAGS
-        // - Switch CS/SS back to user segments
+        // - Switch CS/SS to user segments
         "sysretq",
         
-        current_stack = sym CURRENT_KERNEL_STACK,
         syscall_handler = sym syscall_handler,
     );
 }
 
-// Kernel stack management
-// 
-// Phase 2 Implementation:
-// - Per-process kernel stacks (primary)
-// - Fallback to global stack if no process is active
-// 
-// Each process has its own kernel stack stored in Process.kernel_stack
-// This provides:
-// 1. ✅ Safe for concurrent syscalls (each process isolated)
-// 2. ✅ Safe with interrupts (stack is per-process)
-// 3. ✅ Isolated per-process
+// ============================================================================
+// Kernel Stack Management (Phase 3: Per-CPU based)
+// ============================================================================
+//
+// Stack management has been moved to per_cpu.rs for SMP support.
+// These functions provide backwards-compatible API for existing code.
+//
+// Phase 3 changes:
+// - Stack pointer is now stored in PerCpuData.kernel_stack_top
+// - Accessed via GS segment in syscall_entry (gs:[0x08])
+// - Each CPU has its own stack, eliminating race conditions
 
-// Fallback kernel stack for early boot or when no process is active
-#[repr(C, align(16))]
-struct KernelStack {
-    data: [u8; 8192], // 8KB stack
-}
-
-static mut KERNEL_STACK: KernelStack = KernelStack {
-    data: [0; 8192],
-};
-
-// Pointer to top of fallback kernel stack (stacks grow downward)
-#[allow(clippy::ptr_as_ptr)] // Intentional: pointer arithmetic for stack calculation
-fn get_fallback_kernel_stack_top() -> usize {
-    unsafe {
-        let stack_ptr = core::ptr::addr_of!(KERNEL_STACK);
-        let data_ptr = core::ptr::addr_of!((*stack_ptr).data);
-        (data_ptr as *const u8).add(8192) as usize
-    }
-}
-
-/// Get the current process's kernel stack pointer
-/// 
-/// Returns the kernel stack for the currently running process.
-/// If no process is active, returns the fallback global stack.
-/// 
-/// # Phase 2 Implementation
-/// This function can be used in the future for more dynamic stack selection.
-#[allow(dead_code)]
-#[allow(clippy::cast_possible_truncation)] // x86_64 target only
-#[allow(clippy::collapsible_if)] // More readable with explicit nesting
-fn get_current_kernel_stack() -> usize {
-    // Try to get the current process's kernel stack
-    if let Some(table) = PROCESS_TABLE.try_lock() {
-        if let Some(process) = table.current_process() {
-            // Use the process's kernel stack
-            return process.kernel_stack().as_u64() as usize;
-        }
-    }
-    
-    // Fallback to global stack if no process is active or table is locked
-    get_fallback_kernel_stack_top()
-}
-
-// Static variable storing the kernel stack pointer
-// Note: This is updated before each syscall entry
-use lazy_static::lazy_static;
-use spin::Mutex;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-// Current kernel stack (atomic for lock-free access from assembly)
-// pub(super) for syscall_fast.rs access
+// Legacy CURRENT_KERNEL_STACK for syscall_fast.rs compatibility
+// TODO: Migrate syscall_fast.rs to swapgs-based implementation
 pub(super) static CURRENT_KERNEL_STACK: AtomicUsize = AtomicUsize::new(0);
 
-lazy_static! {
-    static ref KERNEL_SYSCALL_STACK: Mutex<usize> = Mutex::new(get_fallback_kernel_stack_top());
-}
-
-/// Initialize the current kernel stack pointer
-/// 
-/// This should be called during kernel initialization to set up the
-/// fallback stack before any processes are created.
-pub fn init_kernel_stack() {
-    let stack_top = get_fallback_kernel_stack_top();
-    
-    // Verify 16-byte alignment (critical for C ABI and syscall_entry)
-    debug_assert!(
-        stack_top.is_multiple_of(16),
-        "Kernel stack must be 16-byte aligned, got 0x{stack_top:x}"
-    );
-    
-    CURRENT_KERNEL_STACK.store(stack_top, Ordering::Release);
-    
-    debug_println!("[OK] Kernel syscall stack initialized at 0x{:x}", stack_top);
-}
-
-/// Update the current kernel stack pointer
+/// Update the current kernel stack pointer (Phase 3)
 /// 
 /// This should be called during context switch to update the stack
-/// pointer for the next syscall.
+/// pointer for the current CPU.
 /// 
 /// # Panics
 /// 
 /// Panics in debug builds if the stack is not 16-byte aligned.
-#[allow(dead_code)]
-#[allow(clippy::cast_possible_truncation)] // x86_64 target only
+#[allow(clippy::cast_possible_truncation)]
 pub fn set_kernel_stack(stack_top: VirtAddr) {
     let stack_addr = stack_top.as_u64() as usize;
     
@@ -380,23 +315,21 @@ pub fn set_kernel_stack(stack_top: VirtAddr) {
         "Kernel stack must be 16-byte aligned, got 0x{stack_addr:x}"
     );
     
+    // Update Per-CPU data (primary)
+    super::per_cpu::update_kernel_stack(stack_top);
+    
+    // Also update legacy atomic for syscall_fast.rs compatibility
     CURRENT_KERNEL_STACK.store(stack_addr, Ordering::Release);
 }
 
 /// Get the currently configured kernel stack
-#[allow(dead_code)]
 pub fn get_kernel_stack() -> VirtAddr {
-    VirtAddr::new(CURRENT_KERNEL_STACK.load(Ordering::Acquire) as u64)
+    super::per_cpu::get_kernel_stack()
 }
 
-/// Check stack usage for debugging
+/// Check stack usage for debugging (Phase 3)
 /// 
-/// This function should be called periodically during development
-/// to detect stack overflows or excessive stack usage.
-/// 
-/// # Panics
-/// 
-/// Panics if stack overflow is detected (RSP below stack bottom).
+/// Uses Per-CPU data for stack bounds.
 #[cfg(debug_assertions)]
 #[allow(dead_code)]
 pub fn check_stack_usage() {
@@ -405,17 +338,17 @@ pub fn check_stack_usage() {
         core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack));
     }
     
-    let stack_top = CURRENT_KERNEL_STACK.load(Ordering::Acquire) as u64;
-    let stack_bottom = stack_top.saturating_sub(8192);
+    let stack_top = super::per_cpu::get_kernel_stack().as_u64();
+    let stack_bottom = stack_top - 16384; // 16KB stack in Per-CPU
     
     assert!(
         current_rsp >= stack_bottom,
         "Stack overflow detected! RSP=0x{current_rsp:x}, bottom=0x{stack_bottom:x}"
     );
     
-    let used = stack_top.saturating_sub(current_rsp);
-    if used > 4096 {
-        debug_println!("⚠️  High stack usage: {used} bytes / 8192");
+    let used = stack_top - current_rsp;
+    if used > 8192 {
+        debug_println!("⚠️  High stack usage: {used} bytes / 16384");
     }
 }
 
@@ -424,16 +357,17 @@ pub fn check_stack_usage() {
 /// Checks if the syscall handler is running in the correct context:
 /// - Stack pointer within valid range
 /// - CPU in Ring 0 (kernel mode)
+/// - GS base points to valid Per-CPU data (Phase 3)
 #[cfg(debug_assertions)]
 fn validate_syscall_context() {
-    // Check stack range
+    // Check stack range using Per-CPU data
     let current_rsp: u64;
     unsafe {
         core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack));
     }
     
-    let stack_top = CURRENT_KERNEL_STACK.load(Ordering::Acquire) as u64;
-    let stack_bottom = stack_top.saturating_sub(8192);
+    let stack_top = super::per_cpu::get_kernel_stack().as_u64();
+    let stack_bottom = stack_top - 16384; // 16KB stack
     
     assert!(
         current_rsp >= stack_bottom && current_rsp <= stack_top,
@@ -451,10 +385,21 @@ fn validate_syscall_context() {
         0,
         "Syscall handler running in wrong privilege level! CS=0x{cs:x}"
     );
+    
+    // Verify GS base is set correctly (should point to Per-CPU data)
+    // IMPORTANT: After swapgs, IA32_GS_BASE contains the kernel's Per-CPU address,
+    // and IA32_KERNEL_GS_BASE contains the user's original GS (typically 0).
+    // So we check IA32_GS_BASE, not IA32_KERNEL_GS_BASE!
+    let current_gs = super::per_cpu::read_gs_base();
+    let expected_gs = super::per_cpu::get_per_cpu_addr();
+    debug_assert_eq!(
+        current_gs, expected_gs,
+        "IA32_GS_BASE mismatch after swapgs: got 0x{current_gs:x}, expected 0x{expected_gs:x}"
+    );
 }
 
 
-/// Syscall handler dispatcher
+/// Syscall handler dispatcher (Phase 3: Per-CPU based)
 ///
 /// This function is called from the syscall entry point and dispatches
 /// to the appropriate syscall implementation based on the syscall number.
@@ -478,10 +423,14 @@ extern "C" fn syscall_handler(
     #[cfg(debug_assertions)]
     validate_syscall_context();
     
+    // Increment syscall counter for this CPU (Phase 3)
+    unsafe {
+        super::per_cpu::current().inc_syscall_count();
+    }
+    
     // Trace syscall entry in debug builds
-    #[cfg(all(debug_assertions, feature = "syscall_trace"))]
     debug_println!(
-        "[SYSCALL] num={}, args=({:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})",
+        "[SYSCALL-ENTRY] num={}, args=({:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})",
         syscall_num, arg1, arg2, arg3, arg4, arg5, arg6
     );
     
@@ -490,9 +439,8 @@ extern "C" fn syscall_handler(
         syscall_num, arg1, arg2, arg3, arg4, arg5, arg6
     );
     
-    // Trace syscall return in debug builds
-    #[cfg(all(debug_assertions, feature = "syscall_trace"))]
-    debug_println!("[SYSCALL] num={syscall_num} returned {result:#x}");
+    // Trace syscall return
+    debug_println!("[SYSCALL-RESULT] num={syscall_num} returned {result}");
     
     // Convert i64 result to u64 for return
     result as u64

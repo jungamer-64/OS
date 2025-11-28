@@ -1,4 +1,4 @@
-// kernel/src/arch/x86_64/syscall_fast.rs
+// crates/kernel/src/arch/x86_64/syscall_fast.rs
 //! Optimized syscall entry for io_uring-style batched operations
 //!
 //! This module provides an alternative, streamlined syscall entry point

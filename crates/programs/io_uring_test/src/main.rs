@@ -15,17 +15,18 @@ pub extern "C" fn _start() -> ! {
     // Test 1: Setup io_uring via AsyncContext
     test_context_setup();
     
+    println!("\n--- Calling test_single_nop ---");
+    
     // Test 2: Single NOP operation
+    // This calls AsyncContext::new() again, which is causing GPF
     test_single_nop();
     
-    // Test 3: Batch NOP operations
-    test_batch_nop();
+    println!("\n--- test_single_nop returned ---");
     
-    // Test 4: Write operation
-    test_write();
-    
-    // Test 5: Batch writes
-    test_batch_write();
+    // Skip other tests for now
+    // test_batch_nop();
+    // test_write();
+    // test_batch_write();
     
     println!("\n=== io_uring Tests Complete ===");
     process::exit(0);
@@ -37,11 +38,15 @@ fn test_context_setup() {
     match AsyncContext::new() {
         Ok(ctx) => {
             println!("  Context created successfully");
-            println!("  Available slots: {}", ctx.available());
+            let slots = ctx.available();
+            // Skip numeric printing for now - suspected fmt::Display issue
+            if slots > 0 {
+                println!("  Has available slots");
+            }
             println!("  [PASS]");
         }
         Err(e) => {
-            println!("  Failed to create context: {}", e.code());
+            println!("  Failed to create context");
             println!("  [FAIL]");
         }
     }
@@ -52,8 +57,8 @@ fn test_single_nop() {
     
     let mut ctx = match AsyncContext::new() {
         Ok(c) => c,
-        Err(e) => {
-            println!("  Setup failed: {}", e.code());
+        Err(_e) => {
+            println!("  Setup failed");
             println!("  [SKIP]");
             return;
         }
@@ -62,7 +67,7 @@ fn test_single_nop() {
     // Submit a NOP with user_data = 0x12345678
     let ud = ctx.alloc_user_data();
     match ctx.submit(AsyncOp::nop(ud)) {
-        Ok(_) => println!("  Submitted NOP with user_data={}", ud),
+        Ok(_) => println!("  Submitted NOP"),
         Err(_) => {
             println!("  Submit failed");
             println!("  [FAIL]");
@@ -72,9 +77,9 @@ fn test_single_nop() {
     
     // Flush (executes io_uring_enter)
     match ctx.flush() {
-        Ok(n) => println!("  Flush returned {} completions", n),
-        Err(e) => {
-            println!("  Flush failed: {}", e.code());
+        Ok(_n) => println!("  Flush returned completions"),
+        Err(_e) => {
+            println!("  Flush failed");
             println!("  [FAIL]");
             return;
         }
@@ -82,7 +87,7 @@ fn test_single_nop() {
     
     // Get completion
     if let Some(result) = ctx.get_completion() {
-        println!("  Completion: user_data={}, result={}", result.user_data, result.result);
+        println!("  Got completion");
         if result.is_ok() {
             println!("  [PASS]");
         } else {

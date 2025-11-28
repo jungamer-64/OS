@@ -1,4 +1,4 @@
-// src/arch/x86_64/cr3_test.rs
+// crates/kernel/src/arch/x86_64/cr3_test.rs
 //! CR3 switching test utilities for Phase 3
 //! 
 //! These functions help diagnose the CR3 switching issue by testing

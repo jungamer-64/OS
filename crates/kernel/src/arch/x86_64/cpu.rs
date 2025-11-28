@@ -1,4 +1,4 @@
-// kernel/src/arch/x86_64/cpu.rs
+// crates/kernel/src/arch/x86_64/cpu.rs
 
 use crate::arch::Cpu;
 use x86_64::instructions::{hlt, interrupts};

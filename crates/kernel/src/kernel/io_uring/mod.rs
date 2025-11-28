@@ -28,7 +28,8 @@
 //! # Performance Benefits
 //!
 //! - **Batching**: Submit 100s of operations with one syscall
-//! - **Zero-syscall mode**: Kernel can poll SQ without syscall
+//! - **Zero-syscall mode**: Kernel can poll SQ without syscall (SQPOLL)
+//! - **Registered buffers**: Pre-validated memory for zero-copy I/O
 //! - **Cache efficiency**: Sequential memory access patterns
 //! - **Lock-free**: Atomic operations for synchronization
 //!
@@ -38,12 +39,23 @@
 //! - SQEs are copied to kernel memory before processing (TOCTOU protection)
 //! - Operations are executed with process credentials
 //! - Resource limits are enforced
+//! - Registered buffers are validated once at registration
 
 pub mod ring;
 pub mod handlers;
 pub mod context;
+pub mod sqpoll;
+pub mod registered_buffers;
 
 pub use ring::{IoUring, IoUringError};
 pub use context::IoUringContext;
+pub use sqpoll::{SqPollConfig, SqPollState, SqPollStats};
+pub use registered_buffers::{RegisteredBufferTable, RegisteredBufferStats};
 
 use crate::abi::io_uring::{SubmissionEntry, CompletionEntry, RingHeader, OpCode, RING_SIZE, RING_MASK};
+
+/// Initialize the io_uring subsystem
+pub fn init() {
+    sqpoll::init();
+    crate::debug_println!("[io_uring] Subsystem initialized");
+}

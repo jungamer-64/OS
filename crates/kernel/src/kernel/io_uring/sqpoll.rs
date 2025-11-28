@@ -1,0 +1,397 @@
+// kernel/src/kernel/io_uring/sqpoll.rs
+//! SQPOLL (Submission Queue Polling) Worker
+//!
+//! This module implements a kernel-side polling thread that continuously
+//! monitors submission queues, eliminating the need for syscalls in the
+//! I/O hot path.
+//!
+//! # Architecture
+//!
+//! ```text
+//! User Space                          Kernel Space
+//! ┌─────────────────┐                ┌─────────────────────┐
+//! │   Application   │                │   SQPOLL Worker     │
+//! │                 │                │   (kernel thread)   │
+//! │ ┌─────────────┐ │                │                     │
+//! │ │ Write SQE   │ │                │   ┌───────────────┐ │
+//! │ │ Update tail │ │   no syscall   │   │ Poll SQ tail  │ │
+//! │ └─────────────┘ │ ─────────────► │   │ Process SQEs  │ │
+//! │                 │                │   │ Update CQ     │ │
+//! │ ┌─────────────┐ │                │   └───────────────┘ │
+//! │ │ Read CQE    │◄┼────────────────┼─────────────────────│
+//! │ └─────────────┘ │                │                     │
+//! └─────────────────┘                └─────────────────────┘
+//! ```
+//!
+//! # Benefits
+//!
+//! - **Zero syscall I/O**: No kernel transition for submitting operations
+//! - **Lower latency**: Immediate processing when worker is polling
+//! - **Reduced context switches**: Kernel thread stays active
+//!
+//! # Power Management
+//!
+//! The worker uses adaptive polling:
+//! - Active polling when submissions are frequent
+//! - Idle timeout transitions to sleep state
+//! - Woken by syscall when new submissions arrive after idle
+
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
+use spin::Mutex;
+
+use crate::debug_println;
+use crate::kernel::process::ProcessId;
+
+/// SQPOLL worker configuration
+#[derive(Debug, Clone, Copy)]
+pub struct SqPollConfig {
+    /// CPU affinity (which CPU to run on)
+    pub cpu_id: u32,
+    
+    /// Idle timeout in microseconds before sleeping
+    /// Default: 1000μs (1ms)
+    pub idle_timeout_us: u32,
+    
+    /// Maximum busy-wait iterations before checking timeout
+    pub spin_iterations: u32,
+}
+
+impl Default for SqPollConfig {
+    fn default() -> Self {
+        Self {
+            cpu_id: 0,
+            idle_timeout_us: 1000,
+            spin_iterations: 1000,
+        }
+    }
+}
+
+/// SQPOLL worker state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SqPollState {
+    /// Worker is not running
+    Stopped = 0,
+    /// Worker is actively polling
+    Polling = 1,
+    /// Worker is idle/sleeping
+    Idle = 2,
+    /// Worker is shutting down
+    Stopping = 3,
+}
+
+impl From<u8> for SqPollState {
+    fn from(v: u8) -> Self {
+        match v {
+            0 => Self::Stopped,
+            1 => Self::Polling,
+            2 => Self::Idle,
+            3 => Self::Stopping,
+            _ => Self::Stopped,
+        }
+    }
+}
+
+/// Per-ring SQPOLL context
+/// 
+/// Tracks the state needed for polling a specific io_uring instance
+pub struct SqPollRingContext {
+    /// Process ID owning this ring
+    pub pid: ProcessId,
+    
+    /// Ring identifier within process
+    pub ring_id: u32,
+    
+    /// SQ tail address (for polling)
+    pub sq_tail_addr: u64,
+    
+    /// Last observed SQ tail value
+    pub last_tail: AtomicU32,
+    
+    /// Submissions processed by this worker
+    pub submissions_polled: AtomicU64,
+    
+    /// Whether this ring is active for polling
+    pub active: AtomicBool,
+}
+
+impl SqPollRingContext {
+    /// Create a new ring context
+    pub fn new(pid: ProcessId, ring_id: u32, sq_tail_addr: u64) -> Self {
+        Self {
+            pid,
+            ring_id,
+            sq_tail_addr,
+            last_tail: AtomicU32::new(0),
+            submissions_polled: AtomicU64::new(0),
+            active: AtomicBool::new(true),
+        }
+    }
+    
+    /// Check if there are new submissions
+    /// 
+    /// Returns the number of new submissions since last poll
+    pub fn check_new_submissions(&self) -> u32 {
+        // Read the current tail from shared memory
+        // SAFETY: sq_tail_addr points to valid kernel-mapped memory
+        let current_tail = unsafe {
+            let tail_ptr = self.sq_tail_addr as *const AtomicU32;
+            (*tail_ptr).load(Ordering::Acquire)
+        };
+        
+        let last = self.last_tail.load(Ordering::Relaxed);
+        
+        if current_tail != last {
+            // Calculate new submissions (handle wraparound)
+            let new_count = current_tail.wrapping_sub(last);
+            new_count
+        } else {
+            0
+        }
+    }
+    
+    /// Update last observed tail after processing
+    pub fn update_tail(&self, new_tail: u32) {
+        self.last_tail.store(new_tail, Ordering::Release);
+    }
+}
+
+/// Global SQPOLL worker state
+pub struct SqPollWorker {
+    /// Worker state
+    state: AtomicU32,
+    
+    /// Configuration
+    config: SqPollConfig,
+    
+    /// Registered rings for polling
+    rings: Mutex<BTreeMap<(ProcessId, u32), Arc<SqPollRingContext>>>,
+    
+    /// Total polls performed
+    poll_count: AtomicU64,
+    
+    /// Total submissions processed
+    submissions_total: AtomicU64,
+    
+    /// Idle cycles
+    idle_cycles: AtomicU64,
+    
+    /// Wakeup flag (set by syscall to wake idle worker)
+    needs_wakeup: AtomicBool,
+}
+
+impl SqPollWorker {
+    /// Create a new SQPOLL worker
+    pub const fn new(config: SqPollConfig) -> Self {
+        Self {
+            state: AtomicU32::new(SqPollState::Stopped as u32),
+            config,
+            rings: Mutex::new(BTreeMap::new()),
+            poll_count: AtomicU64::new(0),
+            submissions_total: AtomicU64::new(0),
+            idle_cycles: AtomicU64::new(0),
+            needs_wakeup: AtomicBool::new(false),
+        }
+    }
+    
+    /// Get current state
+    pub fn state(&self) -> SqPollState {
+        SqPollState::from(self.state.load(Ordering::Acquire) as u8)
+    }
+    
+    /// Register a ring for polling
+    pub fn register_ring(&self, ctx: Arc<SqPollRingContext>) {
+        let key = (ctx.pid, ctx.ring_id);
+        self.rings.lock().insert(key, ctx);
+        debug_println!("[SQPOLL] Registered ring {:?}", key);
+    }
+    
+    /// Unregister a ring
+    pub fn unregister_ring(&self, pid: ProcessId, ring_id: u32) {
+        self.rings.lock().remove(&(pid, ring_id));
+        debug_println!("[SQPOLL] Unregistered ring ({:?}, {})", pid, ring_id);
+    }
+    
+    /// Wake up the worker if it's idle
+    pub fn wakeup(&self) {
+        self.needs_wakeup.store(true, Ordering::Release);
+    }
+    
+    /// Start the polling worker
+    /// 
+    /// Note: In a full implementation, this would spawn a kernel thread.
+    /// For now, we implement cooperative polling that can be called from
+    /// the scheduler's idle loop.
+    pub fn start(&self) {
+        self.state.store(SqPollState::Polling as u32, Ordering::Release);
+        debug_println!("[SQPOLL] Worker started");
+    }
+    
+    /// Stop the polling worker
+    pub fn stop(&self) {
+        self.state.store(SqPollState::Stopping as u32, Ordering::Release);
+        debug_println!("[SQPOLL] Worker stopping");
+    }
+    
+    /// Poll all registered rings once
+    /// 
+    /// Returns the total number of new submissions found
+    pub fn poll_once(&self) -> u32 {
+        let state = self.state();
+        if state != SqPollState::Polling {
+            return 0;
+        }
+        
+        self.poll_count.fetch_add(1, Ordering::Relaxed);
+        
+        let rings = self.rings.lock();
+        let mut total_new = 0u32;
+        
+        for (_key, ctx) in rings.iter() {
+            if !ctx.active.load(Ordering::Relaxed) {
+                continue;
+            }
+            
+            let new_count = ctx.check_new_submissions();
+            if new_count > 0 {
+                total_new += new_count;
+                ctx.submissions_polled.fetch_add(u64::from(new_count), Ordering::Relaxed);
+                
+                // Process the ring
+                // Note: This would trigger the io_uring context's process() method
+                // The actual implementation depends on how we access the IoUringContext
+            }
+        }
+        
+        if total_new > 0 {
+            self.submissions_total.fetch_add(u64::from(total_new), Ordering::Relaxed);
+        } else {
+            self.idle_cycles.fetch_add(1, Ordering::Relaxed);
+        }
+        
+        total_new
+    }
+    
+    /// Main polling loop (cooperative version)
+    /// 
+    /// Call this from the scheduler's idle loop or a timer interrupt
+    pub fn poll_loop_iteration(&self) {
+        // Check for wakeup request
+        if self.needs_wakeup.swap(false, Ordering::AcqRel) {
+            // Woken from idle, switch to polling
+            if self.state() == SqPollState::Idle {
+                self.state.store(SqPollState::Polling as u32, Ordering::Release);
+            }
+        }
+        
+        let mut idle_count = 0u32;
+        
+        for _ in 0..self.config.spin_iterations {
+            if self.state() == SqPollState::Stopping {
+                self.state.store(SqPollState::Stopped as u32, Ordering::Release);
+                return;
+            }
+            
+            let new = self.poll_once();
+            if new == 0 {
+                idle_count += 1;
+            } else {
+                idle_count = 0;
+            }
+            
+            // Adaptive polling: go idle after threshold
+            if idle_count > self.config.spin_iterations / 10 {
+                self.state.store(SqPollState::Idle as u32, Ordering::Release);
+                return;
+            }
+        }
+    }
+    
+    /// Get statistics
+    pub fn stats(&self) -> SqPollStats {
+        SqPollStats {
+            state: self.state(),
+            poll_count: self.poll_count.load(Ordering::Relaxed),
+            submissions_total: self.submissions_total.load(Ordering::Relaxed),
+            idle_cycles: self.idle_cycles.load(Ordering::Relaxed),
+            registered_rings: self.rings.lock().len() as u32,
+        }
+    }
+}
+
+/// SQPOLL statistics
+#[derive(Debug, Clone, Copy)]
+pub struct SqPollStats {
+    /// Current state
+    pub state: SqPollState,
+    /// Total poll iterations
+    pub poll_count: u64,
+    /// Total submissions processed
+    pub submissions_total: u64,
+    /// Idle cycles
+    pub idle_cycles: u64,
+    /// Number of registered rings
+    pub registered_rings: u32,
+}
+
+/// Global SQPOLL worker instance
+static SQPOLL_WORKER: SqPollWorker = SqPollWorker::new(SqPollConfig {
+    cpu_id: 0,
+    idle_timeout_us: 1000,
+    spin_iterations: 1000,
+});
+
+/// Initialize the SQPOLL subsystem
+pub fn init() {
+    SQPOLL_WORKER.start();
+    debug_println!("[SQPOLL] Subsystem initialized");
+}
+
+/// Register a ring for SQPOLL
+pub fn register_ring(pid: ProcessId, ring_id: u32, sq_tail_addr: u64) {
+    let ctx = Arc::new(SqPollRingContext::new(pid, ring_id, sq_tail_addr));
+    SQPOLL_WORKER.register_ring(ctx);
+}
+
+/// Unregister a ring from SQPOLL
+pub fn unregister_ring(pid: ProcessId, ring_id: u32) {
+    SQPOLL_WORKER.unregister_ring(pid, ring_id);
+}
+
+/// Wake up the SQPOLL worker
+pub fn wakeup() {
+    SQPOLL_WORKER.wakeup();
+}
+
+/// Poll once (for scheduler integration)
+pub fn poll() -> u32 {
+    SQPOLL_WORKER.poll_once()
+}
+
+/// Get SQPOLL statistics
+pub fn stats() -> SqPollStats {
+    SQPOLL_WORKER.stats()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test_case]
+    fn test_sqpoll_config_default() {
+        let config = SqPollConfig::default();
+        assert_eq!(config.idle_timeout_us, 1000);
+        assert_eq!(config.spin_iterations, 1000);
+    }
+    
+    #[test_case]
+    fn test_sqpoll_state_conversion() {
+        assert_eq!(SqPollState::from(0), SqPollState::Stopped);
+        assert_eq!(SqPollState::from(1), SqPollState::Polling);
+        assert_eq!(SqPollState::from(2), SqPollState::Idle);
+        assert_eq!(SqPollState::from(3), SqPollState::Stopping);
+        assert_eq!(SqPollState::from(255), SqPollState::Stopped);
+    }
+}
