@@ -1,29 +1,77 @@
-// kernel/src/kernel/async/excecutor.rs
+// crates/kernel/src/kernel/async/executor.rs
 //! Future Executor
 //!
 //! 非同期タスクを実行するための Executor。
-//! VecDeque をタスクキューとして使用した簡易実装。
+//! crossbeam-queue を使用したロックフリーキューで効率的にタスクを管理。
 
 use core::future::Future;
 use core::task::{Context, Poll, Waker};
 use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use alloc::boxed::Box;
-use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::task::Wake;
-use spin::Mutex;
+use alloc::collections::BTreeMap;
+use spin::{Mutex, Lazy};
+use crossbeam_queue::ArrayQueue;
+
+// ============================================================================
+// Task ID
+// ============================================================================
+
+/// タスク ID - 各タスクを一意に識別
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TaskId(u64);
+
+/// 次のタスク ID
+static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
+
+impl TaskId {
+    /// 新しいユニークな TaskId を生成
+    pub fn new() -> Self {
+        Self(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// 内部の u64 値を取得
+    #[inline]
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+impl Default for TaskId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// Task
+// ============================================================================
 
 /// 非同期タスク
-struct Task {
+/// 
+/// Box 化された Future を保持し、TaskId で識別される。
+pub struct Task {
+    /// タスク ID
+    id: TaskId,
+    /// Box 化された Future
     future: Pin<Box<dyn Future<Output = ()> + Send>>,
 }
 
 impl Task {
     /// 新しいタスクを作成
-    fn new(future: impl Future<Output = ()> + 'static + Send) -> Self {
+    pub fn new(future: impl Future<Output = ()> + 'static + Send) -> Self {
         Self {
+            id: TaskId::new(),
             future: Box::pin(future),
         }
+    }
+
+    /// タスク ID を取得
+    #[inline]
+    pub const fn id(&self) -> TaskId {
+        self.id
     }
 
     /// タスクをポーリング
@@ -32,25 +80,28 @@ impl Task {
     }
 }
 
-/// タスク ID
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct TaskId(u64);
+// ============================================================================
+// TaskWaker - Wake trait 実装
+// ============================================================================
 
-static NEXT_TASK_ID: Mutex<u64> = Mutex::new(0);
-
-impl TaskId {
-    fn new() -> Self {
-        let mut id = NEXT_TASK_ID.lock();
-        let task_id = Self(*id);
-        *id += 1;
-        task_id
-    }
+/// タスクを起こすための Waker 実装
+struct TaskWaker {
+    /// 対象タスクの ID
+    task_id: TaskId,
+    /// タスクキューへの参照
+    task_queue: Arc<ArrayQueue<TaskId>>,
 }
 
-/// タスク Waker
-struct TaskWaker {
-    task_id: TaskId,
-    queue: Arc<Mutex<VecDeque<TaskId>>>,
+impl TaskWaker {
+    /// 新しい TaskWaker を作成
+    fn new(task_id: TaskId, task_queue: Arc<ArrayQueue<TaskId>>) -> Self {
+        Self { task_id, task_queue }
+    }
+
+    /// Waker として使える形に変換
+    fn waker(self: Arc<Self>) -> Waker {
+        Waker::from(self)
+    }
 }
 
 impl Wake for TaskWaker {
@@ -59,77 +110,165 @@ impl Wake for TaskWaker {
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        self.queue.lock().push_back(self.task_id);
+        // キューに TaskId を追加（ロックフリー）
+        // キューがフルの場合は無視（次のポーリングで再試行される）
+        let _ = self.task_queue.push(self.task_id);
     }
 }
 
+// ============================================================================
+// Executor
+// ============================================================================
+
+/// タスクキューのデフォルトサイズ
+const DEFAULT_QUEUE_SIZE: usize = 256;
+
 /// Future Executor
+///
+/// crossbeam-queue を使用したロックフリーキューでタスクを管理。
+/// カーネル内の非同期処理の中心となるコンポーネント。
 pub struct Executor {
-    /// タスクキュー
-    task_queue: Arc<Mutex<VecDeque<TaskId>>>,
-    /// タスクマップ
-    tasks: Mutex<alloc::collections::BTreeMap<TaskId, Task>>,
+    /// 実行待ちタスクキュー（ロックフリー）
+    task_queue: Arc<ArrayQueue<TaskId>>,
+    /// タスクマップ（TaskId -> Task）
+    tasks: Mutex<BTreeMap<TaskId, Task>>,
+    /// 実行中フラグ
+    running: AtomicBool,
 }
 
 impl Executor {
     /// 新しい Executor を作成
     pub fn new() -> Self {
+        Self::with_capacity(DEFAULT_QUEUE_SIZE)
+    }
+
+    /// 指定したキャパシティで Executor を作成
+    pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            task_queue: Arc::new(Mutex::new(VecDeque::new())),
-            tasks: Mutex::new(alloc::collections::BTreeMap::new()),
+            task_queue: Arc::new(ArrayQueue::new(capacity)),
+            tasks: Mutex::new(BTreeMap::new()),
+            running: AtomicBool::new(false),
         }
     }
 
-    /// タスクを追加
-    pub fn spawn(&self, future: impl Future<Output = ()> + 'static + Send) {
-        let task_id = TaskId::new();
+    /// タスクを追加（spawn）
+    ///
+    /// 任意の Future を Executor に追加し、すぐにキューに入れる。
+    pub fn spawn(&self, future: impl Future<Output = ()> + 'static + Send) -> TaskId {
         let task = Task::new(future);
-        
+        let task_id = task.id();
+
+        // タスクマップに追加
         self.tasks.lock().insert(task_id, task);
-        self.task_queue.lock().push_back(task_id);
+        
+        // 実行キューに追加
+        let _ = self.task_queue.push(task_id);
+
+        crate::debug_println!("[Executor] Spawned task {}", task_id.as_u64());
+        task_id
     }
 
-    /// Executor を実行（すべてのタスクが完了するまで）
-    pub fn run(&self) {
-        loop {
-            // キューからタスクを取得
-            let task_id = match self.task_queue.lock().pop_front() {
-                Some(id) => id,
-                None => break, // キューが空なら終了
-            };
+    /// 1つのタスクをポーリング
+    ///
+    /// キューからタスクを1つ取り出してポーリングする。
+    /// 
+    /// # Returns
+    /// - `Some(true)` - タスクが完了した
+    /// - `Some(false)` - タスクはまだ Pending
+    /// - `None` - キューが空だった
+    pub fn run_one(&self) -> Option<bool> {
+        // キューからタスク ID を取得
+        let task_id = self.task_queue.pop()?;
 
-            // タスクを取得
+        // タスクを取得
+        let mut task = {
             let mut tasks = self.tasks.lock();
-            let mut task = match tasks.remove(&task_id) {
-                Some(task) => task,
-                None => continue,
-            };
-            drop(tasks);
+            tasks.remove(&task_id)?
+        };
 
-            // Waker を作成
-            let waker = Arc::new(TaskWaker {
-                task_id,
-                queue: Arc::clone(&self.task_queue),
-            });
-            let waker = Waker::from(waker);
-            let mut context = Context::from_waker(&waker);
+        // Waker を作成
+        let waker = Arc::new(TaskWaker::new(task_id, Arc::clone(&self.task_queue)));
+        let waker = waker.waker();
+        let mut context = Context::from_waker(&waker);
 
-            // タスクをポーリング
-            match task.poll(&mut context) {
-                Poll::Ready(()) => {
-                    // タスク完了
-                }
-                Poll::Pending => {
-                    // タスクを再度マップに追加
-                    self.tasks.lock().insert(task_id, task);
-                }
+        // タスクをポーリング
+        let completed = match task.poll(&mut context) {
+            Poll::Ready(()) => {
+                crate::debug_println!("[Executor] Task {} completed", task_id.as_u64());
+                true
+            }
+            Poll::Pending => {
+                // タスクを再度マップに戻す
+                self.tasks.lock().insert(task_id, task);
+                false
+            }
+        };
+
+        Some(completed)
+    }
+
+    /// アイドル状態になるまで実行
+    ///
+    /// キューが空になるまでタスクを実行し続ける。
+    /// すべてのタスクが完了するわけではなく、I/O 待ちなどで
+    /// Pending になったタスクは Waker で再度キューに入れられる。
+    ///
+    /// # Returns
+    /// 完了したタスクの数
+    pub fn run_until_idle(&self) -> usize {
+        let mut completed = 0;
+
+        while let Some(was_completed) = self.run_one() {
+            if was_completed {
+                completed += 1;
             }
         }
+
+        completed
     }
 
-    /// タスク数を取得
+    /// すべてのタスクが完了するまで実行
+    ///
+    /// タスクマップが空になるまで実行し続ける。
+    /// 無限ループに注意（I/O 待ちタスクがある場合など）。
+    pub fn run(&self) {
+        self.running.store(true, Ordering::SeqCst);
+
+        while self.running.load(Ordering::SeqCst) {
+            // キューからタスクを処理
+            if self.run_one().is_none() {
+                // キューが空の場合
+                if self.tasks.lock().is_empty() {
+                    // すべてのタスクが完了
+                    break;
+                }
+                // タスクはあるがキューが空（I/O 待ちなど）
+                // 少し待ってから再試行
+                core::hint::spin_loop();
+            }
+        }
+
+        self.running.store(false, Ordering::SeqCst);
+    }
+
+    /// Executor を停止
+    pub fn stop(&self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+
+    /// 現在のタスク数を取得
     pub fn task_count(&self) -> usize {
         self.tasks.lock().len()
+    }
+
+    /// キュー内のタスク数を取得
+    pub fn queued_count(&self) -> usize {
+        self.task_queue.len()
+    }
+
+    /// 実行中かどうか
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
     }
 }
 
@@ -138,3 +277,44 @@ impl Default for Executor {
         Self::new()
     }
 }
+
+// ============================================================================
+// グローバル RUNTIME
+// ============================================================================
+
+/// グローバルカーネルランタイム
+///
+/// どこからでも `spawn_task()` でタスクを追加できる。
+pub static RUNTIME: Lazy<Executor> = Lazy::new(Executor::new);
+
+/// グローバルランタイムにタスクを追加
+///
+/// # Example
+/// ```ignore
+/// spawn_task(async {
+///     debug_println!("Hello from async!");
+///     Timer::after(100).await;
+///     debug_println!("100ms later!");
+/// });
+/// ```
+pub fn spawn_task(future: impl Future<Output = ()> + 'static + Send) -> TaskId {
+    RUNTIME.spawn(future)
+}
+
+/// グローバルランタイムを1ステップ実行
+///
+/// カーネルのアイドルループから呼び出すことを想定。
+pub fn poll_runtime() -> Option<bool> {
+    RUNTIME.run_one()
+}
+
+/// グローバルランタイムをアイドルまで実行
+pub fn run_runtime_until_idle() -> usize {
+    RUNTIME.run_until_idle()
+}
+
+/// グローバルランタイムのタスク数を取得
+pub fn runtime_task_count() -> usize {
+    RUNTIME.task_count()
+}
+
