@@ -1277,6 +1277,7 @@ pub fn sys_io_uring_enter_v2(
             &sqe,
             cap_table,
             buf_table,
+            false, // User mode: no raw addresses
         )
         // table lock dropped here
     };
@@ -1289,57 +1290,69 @@ pub fn sys_io_uring_enter_v2(
     0 // Success
 }
 
-/// V2 capability grant syscall (ID: 2004)
+/// V2 capability duplicate syscall (ID: 2004)
 ///
-/// Grant a capability handle for an existing file descriptor.
-/// This creates a type-safe handle that can be used with V2 io_uring operations.
+/// Duplicate an existing capability with potentially reduced rights.
+/// This creates a new capability handle pointing to the same resource.
 ///
 /// # Arguments
-/// * `fd` - Existing file descriptor to wrap
-/// * `rights` - Permissions to grant (bitfield: READ=1, WRITE=2, etc.)
+/// * `capability_id` - Existing capability ID to duplicate
+/// * `rights` - Permissions for the new capability (must be subset of original)
 ///
 /// # Returns
-/// * Success: Capability handle value (u64)
+/// * Success: New capability handle value (u64)
 /// * Error: Negative errno
 #[allow(unused)]
-pub fn sys_capability_grant(
-    fd: u64,
+pub fn sys_capability_dup(
+    capability_id: u64,
     rights: u64,
     _arg3: u64,
     _arg4: u64,
     _arg5: u64,
     _arg6: u64,
 ) -> SyscallResult {
-    use crate::kernel::capability::{Rights, FileResource};
+    use crate::kernel::capability::{Rights, FileResource, Handle};
     use crate::kernel::process::PROCESS_TABLE;
-    use alloc::sync::Arc;
     
-    let mut table = PROCESS_TABLE.lock();
-    let process = match table.current_process_mut() {
+    let table = PROCESS_TABLE.lock();
+    let process = match table.current_process() {
         Some(p) => p,
         None => return ESRCH,
     };
     
-    // Verify the fd exists
-    if process.get_file_descriptor(fd).is_none() {
-        return EBADF;
+    // Get the original capability
+    let handle: Handle<FileResource> = unsafe { Handle::from_raw(capability_id) };
+    let entry = match process.capability_table().get(&handle) {
+        Ok(e) => e,
+        Err(_) => {
+            core::mem::forget(handle);
+            return EBADF;
+        }
+    };
+    
+    // New rights must be a subset of original rights
+    let new_rights = Rights::from_bits(rights);
+    if !entry.rights.contains(new_rights) {
+        core::mem::forget(handle);
+        return EPERM;
     }
     
-    // Create a simple resource wrapper (just stores the fd)
-    struct FdResource(u64);
-    let resource = Arc::new(FdResource(fd));
+    // Clone the resource and insert with new rights
+    let resource_clone = entry.resource.clone();
+    core::mem::forget(handle);
     
-    // Convert rights
-    let rights = Rights::from_bits(rights);
-    
-    // Insert into capability table
-    match process.capability_table_mut().insert::<FileResource, _>(resource, rights) {
-        Ok(handle) => {
-            let value = handle.raw();
-            core::mem::forget(handle); // Don't drop - return to user
+    // Insert the duplicated capability
+    match process.capability_table().insert_raw::<FileResource>(
+        entry.type_id,
+        resource_clone,
+        new_rights,
+    ) {
+        Ok(new_handle) => {
+            let value = new_handle.raw();
+            core::mem::forget(new_handle);
             value as SyscallResult
         }
-        Err(_) => ENOSPC, // Table full
+        Err(_) => ENOSPC,
     }
 }
 
@@ -1433,7 +1446,7 @@ pub fn dispatch(
             2002 => sys_ring_setup(arg1, arg2, arg3, arg4, arg5, arg6),
             // V2 Next-Generation Protocol (2003+)
             2003 => sys_io_uring_enter_v2(arg1, arg2, arg3, arg4, arg5, arg6),
-            2004 => sys_capability_grant(arg1, arg2, arg3, arg4, arg5, arg6),
+            2004 => sys_capability_dup(arg1, arg2, arg3, arg4, arg5, arg6),
             2005 => sys_capability_revoke(arg1, arg2, arg3, arg4, arg5, arg6),
             _ => {
                 debug_println!("[SYSCALL] Invalid syscall number: {}", syscall_num);

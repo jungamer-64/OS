@@ -48,8 +48,17 @@ use crate::debug_println;
 // Operation Types
 // ============================================================================
 
+use crate::abi::io_uring_v2::{SubmissionEntryV2, CompletionEntryV2};
+use crate::kernel::capability::{Handle, FileResource};
+
+// ... (imports)
+
+// ============================================================================
+// Operation Types
+// ============================================================================
+
 /// io_uring 操作の種類
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum IoUringOp {
     /// No operation (テスト用)
     Nop,
@@ -83,6 +92,27 @@ pub enum IoUringOp {
     Munmap {
         addr: u64,
         len: u64,
+    },
+
+    /// Read from capability (V2)
+    ReadV2 {
+        cap: Handle<FileResource>,
+        buf: *mut u8,
+        len: u32,
+        offset: u64,
+    },
+    
+    /// Write to capability (V2)
+    WriteV2 {
+        cap: Handle<FileResource>,
+        buf: *const u8,
+        len: u32,
+        offset: u64,
+    },
+    
+    /// Close capability (V2)
+    CloseV2 {
+        cap: Handle<FileResource>,
     },
 }
 
@@ -254,10 +284,58 @@ impl Drop for IoUringFuture {
 /// 操作を実際の io_uring にサブミット
 fn submit_op_to_ring(op: &IoUringOp, user_data: u64) -> i32 {
     use crate::kernel::io_uring::handlers::dispatch_sqe;
+    use crate::kernel::io_uring::handlers_v2::dispatch_sqe_v2;
     use crate::kernel::process::PROCESS_TABLE;
     use crate::abi::io_uring::SubmissionEntry;
     
-    // SQE を構築
+    // Get the current process's capability table
+    let table = PROCESS_TABLE.lock();
+    let process = match table.current_process() {
+        Some(p) => p,
+        None => {
+            // No current process, return error
+            complete_operation(user_data, -3); // ESRCH
+            return -3;
+        }
+    };
+    let cap_table = process.capability_table();
+
+    // Handle V2 operations
+    match op {
+        IoUringOp::ReadV2 { cap, buf, len, offset } => {
+            let sqe = SubmissionEntryV2::read_raw(cap.raw(), *buf as u64, *len, *offset, user_data);
+            let cqe = dispatch_sqe_v2(&sqe, cap_table, None, true); // Allow raw addr for kernel
+            let result = match cqe.into_result() {
+                Ok(val) => val,
+                Err(e) => -(e as i32),
+            };
+            complete_operation(user_data, result);
+            return 0;
+        }
+        IoUringOp::WriteV2 { cap, buf, len, offset } => {
+            let sqe = SubmissionEntryV2::write_raw(cap.raw(), *buf as u64, *len, *offset, user_data);
+            let cqe = dispatch_sqe_v2(&sqe, cap_table, None, true); // Allow raw addr for kernel
+            let result = match cqe.into_result() {
+                Ok(val) => val,
+                Err(e) => -(e as i32),
+            };
+            complete_operation(user_data, result);
+            return 0;
+        }
+        IoUringOp::CloseV2 { cap } => {
+            let sqe = SubmissionEntryV2::close(cap.raw(), user_data);
+            let cqe = dispatch_sqe_v2(&sqe, cap_table, None, true);
+            let result = match cqe.into_result() {
+                Ok(val) => val,
+                Err(e) => -(e as i32),
+            };
+            complete_operation(user_data, result);
+            return 0;
+        }
+        _ => {} // Fall through to V1
+    }
+
+    // SQE を構築 (V1)
     let sqe = match op {
         IoUringOp::Nop => SubmissionEntry::nop(user_data),
         
@@ -280,17 +358,8 @@ fn submit_op_to_ring(op: &IoUringOp, user_data: u64) -> i32 {
         IoUringOp::Munmap { addr, len } => {
             SubmissionEntry::munmap(*addr, *len as u32, user_data)
         }
-    };
-    
-    // Get the current process's capability table
-    let table = PROCESS_TABLE.lock();
-    let cap_table = match table.current_process() {
-        Some(p) => p.capability_table(),
-        None => {
-            // No current process, return error
-            complete_operation(user_data, -3); // ESRCH
-            return -3;
-        }
+
+        _ => unreachable!("V2 ops handled above"),
     };
     
     // 即座に実行して結果を完了に書き込む
@@ -344,6 +413,34 @@ pub fn read_async(fd: i32, buf: &mut [u8]) -> IoUringFuture {
 /// 非同期 close
 pub fn close_async(fd: i32) -> IoUringFuture {
     submit_async(IoUringOp::Close { fd })
+}
+
+/// 非同期 write (V2 Capability-based)
+pub fn write_async_v2(cap: Handle<FileResource>, buf: &[u8], offset: u64) -> IoUringFuture {
+    submit_async(IoUringOp::WriteV2 {
+        cap,
+        buf: buf.as_ptr(),
+        len: buf.len() as u32,
+        offset,
+    })
+}
+
+/// 非同期 read (V2 Capability-based)
+///
+/// # Safety
+/// The buffer must remain valid until the Future completes.
+pub fn read_async_v2(cap: Handle<FileResource>, buf: &mut [u8], offset: u64) -> IoUringFuture {
+    submit_async(IoUringOp::ReadV2 {
+        cap,
+        buf: buf.as_mut_ptr(),
+        len: buf.len() as u32,
+        offset,
+    })
+}
+
+/// 非同期 close (V2 Capability-based)
+pub fn close_async_v2(cap: Handle<FileResource>) -> IoUringFuture {
+    submit_async(IoUringOp::CloseV2 { cap })
 }
 
 /// 非同期メモリ割り当て

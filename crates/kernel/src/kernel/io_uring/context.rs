@@ -243,7 +243,7 @@ impl IoUringContext {
         cap_table: &CapabilityTable,
     ) -> crate::abi::io_uring_v2::CompletionEntryV2 {
         // Use the registered buffer table from this context
-        dispatch_sqe_v2(sqe, cap_table, Some(&self.registered_buffers))
+        dispatch_sqe_v2(sqe, cap_table, Some(&self.registered_buffers), false)
     }
 
     /// Get a reference to the registered buffer table

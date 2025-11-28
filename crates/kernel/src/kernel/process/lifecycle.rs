@@ -638,8 +638,8 @@ fn free_process_resources(process: &mut crate::kernel::process::Process) {
         }
     }
     
-    // 3. Close all open file descriptors
-    process.close_all_fds();
+    // 3. Clear capability table (closes all resources)
+    process.capability_table().clear();
     
     crate::debug_println!("[Process] Freed resources for PID={}", process.pid().as_u64());
 }
@@ -736,11 +736,11 @@ pub fn fork_process() -> Result<ProcessId, CreateError> {
     let frame_allocator = allocator_lock.as_mut().ok_or(CreateError::FrameAllocationFailed)?;
     let phys_mem_offset = VirtAddr::new(PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed));
     
-    // 1. Get current process info
-    let (current_pid, current_registers, (parent_fds, parent_next_fd)) = {
+    // 1. Get current process info (including capability table clone)
+    let (current_pid, current_registers, parent_cap_table) = {
         let table = PROCESS_TABLE.lock();
         let process = table.current_process().ok_or(CreateError::PageTableCreationError("No current process"))?;
-        (process.pid(), *process.registers(), process.clone_file_descriptors())
+        (process.pid(), *process.registers(), process.capability_table().clone_for_fork())
     };
     
     // 2. Duplicate page table
@@ -796,8 +796,8 @@ pub fn fork_process() -> Result<ProcessId, CreateError> {
     // Copy registers
     *child_process.registers_mut() = current_registers;
 
-    // Copy file descriptors
-    child_process.set_file_descriptors(parent_fds, parent_next_fd);
+    // Copy capability table (replaces file descriptors)
+    child_process.set_capability_table(parent_cap_table);
     
     // Set return value for child to 0
     child_process.registers_mut().rax = 0;

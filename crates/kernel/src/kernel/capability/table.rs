@@ -234,6 +234,68 @@ impl CapabilityTable {
         Ok(Handle::new(index as u32, generation))
     }
 
+    /// Insert a capability with an existing type_id and resource
+    ///
+    /// This is used for duplicating capabilities where the type_id is already known.
+    ///
+    /// # Arguments
+    /// * `type_id` - The resource type ID
+    /// * `resource` - The resource (Arc<dyn Any + Send + Sync>)
+    /// * `rights` - Access rights for the new capability
+    ///
+    /// # Returns
+    /// A handle to the new capability
+    pub fn insert_raw<R: ResourceKind>(
+        &self,
+        type_id: u32,
+        resource: Arc<dyn Any + Send + Sync>,
+        rights: Rights,
+    ) -> Result<Handle<R>, SyscallError> {
+        // Check if we've hit the limit
+        if self.count() >= MAX_CAPABILITIES as u32 {
+            return Err(SyscallError::CapabilityTableFull);
+        }
+
+        let generation = next_generation();
+        let entry = Box::new(CapabilityEntry {
+            type_id,
+            generation,
+            rights,
+            ref_count: AtomicU32::new(1),
+            resource,
+        });
+
+        let mut slots = self.slots.write();
+
+        // Try the hint first
+        let hint = self.next_free_hint.load(Ordering::Relaxed) as usize;
+        let index = if hint < slots.len() && slots[hint].is_empty() {
+            hint
+        } else {
+            // Linear search for a free slot
+            match slots.iter().position(|s| s.is_empty()) {
+                Some(idx) => idx,
+                None => {
+                    // Need to grow the table
+                    if slots.len() >= MAX_CAPABILITIES {
+                        return Err(SyscallError::CapabilityTableFull);
+                    }
+                    let idx = slots.len();
+                    slots.push(Slot::Empty);
+                    idx
+                }
+            }
+        };
+
+        slots[index] = Slot::Occupied(entry);
+
+        self.next_free_hint
+            .store((index + 1) as u32, Ordering::Relaxed);
+        self.count.fetch_add(1, Ordering::Release);
+
+        Ok(Handle::new(index as u32, generation))
+    }
+
     /// Insert a capability at a specific index with generation 0
     ///
     /// This is used for well-known capabilities like stdin/stdout/stderr
@@ -459,6 +521,48 @@ impl CapabilityTable {
         }
         self.count.store(0, Ordering::Release);
         self.next_free_hint.store(0, Ordering::Relaxed);
+    }
+
+    /// Clone this capability table for fork()
+    ///
+    /// Creates a new CapabilityTable with cloned entries. The resources
+    /// themselves are Arc-cloned (shared), but each process gets its own
+    /// capability table and handles.
+    ///
+    /// # Returns
+    /// A new CapabilityTable with the same entries
+    pub fn clone_for_fork(&self) -> Self {
+        let slots = self.slots.read();
+        let count = self.count.load(Ordering::Acquire);
+        
+        let mut new_slots = Vec::with_capacity(slots.len());
+        
+        for slot in slots.iter() {
+            match slot {
+                Slot::Empty => {
+                    new_slots.push(Slot::Empty);
+                }
+                Slot::Occupied(entry) => {
+                    // Clone the entry with the same generation, type_id, rights
+                    // The resource is Arc-cloned (just increments ref count)
+                    let cloned_entry = Box::new(CapabilityEntry {
+                        type_id: entry.type_id,
+                        generation: entry.generation,
+                        rights: entry.rights,
+                        ref_count: AtomicU32::new(1), // Fresh ref count in child
+                        resource: entry.resource.clone(),
+                    });
+                    new_slots.push(Slot::Occupied(cloned_entry));
+                }
+            }
+        }
+        
+        Self {
+            slots: RwLock::new(new_slots),
+            count: AtomicU32::new(count),
+            next_free_hint: AtomicU32::new(self.next_free_hint.load(Ordering::Relaxed)),
+            generation: AtomicU64::new(self.generation.load(Ordering::Relaxed)),
+        }
     }
 }
 

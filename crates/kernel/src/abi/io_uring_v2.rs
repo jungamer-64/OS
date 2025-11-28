@@ -182,6 +182,58 @@ impl SubmissionEntryV2 {
         }
     }
 
+    /// Create a raw read entry (kernel use only)
+    /// Uses aux1 as buffer address
+    #[must_use]
+    pub const fn read_raw(
+        capability_id: u64,
+        addr: u64,
+        len: u32,
+        offset: u64,
+        user_data: u64,
+    ) -> Self {
+        Self {
+            opcode: OpCode::Read as u8,
+            flags: 0, // No FIXED_BUFFER
+            ioprio: 0,
+            capability_id,
+            off: offset,
+            buf_index: 0,
+            len,
+            op_flags: 0,
+            _pad: 0,
+            user_data,
+            aux1: addr, // Use aux1 for address
+            aux2: 0,
+        }
+    }
+
+    /// Create a raw write entry (kernel use only)
+    /// Uses aux1 as buffer address
+    #[must_use]
+    pub const fn write_raw(
+        capability_id: u64,
+        addr: u64,
+        len: u32,
+        offset: u64,
+        user_data: u64,
+    ) -> Self {
+        Self {
+            opcode: OpCode::Write as u8,
+            flags: 0, // No FIXED_BUFFER
+            ioprio: 0,
+            capability_id,
+            off: offset,
+            buf_index: 0,
+            len,
+            op_flags: 0,
+            _pad: 0,
+            user_data,
+            aux1: addr, // Use aux1 for address
+            aux2: 0,
+        }
+    }
+
     /// Create a close entry
     #[must_use]
     pub const fn close(capability_id: u64, user_data: u64) -> Self {

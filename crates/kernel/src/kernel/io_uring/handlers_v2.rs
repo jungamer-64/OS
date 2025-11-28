@@ -31,6 +31,7 @@ use crate::kernel::process::PROCESS_TABLE;
 /// * `sqe` - The V2 submission entry
 /// * `cap_table` - The process's capability table
 /// * `buf_table` - The registered buffer table (optional)
+/// * `allow_raw_addr` - Whether to allow raw addresses (kernel mode only)
 ///
 /// # Returns
 /// A V2 completion entry with the result
@@ -38,6 +39,7 @@ pub fn dispatch_sqe_v2(
     sqe: &SubmissionEntryV2,
     cap_table: &CapabilityTable,
     buf_table: Option<&RegisteredBufferTable>,
+    allow_raw_addr: bool,
 ) -> CompletionEntryV2 {
     let user_data = sqe.user_data;
 
@@ -48,8 +50,8 @@ pub fn dispatch_sqe_v2(
 
     match op {
         OpCode::Nop => handle_nop_v2(sqe),
-        OpCode::Read => handle_read_v2(sqe, cap_table, buf_table),
-        OpCode::Write => handle_write_v2(sqe, cap_table, buf_table),
+        OpCode::Read => handle_read_v2(sqe, cap_table, buf_table, allow_raw_addr),
+        OpCode::Write => handle_write_v2(sqe, cap_table, buf_table, allow_raw_addr),
         OpCode::Close => handle_close_v2(sqe, cap_table),
         OpCode::Mmap => handle_mmap_v2(sqe),
         OpCode::Munmap => handle_munmap_v2(sqe),
@@ -79,49 +81,19 @@ fn handle_nop_v2(sqe: &SubmissionEntryV2) -> CompletionEntryV2 {
 }
 
 /// Handle read operation with capability verification (V2)
-///
-/// # Phase 1: Capability-based resource access
-///
-/// Resources are retrieved from `CapabilityEntry::resource` as `VfsFile`.
-/// No longer uses `process.get_file_descriptor()`.
+/// Handle read operation with capability verification (V2)
 fn handle_read_v2(
     sqe: &SubmissionEntryV2,
     cap_table: &CapabilityTable,
     buf_table: Option<&RegisteredBufferTable>,
+    allow_raw_addr: bool,
 ) -> CompletionEntryV2 {
     let capability_id = sqe.capability_id;
     let buf_index = sqe.buf_index;
     let len = sqe.len;
     let user_data = sqe.user_data;
 
-    // Special case: capability_id 0 = stdin (not implemented)
-    if capability_id == 0 {
-        debug_println!("[io_uring_v2] read from stdin not implemented");
-        return CompletionEntryV2::error(user_data, SyscallError::NotImplemented);
-    }
-
-    // V2 requires registered buffers
-    let buf_table = match buf_table {
-        Some(t) => t,
-        None => return CompletionEntryV2::error(user_data, SyscallError::BufferNotRegistered),
-    };
-
-    // Get the registered buffer
-    let buf_ref = match buf_table.acquire(buf_index) {
-        Some(r) => r,
-        None => return CompletionEntryV2::error(user_data, SyscallError::InvalidBufferIndex),
-    };
-
-    // Validate buffer is readable (kernel can write to it)
-    let slice = match unsafe { buf_ref.as_mut_slice() } {
-        Some(s) => s,
-        None => return CompletionEntryV2::error(user_data, SyscallError::InsufficientRights),
-    };
-
-    // Limit read to requested length
-    let read_len = (len as usize).min(slice.len());
-
-    // Get VfsFile from capability table
+    // Get VfsFile from capability table first
     let handle: crate::kernel::capability::Handle<FileResource> =
         unsafe { crate::kernel::capability::Handle::from_raw(capability_id) };
 
@@ -142,8 +114,61 @@ fn handle_read_v2(
         }
     };
 
-    // Perform read operation
-    let result = vfs_file.read(&mut slice[..read_len]);
+    // Perform read operation with appropriate buffer
+    let result = if sqe.uses_fixed_buffer() {
+        // V2 requires registered buffers usually
+        let buf_table = match buf_table {
+            Some(t) => t,
+            None => {
+                core::mem::forget(handle);
+                return CompletionEntryV2::error(user_data, SyscallError::BufferNotRegistered);
+            }
+        };
+
+        // Get the registered buffer
+        let buf_ref = match buf_table.acquire(buf_index) {
+            Some(r) => r,
+            None => {
+                core::mem::forget(handle);
+                return CompletionEntryV2::error(user_data, SyscallError::InvalidBufferIndex);
+            }
+        };
+
+        // Validate buffer is readable (kernel can write to it)
+        let slice = match unsafe { buf_ref.as_mut_slice() } {
+            Some(s) => s,
+            None => {
+                core::mem::forget(handle);
+                return CompletionEntryV2::error(user_data, SyscallError::InsufficientRights);
+            }
+        };
+        
+        // Limit read to requested length
+        let read_len = (len as usize).min(slice.len());
+        vfs_file.read(&mut slice[..read_len])
+    } else if allow_raw_addr {
+        // Kernel mode raw address support
+        // Use aux1 as address
+        let addr = sqe.aux1;
+        if addr == 0 {
+            core::mem::forget(handle);
+            return CompletionEntryV2::error(user_data, SyscallError::InvalidAddress);
+        }
+        
+        // SAFETY: Caller (kernel) guarantees address validity
+        let slice = unsafe {
+            core::slice::from_raw_parts_mut(addr as *mut u8, len as usize)
+        };
+        
+        // Limit read to requested length
+        let read_len = (len as usize).min(slice.len());
+        vfs_file.read(&mut slice[..read_len])
+    } else {
+        // User mode must use registered buffers
+        core::mem::forget(handle);
+        return CompletionEntryV2::error(user_data, SyscallError::BufferNotRegistered);
+    };
+
     core::mem::forget(handle);
 
     match result {
@@ -157,41 +182,16 @@ fn handle_read_v2(
 }
 
 /// Handle write operation with capability verification (V2)
-///
-/// # Phase 1: Capability-based resource access
-///
-/// All I/O including stdin/stdout/stderr uses the capability table.
-/// Resources are retrieved from `CapabilityEntry::resource` as `VfsFile`.
 fn handle_write_v2(
     sqe: &SubmissionEntryV2,
     cap_table: &CapabilityTable,
     buf_table: Option<&RegisteredBufferTable>,
+    allow_raw_addr: bool,
 ) -> CompletionEntryV2 {
     let capability_id = sqe.capability_id;
     let buf_index = sqe.buf_index;
     let len = sqe.len;
     let user_data = sqe.user_data;
-
-    // V2 requires registered buffers
-    let buf_table = match buf_table {
-        Some(t) => t,
-        None => return CompletionEntryV2::error(user_data, SyscallError::BufferNotRegistered),
-    };
-
-    // Get the registered buffer
-    let buf_ref = match buf_table.acquire(buf_index) {
-        Some(r) => r,
-        None => return CompletionEntryV2::error(user_data, SyscallError::InvalidBufferIndex),
-    };
-
-    // Validate buffer is writable (kernel can read from it)
-    let slice = match unsafe { buf_ref.as_slice() } {
-        Some(s) => s,
-        None => return CompletionEntryV2::error(user_data, SyscallError::InsufficientRights),
-    };
-
-    // Limit write to requested length
-    let write_len = (len as usize).min(slice.len());
 
     // Get VfsFile from capability table (including stdout/stderr at IDs 1, 2)
     let handle: crate::kernel::capability::Handle<FileResource> =
@@ -214,8 +214,61 @@ fn handle_write_v2(
         }
     };
 
-    // Perform write operation
-    let result = vfs_file.write(&slice[..write_len]);
+    // Perform write operation with appropriate buffer
+    let result = if sqe.uses_fixed_buffer() {
+        // V2 requires registered buffers usually
+        let buf_table = match buf_table {
+            Some(t) => t,
+            None => {
+                core::mem::forget(handle);
+                return CompletionEntryV2::error(user_data, SyscallError::BufferNotRegistered);
+            }
+        };
+
+        // Get the registered buffer
+        let buf_ref = match buf_table.acquire(buf_index) {
+            Some(r) => r,
+            None => {
+                core::mem::forget(handle);
+                return CompletionEntryV2::error(user_data, SyscallError::InvalidBufferIndex);
+            }
+        };
+
+        // Validate buffer is writable (kernel can read from it)
+        let slice = match unsafe { buf_ref.as_slice() } {
+            Some(s) => s,
+            None => {
+                core::mem::forget(handle);
+                return CompletionEntryV2::error(user_data, SyscallError::InsufficientRights);
+            }
+        };
+        
+        // Limit write to requested length
+        let write_len = (len as usize).min(slice.len());
+        vfs_file.write(&slice[..write_len])
+    } else if allow_raw_addr {
+        // Kernel mode raw address support
+        // Use aux1 as address
+        let addr = sqe.aux1;
+        if addr == 0 {
+            core::mem::forget(handle);
+            return CompletionEntryV2::error(user_data, SyscallError::InvalidAddress);
+        }
+        
+        // SAFETY: Caller (kernel) guarantees address validity
+        let slice = unsafe {
+            core::slice::from_raw_parts(addr as *const u8, len as usize)
+        };
+        
+        // Limit write to requested length
+        let write_len = (len as usize).min(slice.len());
+        vfs_file.write(&slice[..write_len])
+    } else {
+        // User mode must use registered buffers
+        core::mem::forget(handle);
+        return CompletionEntryV2::error(user_data, SyscallError::BufferNotRegistered);
+    };
+
     core::mem::forget(handle);
 
     match result {

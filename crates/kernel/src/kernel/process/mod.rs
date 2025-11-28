@@ -7,12 +7,10 @@
 use x86_64::structures::paging::{PhysFrame, PageTable, FrameAllocator, Size4KiB};
 use x86_64::VirtAddr;
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::boxed::Box;
 use alloc::alloc::{alloc_zeroed, Layout};
 use spin::{Mutex, Lazy};
-use crate::kernel::fs::FileDescriptor;
 use crate::kernel::io_uring::IoUringContext;
 use crate::kernel::capability::table::CapabilityTable;
 use crate::arch::x86_64::syscall_ring::RingContext;
@@ -124,8 +122,6 @@ pub struct Process {
     parent_pid: Option<ProcessId>,
     exit_code: Option<i32>,
     mmap_top: VirtAddr,
-    file_descriptors: BTreeMap<u64, Arc<Mutex<dyn FileDescriptor>>>,
-    next_fd: u64,
     fpu_state: FpuState,
     /// io_uring context for async I/O (optional, created on demand)
     io_uring_ctx: Option<Box<IoUringContext>>,
@@ -160,15 +156,8 @@ impl Drop for Process {
             dealloc(stack_ptr, layout);
         }
         
-        let fd_keys: alloc::vec::Vec<u64> = self.file_descriptors.keys().copied().collect();
-        for fd_num in fd_keys {
-            if let Some(fd) = self.file_descriptors.remove(&fd_num) {
-                let mut fd_lock = fd.lock();
-                let _ = fd_lock.close();
-                drop(fd_lock);
-                crate::debug_println!("[Process] Closed FD {} for PID={}", fd_num, self.pid.as_u64());
-            }
-        }
+        // Clear capability table (drops all resources)
+        self.capability_table.clear();
         
         crate::debug_println!("[Process] Dropped PID={} (Freed resources)", self.pid.as_u64());
     }
@@ -215,8 +204,6 @@ impl Process {
             parent_pid: None,
             exit_code: None,
             mmap_top: VirtAddr::new(0x0000_6000_0000_0000),
-            file_descriptors: BTreeMap::new(),
-            next_fd: 0,
             fpu_state: FpuState::default(),
             io_uring_ctx: None,
             ring_ctx: None,
@@ -302,40 +289,6 @@ impl Process {
 
     pub fn set_mmap_top(&mut self, addr: VirtAddr) {
         self.mmap_top = addr;
-    }
-
-    pub fn add_file_descriptor(&mut self, fd: Arc<Mutex<dyn FileDescriptor>>) -> u64 {
-        let id = self.next_fd;
-        self.next_fd += 1;
-        self.file_descriptors.insert(id, fd);
-        id
-    }
-
-    pub fn get_file_descriptor(&self, fd: u64) -> Option<Arc<Mutex<dyn FileDescriptor>>> {
-        self.file_descriptors.get(&fd).cloned()
-    }
-
-    pub fn remove_file_descriptor(&mut self, fd: u64) -> Option<Arc<Mutex<dyn FileDescriptor>>> {
-        self.file_descriptors.remove(&fd)
-    }
-
-    pub fn clone_file_descriptors(&self) -> (BTreeMap<u64, Arc<Mutex<dyn FileDescriptor>>>, u64) {
-        (self.file_descriptors.clone(), self.next_fd)
-    }
-
-    pub fn set_file_descriptors(&mut self, fds: BTreeMap<u64, Arc<Mutex<dyn FileDescriptor>>>, next_fd: u64) {
-        self.file_descriptors = fds;
-        self.next_fd = next_fd;
-    }
-
-    pub fn close_all_fds(&mut self) {
-        let fd_keys: alloc::vec::Vec<u64> = self.file_descriptors.keys().copied().collect();
-        for fd_num in fd_keys {
-            if let Some(fd) = self.file_descriptors.remove(&fd_num) {
-                let mut fd_lock = fd.lock();
-                let _ = fd_lock.close();
-            }
-        }
     }
 
     /// Get mutable pointer to FPU state data for saving
@@ -585,6 +538,14 @@ impl Process {
     #[must_use]
     pub fn capability_count(&self) -> u32 {
         self.capability_table.count()
+    }
+
+    /// Set the capability table (used during fork)
+    ///
+    /// Replaces the process's capability table with the provided one.
+    /// This is used during fork to copy the parent's capabilities to the child.
+    pub fn set_capability_table(&mut self, cap_table: CapabilityTable) {
+        self.capability_table = cap_table;
     }
 
     /// Initialize standard I/O capabilities (stdin, stdout, stderr)

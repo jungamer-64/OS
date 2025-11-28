@@ -293,6 +293,7 @@ pub trait ResourceKind: Send + Sync + 'static {
 }
 
 /// File resource
+#[derive(Clone)]
 pub struct FileResource;
 
 impl ResourceKind for FileResource {
@@ -302,6 +303,7 @@ impl ResourceKind for FileResource {
 }
 
 /// Socket resource
+#[derive(Clone)]
 pub struct SocketResource;
 
 impl ResourceKind for SocketResource {
@@ -311,6 +313,7 @@ impl ResourceKind for SocketResource {
 }
 
 /// Pipe resource
+#[derive(Clone)]
 pub struct PipeResource;
 
 impl ResourceKind for PipeResource {
@@ -320,6 +323,7 @@ impl ResourceKind for PipeResource {
 }
 
 /// Registered buffer resource
+#[derive(Clone)]
 pub struct BufferResource;
 
 impl ResourceKind for BufferResource {
@@ -329,6 +333,7 @@ impl ResourceKind for BufferResource {
 }
 
 /// Directory resource
+#[derive(Clone)]
 pub struct DirectoryResource;
 
 impl ResourceKind for DirectoryResource {
@@ -338,6 +343,7 @@ impl ResourceKind for DirectoryResource {
 }
 
 /// Event/notification resource
+#[derive(Clone)]
 pub struct EventResource;
 
 impl ResourceKind for EventResource {
@@ -347,6 +353,7 @@ impl ResourceKind for EventResource {
 }
 
 /// Shared memory resource
+#[derive(Clone)]
 pub struct ShmemResource;
 
 impl ResourceKind for ShmemResource {
@@ -378,12 +385,8 @@ impl ResourceKind for ShmemResource {
 /// to a function, ownership is transferred. This prevents:
 ///
 /// - Use-after-close bugs
-/// - Double-close bugs
-/// - Race conditions on close
-///
-/// If you need to share a handle, explicitly duplicate it (which may fail
-/// if `DUP` right is not present).
 #[repr(transparent)]
+#[derive(PartialEq, Eq, Hash, Clone)]
 pub struct Handle<R: ResourceKind> {
     /// Encoded ID: (generation << 32) | index
     id: u64,

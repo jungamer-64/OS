@@ -136,6 +136,7 @@
 #![warn(missing_docs)]
 #![doc(html_root_url = "https://docs.rs/libuser/0.1.0")]
 
+pub mod abi;
 pub mod syscall;
 pub mod io;
 pub mod process;
@@ -155,3 +156,9 @@ pub use io::{print, println};
 pub use process::{exit, getpid};
 pub use syscall::{SyscallResult, SyscallError};
 pub use constants::PAGE_SIZE;
+
+// Re-export ABI types for next-gen syscall interface
+pub use abi::{
+    SyscallNumber, SyscallCategory, ResourceId, ResourceMarker,
+    FileHandle, SocketHandle, PipeHandle, BufferHandle, DirectoryHandle,
+};

@@ -319,6 +319,68 @@ impl SqPollWorker {
             registered_rings: self.rings.lock().len() as u32,
         }
     }
+    
+    /// Poll with doorbell integration (Phase 2 - Zero-Syscall I/O)
+    /// 
+    /// This method integrates SQPOLL with the Doorbell mechanism to enable
+    /// completely syscall-free I/O. The doorbell allows userspace to notify
+    /// the kernel of new submissions without making a syscall.
+    /// 
+    /// # Workflow
+    /// 
+    /// 1. Check if doorbell was rung (atomically read and clear)
+    /// 2. If rung, wake up from idle and start polling
+    /// 3. Set `sqpoll_running` flag to indicate active processing
+    /// 4. Poll all registered rings for new submissions
+    /// 5. If no submissions found, set `needs_wakeup` flag and go idle
+    /// 
+    /// # Arguments
+    /// 
+    /// * `doorbell` - Reference to the doorbell structure
+    /// 
+    /// # Returns
+    /// 
+    /// Number of submissions processed
+    pub fn poll_with_doorbell(&self, doorbell: &super::doorbell::Doorbell) -> u32 {
+        // Check if doorbell was rung
+        let rings_count = doorbell.check_and_clear();
+        
+        // If doorbell was rung, wake up from idle
+        if rings_count > 0 {
+            let current_state = self.state();
+            if current_state == SqPollState::Idle {
+                // Transition from idle to polling
+                self.state.store(SqPollState::Polling as u32, Ordering::Release);
+                debug_println!("[SQPOLL] Woken by doorbell (count={})", rings_count);
+            }
+            
+            // Clear needs_wakeup flag - we're now active
+            doorbell.set_needs_wakeup(false);
+            doorbell.set_sqpoll_running(true);
+        }
+        
+        // Only poll if we're in polling state
+        if self.state() != SqPollState::Polling {
+            return 0;
+        }
+        
+        // Poll all registered rings
+        let processed = self.poll_once();
+        
+        if processed > 0 {
+            // Got some work, stay in polling state
+            doorbell.set_sqpoll_running(true);
+            doorbell.set_needs_wakeup(false);
+        } else {
+            // No work found, go idle
+            self.state.store(SqPollState::Idle as u32, Ordering::Release);
+            doorbell.set_sqpoll_running(false);
+            doorbell.set_needs_wakeup(true);
+            debug_println!("[SQPOLL] Going idle (no submissions)");
+        }
+        
+        processed
+    }
 }
 
 /// SQPOLL statistics
@@ -374,6 +436,24 @@ pub fn poll() -> u32 {
 pub fn stats() -> SqPollStats {
     SQPOLL_WORKER.stats()
 }
+
+/// Poll with doorbell integration (Phase 2)
+/// 
+/// This is the main entry point for doorbell-integrated polling.
+/// Call this from the scheduler's idle loop instead of `poll()` when
+/// doorbell is available.
+/// 
+/// # Arguments
+/// 
+/// * `doorbell` - Reference to the process's doorbell
+/// 
+/// # Returns
+/// 
+/// Number of submissions processed
+pub fn poll_with_doorbell(doorbell: &super::doorbell::Doorbell) -> u32 {
+    SQPOLL_WORKER.poll_with_doorbell(doorbell)
+}
+
 
 #[cfg(test)]
 mod tests {
