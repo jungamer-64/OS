@@ -257,6 +257,66 @@ impl SubmissionEntry {
         }
     }
     
+    /// Create a close entry
+    #[must_use]
+    pub const fn close(fd: i32, user_data: u64) -> Self {
+        Self {
+            opcode: OpCode::Close as u8,
+            flags: 0,
+            ioprio: 0,
+            fd,
+            off: 0,
+            addr: 0,
+            len: 0,
+            op_flags: 0,
+            user_data,
+            buf_index: 0,
+            personality: 0,
+            splice_fd_in: 0,
+            _reserved: [0; 2],
+        }
+    }
+    
+    /// Create an mmap entry
+    #[must_use]
+    pub const fn mmap(addr_hint: u64, len: u32, user_data: u64) -> Self {
+        Self {
+            opcode: OpCode::Mmap as u8,
+            flags: 0,
+            ioprio: 0,
+            fd: -1,
+            off: 0,
+            addr: addr_hint,
+            len,
+            op_flags: 0,
+            user_data,
+            buf_index: 0,
+            personality: 0,
+            splice_fd_in: 0,
+            _reserved: [0; 2],
+        }
+    }
+    
+    /// Create a munmap entry
+    #[must_use]
+    pub const fn munmap(addr: u64, len: u32, user_data: u64) -> Self {
+        Self {
+            opcode: OpCode::Munmap as u8,
+            flags: 0,
+            ioprio: 0,
+            fd: -1,
+            off: 0,
+            addr,
+            len,
+            op_flags: 0,
+            user_data,
+            buf_index: 0,
+            personality: 0,
+            splice_fd_in: 0,
+            _reserved: [0; 2],
+        }
+    }
+    
     /// Get the operation code
     #[must_use]
     pub const fn op(&self) -> Option<OpCode> {

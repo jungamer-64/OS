@@ -1,3 +1,4 @@
+// crates/kernel/src/kernel/async/waker.rs
 //! Waker ユーティリティ
 //!
 //! カスタム Waker を作成するためのヘルパー関数。

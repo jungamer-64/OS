@@ -5,6 +5,9 @@ use spin::{Mutex, Lazy};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+/// Timer task spawned flag
+static TIMER_TASK_SPAWNED: AtomicBool = AtomicBool::new(false);
+
 /// Simple round-robin scheduler
 pub struct RoundRobinScheduler {
     current_pid: Option<ProcessId>,
@@ -70,6 +73,8 @@ pub struct SqpollConfig {
     poll_count: AtomicU64,
     /// Number of operations processed
     ops_processed: AtomicU64,
+    /// Async task spawned flag
+    async_task_spawned: AtomicBool,
 }
 
 impl SqpollConfig {
@@ -79,6 +84,7 @@ impl SqpollConfig {
             enabled: AtomicBool::new(false),
             poll_count: AtomicU64::new(0),
             ops_processed: AtomicU64::new(0),
+            async_task_spawned: AtomicBool::new(false),
         }
     }
     
@@ -113,6 +119,16 @@ impl SqpollConfig {
         if ops > 0 {
             self.ops_processed.fetch_add(ops, Ordering::Relaxed);
         }
+    }
+    
+    /// Check if async task has been spawned
+    pub fn is_async_task_spawned(&self) -> bool {
+        self.async_task_spawned.load(Ordering::Acquire)
+    }
+    
+    /// Mark async task as spawned
+    pub fn set_async_task_spawned(&self) {
+        self.async_task_spawned.store(true, Ordering::Release);
     }
 }
 
@@ -180,10 +196,17 @@ pub fn idle_with_sqpoll(max_iterations: usize) -> bool {
 ///
 /// Call this instead of `hlt` in the main kernel loop.
 /// This function integrates:
-/// 1. Async runtime polling (kernel tasks)
-/// 2. SQPOLL for io_uring-style I/O
-/// 3. CPU halt when no work is available
+/// 1. Timer task (spawned on first call)
+/// 2. Async runtime polling (kernel tasks)
+/// 3. SQPOLL for io_uring-style I/O
+/// 4. CPU halt when no work is available
 pub fn kernel_idle() {
+    // Spawn timer_task on first call (ensures timers work correctly)
+    if !TIMER_TASK_SPAWNED.swap(true, Ordering::AcqRel) {
+        crate::kernel::r#async::spawn_task(crate::kernel::r#async::timer_task());
+        crate::debug_println!("[Scheduler] Timer task spawned");
+    }
+    
     // First, poll the async runtime for pending kernel tasks
     let async_work = crate::kernel::r#async::poll_runtime().is_some();
     
@@ -209,4 +232,82 @@ pub fn kernel_idle() {
 /// Returns the number of tasks that completed.
 pub fn run_async_tasks() -> usize {
     crate::kernel::r#async::run_runtime_until_idle()
+}
+
+// ============================================================================
+// Async SQPOLL Task
+// ============================================================================
+
+/// SQPOLL を async タスクとして実行
+///
+/// この関数は無限ループで SQPOLL を実行し、io_uring 操作を処理します。
+/// Timer を使って定期的にポーリングします。
+pub async fn sqpoll_async_task() {
+    use crate::kernel::r#async::{Timer, yield_now};
+    
+    crate::debug_println!("[SQPOLL] Async task started");
+    
+    loop {
+        // SQPOLL が無効になったらタスク終了
+        if !SQPOLL.is_enabled() {
+            crate::debug_println!("[SQPOLL] Async task stopping (disabled)");
+            break;
+        }
+        
+        // ポーリング実行
+        let processed = sqpoll_tick();
+        
+        if processed > 0 {
+            // 処理があった場合は即座に次のポーリング
+            yield_now().await;
+        } else {
+            // 処理がなかった場合は少し待ってからポーリング
+            // 10ms (1 tick) 待機
+            Timer::after(10).await;
+        }
+    }
+}
+
+/// SQPOLL async タスクを開始
+///
+/// SQPOLL を有効化し、async executor 上でポーリングタスクをスポーン
+pub fn start_sqpoll_async() {
+    if SQPOLL.is_async_task_spawned() {
+        crate::debug_println!("[SQPOLL] Async task already running");
+        return;
+    }
+    
+    SQPOLL.enable();
+    SQPOLL.set_async_task_spawned();
+    
+    crate::kernel::r#async::spawn_task(sqpoll_async_task());
+    crate::debug_println!("[SQPOLL] Async task spawned");
+}
+
+/// SQPOLL を停止
+pub fn stop_sqpoll_async() {
+    SQPOLL.disable();
+    // タスクは次のポーリング時に自動的に終了
+}
+
+// ============================================================================
+// Async I/O Helper Functions
+// ============================================================================
+
+/// 非同期で io_uring NOP を実行
+pub async fn async_nop() -> i32 {
+    use crate::kernel::r#async::io_uring_future::{submit_async, IoUringOp};
+    submit_async(IoUringOp::Nop).await
+}
+
+/// 非同期でデータを書き込む
+pub async fn async_write(fd: i32, data: &[u8]) -> i32 {
+    use crate::kernel::r#async::io_uring_future::write_async;
+    write_async(fd, data).await
+}
+
+/// 非同期でデータを読み込む
+pub async fn async_read(fd: i32, buf: &mut [u8]) -> i32 {
+    use crate::kernel::r#async::io_uring_future::read_async;
+    read_async(fd, buf).await
 }

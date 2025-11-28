@@ -1,3 +1,4 @@
+// crates/kernel/src/kernel/async/mod.rs
 //! 非同期処理基盤
 //!
 //! Future executor, Waker, 非同期 I/O の基本構造を提供します。
@@ -28,6 +29,7 @@
 pub mod executor;
 pub mod waker;
 pub mod timer;
+pub mod io_uring_future;
 
 pub use executor::{
     Executor, 
@@ -40,4 +42,10 @@ pub use executor::{
     runtime_task_count,
 };
 pub use waker::{dummy_waker, WakerBuilder};
-pub use timer::{Timer, Yield, yield_now, TICKS, tick};
+pub use timer::{Timer, Yield, yield_now, TICKS, tick, timer_task, current_ticks, ticks_to_ms, ms_to_ticks};
+pub use io_uring_future::{
+    IoUringOp, IoUringFuture,
+    submit_async, write_async, read_async, close_async,
+    mmap_async, munmap_async,
+    complete_operation,
+};

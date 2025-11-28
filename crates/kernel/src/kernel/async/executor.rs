@@ -3,6 +3,12 @@
 //!
 //! 非同期タスクを実行するための Executor。
 //! crossbeam-queue を使用したロックフリーキューで効率的にタスクを管理。
+//!
+//! # 最適化
+//!
+//! タスクを `Arc<Mutex<Option<Task>>>` で保持することで、
+//! Poll のたびに BTreeMap から remove/insert するオーバーヘッドを回避。
+//! タスクはマップに残したまま、インプレースで poll される。
 
 use core::future::Future;
 use core::task::{Context, Poll, Waker};
@@ -77,6 +83,34 @@ impl Task {
     /// タスクをポーリング
     fn poll(&mut self, context: &mut Context) -> Poll<()> {
         self.future.as_mut().poll(context)
+    }
+}
+
+/// タスクへの共有参照（インプレース poll 用）
+type SharedTask = Arc<Mutex<Option<Task>>>;
+
+/// タスクスロット - タスクを O(1) で取り出さずに poll できる
+struct TaskSlot {
+    /// タスクを保持（poll 時に一時的に take）
+    task: SharedTask,
+}
+
+impl TaskSlot {
+    /// 新しいタスクスロットを作成
+    fn new(task: Task) -> Self {
+        Self {
+            task: Arc::new(Mutex::new(Some(task))),
+        }
+    }
+    
+    /// 共有参照を取得
+    fn shared(&self) -> SharedTask {
+        Arc::clone(&self.task)
+    }
+    
+    /// タスクが完了したかどうか
+    fn is_completed(&self) -> bool {
+        self.task.lock().is_none()
     }
 }
 
