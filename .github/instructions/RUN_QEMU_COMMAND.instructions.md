@@ -1,5 +1,7 @@
 ---
-trigger: always_on
+name: RUN_QEMU_COMMAND
+applyTo: always_on
+description: "run_qemu.ps1 - AIエージェント向けリファレンス"
 ---
 
 # run_qemu.ps1 - AIエージェント向けリファレンス

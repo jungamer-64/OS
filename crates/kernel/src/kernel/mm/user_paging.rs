@@ -1,4 +1,4 @@
-// src/kernel/mm/user_paging.rs
+// crates/kernel/src/kernel/mm/user_paging.rs
 //! User space page table management
 //!
 //! This module provides functions for creating and managing user space
@@ -32,6 +32,15 @@ pub const USER_STACK_TOP: u64 = 0x0000_7000_0000_0000;  // 128 TiB
 /// io_uring shared memory base address (32 TiB)
 /// This is below USER_HEAP_BASE to avoid conflicts with huge pages
 pub const USER_IO_URING_BASE: u64 = 0x0000_2000_0000_0000;  // 32 TiB
+
+/// Ring-based syscall context base address (16 TiB)
+/// This is the address where RingContext is mapped for userspace access
+/// Layout:
+///   0x0000_1000_0000_0000: RingContext (sq_header, cq_header, sq_entries, cq_entries)
+pub const USER_RING_CONTEXT_BASE: u64 = 0x0000_1000_0000_0000;  // 16 TiB
+
+/// Size of RingContext mapping (rounded up to 64KB for future expansion)
+pub const USER_RING_CONTEXT_SIZE: usize = 64 * 1024;
 
 /// Default user stack size (1 MiB - increased for deeper call stacks)
 pub const DEFAULT_USER_STACK_SIZE: usize = 1024 * 1024;

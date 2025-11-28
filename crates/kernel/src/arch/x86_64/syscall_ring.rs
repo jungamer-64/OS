@@ -543,7 +543,11 @@ pub mod ring_flags {
 // =============================================================================
 
 /// Ring-based I/O context for a process
-#[repr(C)]
+///
+/// IMPORTANT: This struct must be page-aligned (4096 bytes) so that when
+/// mapped to user space, the user-space address correctly points to the
+/// start of the structure.
+#[repr(C, align(4096))]
 pub struct RingContext {
     /// Submission queue header
     sq_header: RingHeader,
@@ -889,22 +893,24 @@ extern "C" fn process_current_ring() -> u64 {
     }
     
     // Get current process's ring context
-    // In full implementation, this would access per-process ring context
-    // For now, we use a global context for testing
-    
     let mut table = PROCESS_TABLE.lock();
-    let _process = match table.current_process_mut() {
+    let process = match table.current_process_mut() {
         Some(p) => p,
         None => return (-3_i64) as u64, // ESRCH
     };
     
-    // TODO: Access process's ring context
-    // For now, return 0 (no completions)
-    // In full implementation:
-    // let completed = process.ring_context_mut().poll();
-    // completed as u64
-    
-    0
+    // Process the ring buffer
+    match process.ring_context_mut() {
+        Some(ctx) => {
+            let completed = ctx.poll();
+            completed as u64
+        }
+        None => {
+            // Ring context not initialized - return error
+            // The user should call ring_setup syscall first
+            (-38_i64) as u64 // ENOSYS - function not implemented
+        }
+    }
 }
 
 // =============================================================================
@@ -994,6 +1000,98 @@ pub fn init_ring_for_process(enable_sqpoll: bool) -> Option<Box<RingContext>> {
 pub unsafe fn cleanup_ring(ctx: Box<RingContext>) {
     unregister_sqpoll(Box::as_ref(&ctx) as *const RingContext as *mut RingContext);
     // Box automatically deallocates when dropped
+}
+
+/// Map the RingContext into user space
+///
+/// This function maps the kernel's RingContext structure into the user's
+/// address space at USER_RING_CONTEXT_BASE, allowing direct access to
+/// the submission and completion queues.
+///
+/// # Arguments
+/// * `ctx` - The RingContext to map
+/// * `user_mapper` - The user's page table mapper
+/// * `frame_allocator` - Frame allocator for intermediate page tables
+/// * `phys_offset` - Physical memory offset
+///
+/// # Returns
+/// * Ok(user_address) - The user-space address where the context is mapped
+/// * Err(error_code) - Negative error code on failure
+///
+/// # Safety
+/// The caller must ensure the page table mapper is valid.
+pub unsafe fn map_ring_to_user(
+    ctx: &RingContext,
+    user_mapper: &mut x86_64::structures::paging::OffsetPageTable,
+    frame_allocator: &mut crate::kernel::mm::BootInfoFrameAllocator,
+    phys_offset: x86_64::VirtAddr,
+) -> Result<u64, i64> {
+    use x86_64::structures::paging::{Page, PageTableFlags, Mapper, Size4KiB};
+    use crate::kernel::mm::user_paging::USER_RING_CONTEXT_BASE;
+    
+    // Calculate the physical address of the RingContext
+    // Since RingContext is in kernel heap, we use direct map formula
+    let ctx_addr = ctx as *const RingContext as u64;
+    let ctx_size = core::mem::size_of::<RingContext>();
+    let num_pages = (ctx_size + 4095) / 4096;
+    
+    debug_println!(
+        "[map_ring_to_user] Mapping RingContext at kernel {:#x} ({} bytes, {} pages) to user {:#x}",
+        ctx_addr, ctx_size, num_pages, USER_RING_CONTEXT_BASE
+    );
+    
+    for i in 0..num_pages {
+        let kernel_addr = ctx_addr + (i * 4096) as u64;
+        let user_addr = USER_RING_CONTEXT_BASE + (i * 4096) as u64;
+        
+        // Calculate physical address from kernel virtual address
+        // Kernel heap uses direct physical map: virt = phys + phys_offset
+        let phys_addr = kernel_addr - phys_offset.as_u64();
+        let phys_frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(
+            x86_64::PhysAddr::new(phys_addr)
+        );
+        
+        let user_page: Page<Size4KiB> = Page::containing_address(
+            x86_64::VirtAddr::new(user_addr)
+        );
+        
+        // Map with USER_ACCESSIBLE + WRITABLE
+        let flags = PageTableFlags::PRESENT 
+            | PageTableFlags::WRITABLE 
+            | PageTableFlags::USER_ACCESSIBLE
+            | PageTableFlags::NO_EXECUTE;
+        
+        // Check if already mapped
+        use x86_64::structures::paging::mapper::TranslateResult;
+        use x86_64::structures::paging::Translate;
+        if let TranslateResult::Mapped { .. } = user_mapper.translate(x86_64::VirtAddr::new(user_addr)) {
+            debug_println!(
+                "[map_ring_to_user] User address {:#x} already mapped, skipping",
+                user_addr
+            );
+            continue;
+        }
+        
+        match user_mapper.map_to(user_page, phys_frame, flags, frame_allocator) {
+            Ok(flush) => {
+                flush.flush();
+                debug_println!(
+                    "[map_ring_to_user] Mapped user {:#x} -> phys {:#x}",
+                    user_addr, phys_addr
+                );
+            }
+            Err(e) => {
+                debug_println!(
+                    "[map_ring_to_user] Failed to map page {}: {:?}",
+                    i, e
+                );
+                return Err(-12); // ENOMEM
+            }
+        }
+    }
+    
+    debug_println!("[map_ring_to_user] Successfully mapped RingContext to user space");
+    Ok(USER_RING_CONTEXT_BASE)
 }
 
 // =============================================================================

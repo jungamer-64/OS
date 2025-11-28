@@ -55,14 +55,10 @@ pc-keyboard = "0.7.0"
 # Bootloader (for bootimage compatibility)
 bootloader = { version = "0.9.23", features = ["map_physical_memory"] }
 
-serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
-
 # CPU feature detection (CPUID instruction wrapper)
 raw-cpuid = "11.2"
 
-[build-dependencies]
-serde = { version = "=1.0.210", default-features = false, features = ["derive", "alloc"] }
-serde_json = { version = "=1.0.128", default-features = false, features = ["alloc"] }
+
 
 # ============================================================================
 # Linting Configuration

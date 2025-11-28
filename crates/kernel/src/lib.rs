@@ -1,4 +1,4 @@
-// src/lib.rs
+// crates/kernel/src/lib.rs
 //! Tiny OS - 理想的な Rust カーネル
 //!
 //! trait ベースの抽象化と型安全性を最大化したカーネルアーキテクチャ
@@ -14,6 +14,17 @@
 #![cfg_attr(test, allow(missing_docs))]
 
 extern crate alloc;
+
+// Compile-time target sanity checks - keep them in the library so the compiler
+// validates the target during regular builds without adding heavy build-time deps.
+#[cfg(not(target_arch = "x86_64"))]
+compile_error!("This kernel only supports x86_64 architecture!");
+
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("This kernel requires 64-bit pointer width!");
+
+#[cfg(not(target_os = "none"))]
+compile_error!("This kernel must be compiled for a bare-metal target (target_os = \"none\")!");
 
 pub mod errors;
 pub mod qemu;

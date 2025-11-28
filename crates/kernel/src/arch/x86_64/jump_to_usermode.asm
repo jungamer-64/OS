@@ -1,4 +1,4 @@
-; jump_to_usermode.asm
+; crates/kernel/arch/x86_64/jump_to_usermode.asm
 ; NASM assembly for user mode transition using IRETQ
 ;
 ; Arguments (System V AMD64 ABI):
@@ -6,6 +6,7 @@
 ; rsi = user_stack (RSP)
 ; rdx = user_cr3 (CR3)
 ; rcx = rflags (RFLAGS)
+; r8  = ring_context_addr (RDI for user program, 0 if not using ring mode)
 ;
 ; IRETQ pops from stack (in order): RIP, CS, RFLAGS, RSP, SS
 ;
@@ -32,12 +33,14 @@ jump_to_usermode_asm:
     ;   rsi = user_stack (RSP for user mode, points to top of mapped stack)
     ;   rdx = user_cr3
     ;   rcx = rflags
+    ;   r8  = ring_context_addr (passed to user in RDI)
     
     ; Save arguments to callee-saved registers
-    mov r8, rdx       ; r8 = user_cr3
     mov r9, rcx       ; r9 = rflags
     mov r10, rdi      ; r10 = entry_point
     mov r11, rsi      ; r11 = user_stack (original, will be updated)
+    mov r12, rdx      ; r12 = user_cr3
+    mov r13, r8       ; r13 = ring_context_addr (to be passed in RDI to user)
     
     ; Set up data segments (while still in kernel, before CR3 switch)
     ; user_data selector = 0x10 (base) | 0x03 (RPL) = 0x13
@@ -74,7 +77,11 @@ jump_to_usermode_asm:
     
     ; Switch CR3 to user page table
     ; After this, we can only access user-mapped memory
-    mov cr3, r8
+    mov cr3, r12
+    
+    ; Set RDI to ring_context_addr for user program
+    ; This allows user programs to receive the ring buffer address
+    mov rdi, r13
     
     ; IRETQ will:
     ; - Pop RIP from [RSP+0]   = entry_point
@@ -83,4 +90,7 @@ jump_to_usermode_asm:
     ; - Pop RSP from [RSP+24] = user_stack (original top)
     ; - Pop SS  from [RSP+32] = 0x13 (user_data | RPL3)
     ; And jump to user mode Ring 3
+    ; 
+    ; User program receives:
+    ; - RDI = ring_context_addr (Ring I/O buffer address, or 0)
     iretq

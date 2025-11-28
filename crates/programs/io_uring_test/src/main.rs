@@ -5,12 +5,16 @@
 #![no_std]
 #![no_main]
 
-use libuser::{println, process};
+use libuser::{print, println, process};
 use libuser::async_io::{AsyncContext, AsyncOp, AsyncResult};
+use libuser::ring_io::{Ring, Sqe, Opcode};
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     println!("=== io_uring Test (New API) ===\n");
+    
+    // Test new Ring API first
+    test_ring_setup();
     
     // Test 1: Setup io_uring via AsyncContext
     test_context_setup();
@@ -23,13 +27,90 @@ pub extern "C" fn _start() -> ! {
     
     println!("\n--- test_single_nop returned ---");
     
-    // Skip other tests for now
-    // test_batch_nop();
-    // test_write();
-    // test_batch_write();
+    // Test 3: Write operation
+    test_write();
+    
+    // Test 4: Batch write operations
+    test_batch_write();
     
     println!("\n=== io_uring Tests Complete ===");
     process::exit(0);
+}
+
+fn test_ring_setup() {
+    println!("[TEST] Ring::setup() - New API (syscall 2002)");
+    println!("  Calling Ring::setup(false)...");
+    
+    // Test the new Ring API (syscall 2002)
+    match Ring::setup(false) {
+        Ok(mut ring) => {
+            println!("  Ring created successfully");
+            
+            // Debug: Check addresses
+            println!("  Ring base at default address");
+            
+            // Submit a NOP directly
+            println!("  Submitting NOP...");
+            let sqe = Sqe::nop(0x12345678);
+            match ring.submit(sqe) {
+                Ok(_idx) => {
+                    println!("  Submitted NOP");
+                    
+                    // Enter to process
+                    println!("  Calling enter()...");
+                    match ring.enter() {
+                        Ok(_) => {
+                            println!("  Enter succeeded");
+                            // Wait for completion
+                            if ring.has_completions() {
+                                let cqe = ring.wait_cqe();
+                                if cqe.user_data == 0x12345678 {
+                                    println!("  Got correct completion");
+                                    println!("  [PASS]");
+                                } else {
+                                    println!("  Wrong user_data in completion");
+                                    println!("  [FAIL]");
+                                }
+                            } else {
+                                println!("  No completions after enter");
+                                println!("  [FAIL]");
+                            }
+                        }
+                        Err(e) => {
+                            print!("  Enter failed: ");
+                            print_error(e.code());
+                            println!("  [FAIL]");
+                        }
+                    }
+                }
+                Err(e) => {
+                    print!("  Submit failed: errno=");
+                    print_error(e.code());
+                    println!("  [FAIL]");
+                }
+            }
+        }
+        Err(e) => {
+            print!("  Ring setup failed: ");
+            print_error(e.code());
+            println!("  [FAIL]");
+        }
+    }
+}
+
+fn print_error(code: i64) {
+    // Print error code without using {} formatting
+    if code == 11 {
+        println!("EAGAIN (11)");
+    } else if code == 14 {
+        println!("EFAULT (14)");
+    } else if code == 12 {
+        println!("ENOMEM (12)");
+    } else if code == 22 {
+        println!("EINVAL (22)");
+    } else {
+        println!("unknown error");
+    }
 }
 
 fn test_context_setup() {

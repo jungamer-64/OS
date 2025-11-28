@@ -1,4 +1,4 @@
-// kernel/src/arch/x86_64/mod.rs
+// crates/kernel/src/arch/x86_64/mod.rs
 //! x86_64 architecture-specific implementations.
 
 /// CPU operations and control.
@@ -39,7 +39,8 @@ pub use per_cpu::{init as init_per_cpu, update_kernel_stack as update_per_cpu_st
 pub use smp::{init as init_smp, cpu_count, current_cpu_id};
 pub use syscall_ring::{
     init as init_syscall_ring,
-    RingContext, IdealSqe, IdealCqe, RingOpcode,
+    RingContext, IdealSqe, IdealCqe, RingOpcode, RingMappingInfo,
     ideal_syscall_entry, kernel_poll_all, kernel_poller_loop,
     init_ring_for_process,
 };
+pub use syscall::{SyscallMode, init_with_mode, switch_mode, current_mode};

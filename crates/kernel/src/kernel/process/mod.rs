@@ -1,4 +1,4 @@
-// src/kernel/process/mod.rs
+// crates/kernel/src/kernel/process/mod.rs
 //! Process management module
 //!
 //! This module provides process structure and lifecycle management
@@ -389,10 +389,17 @@ impl Process {
     // Ring-based syscall context methods (New Architecture)
     // ========================================================================
     
-    /// Initialize or get the ring context for async message passing
+    /// Initialize the ring context for async message passing
     ///
-    /// Creates a new ring context if one doesn't exist.
+    /// Creates a new ring context and maps it to user space.
     /// This is the foundation for the new syscall-less I/O architecture.
+    ///
+    /// # Arguments
+    /// * `enable_sqpoll` - Enable kernel-side polling (SQPOLL mode)
+    ///
+    /// # Returns
+    /// * `Some(user_address)` - User-space address of the RingContext
+    /// * `None` - Failed to allocate or map
     pub fn ring_setup(&mut self, enable_sqpoll: bool) -> Option<&mut RingContext> {
         if self.ring_ctx.is_none() {
             let ctx = crate::arch::x86_64::syscall_ring::init_ring_for_process(enable_sqpoll)?;
@@ -401,6 +408,76 @@ impl Process {
                 self.pid.as_u64(), enable_sqpoll);
         }
         Some(self.ring_ctx.as_mut().unwrap())
+    }
+    
+    /// Initialize and map ring context to user space
+    ///
+    /// This is the complete setup function that:
+    /// 1. Creates the RingContext
+    /// 2. Maps it into the user's address space
+    /// 3. Returns the user-space address
+    ///
+    /// # Arguments
+    /// * `enable_sqpoll` - Enable kernel-side polling
+    /// * `frame_allocator` - Frame allocator for page table entries
+    /// * `phys_offset` - Physical memory offset
+    ///
+    /// # Returns
+    /// * `Ok(user_address)` - User-space address where RingContext is mapped
+    /// * `Err(error_code)` - Error code on failure
+    pub fn ring_setup_with_mapping(
+        &mut self,
+        enable_sqpoll: bool,
+        frame_allocator: &mut crate::kernel::mm::BootInfoFrameAllocator,
+        phys_offset: x86_64::VirtAddr,
+    ) -> Result<u64, i64> {
+        // 1. Create ring context if not exists
+        if self.ring_ctx.is_none() {
+            let ctx = crate::arch::x86_64::syscall_ring::init_ring_for_process(enable_sqpoll)
+                .ok_or(-12_i64)?; // ENOMEM
+            self.ring_ctx = Some(ctx);
+            crate::debug_println!("[Process] Created ring context for PID={} (SQPOLL={})", 
+                self.pid.as_u64(), enable_sqpoll);
+        }
+        
+        // 2. Get mapper for user page table
+        let (l4_frame, _) = x86_64::registers::control::Cr3::read();
+        let l4_ptr = (phys_offset + l4_frame.start_address().as_u64()).as_mut_ptr();
+        let l4_table = unsafe { &mut *l4_ptr };
+        let mut mapper = unsafe { 
+            x86_64::structures::paging::OffsetPageTable::new(l4_table, phys_offset) 
+        };
+        
+        // 3. Map ring context to user space
+        let ctx = self.ring_ctx.as_ref().unwrap();
+        let user_addr = unsafe {
+            crate::arch::x86_64::syscall_ring::map_ring_to_user(
+                ctx,
+                &mut mapper,
+                frame_allocator,
+                phys_offset,
+            )?
+        };
+        
+        crate::debug_println!(
+            "[Process] Ring context mapped to user space at {:#x} for PID={}",
+            user_addr, self.pid.as_u64()
+        );
+        
+        Ok(user_addr)
+    }
+    
+    /// Get the user-space address of the ring context
+    ///
+    /// Returns the fixed user-space address where the ring context is mapped.
+    /// This can be used to pass the address to user programs.
+    #[must_use]
+    pub fn ring_user_address(&self) -> Option<u64> {
+        if self.ring_ctx.is_some() {
+            Some(crate::kernel::mm::user_paging::USER_RING_CONTEXT_BASE)
+        } else {
+            None
+        }
     }
     
     /// Get the ring context if it exists
@@ -789,7 +866,7 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
     }
     
     unsafe extern "C" {
-        fn jump_to_usermode_asm(entry_point: u64, user_stack: u64, user_cr3: u64, rflags: u64) -> !;
+        fn jump_to_usermode_asm(entry_point: u64, user_stack: u64, user_cr3: u64, rflags: u64, ring_context_addr: u64) -> !;
     }
     
     crate::debug_println!("[jump_to_usermode] Using external NASM function with IRETQ");
@@ -798,7 +875,44 @@ pub unsafe fn jump_to_usermode(entry_point: VirtAddr, user_stack: VirtAddr, user
             entry_point.as_u64(),
             user_stack.as_u64(),
             user_cr3,
-            rflags
+            rflags,
+            0  // ring_context_addr = 0 (not using ring mode in this call)
+        )
+    }
+}
+
+/// Jump to user mode with Ring context address
+///
+/// This variant passes the RingContext address to the user program in RDI.
+#[allow(dead_code)]
+pub unsafe fn jump_to_usermode_with_ring(
+    entry_point: VirtAddr,
+    user_stack: VirtAddr,
+    user_cr3: u64,
+    ring_context_addr: u64,
+) -> ! {
+    if user_cr3 == 0 {
+        crate::debug_println!("[ERROR] user_cr3 is NULL! Cannot switch page tables.");
+        loop { x86_64::instructions::hlt(); }
+    }
+    
+    let rflags: u64 = 0x202;
+    
+    crate::debug_println!("[jump_to_usermode_with_ring] Jumping to user mode:");
+    crate::debug_println!("  RIP={:#x}, RSP={:#x}", entry_point.as_u64(), user_stack.as_u64());
+    crate::debug_println!("  CR3={:#x}, ring_ctx={:#x}", user_cr3, ring_context_addr);
+    
+    unsafe extern "C" {
+        fn jump_to_usermode_asm(entry_point: u64, user_stack: u64, user_cr3: u64, rflags: u64, ring_context_addr: u64) -> !;
+    }
+    
+    unsafe {
+        jump_to_usermode_asm(
+            entry_point.as_u64(),
+            user_stack.as_u64(),
+            user_cr3,
+            rflags,
+            ring_context_addr,
         )
     }
 }

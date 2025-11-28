@@ -1,4 +1,4 @@
-// src/kernel/syscall/mod.rs
+// crates/kernel/src/kernel/syscall/mod.rs
 //! System call implementation module
 //!
 //! This module provides the kernel-side implementations of all system calls
@@ -1181,12 +1181,25 @@ pub fn sys_ring_register(addr: u64, len: u64, flags: u64, slot: u64, _arg5: u64,
 ///   - Bit 0: Enable SQPOLL (kernel polling mode)
 ///
 /// # Returns
-/// * Success: Address of ring mapping info structure
+/// * Success: User-space address of the RingContext
 /// * Error: ENOMEM (allocation failed), ESRCH (no process)
 pub fn sys_ring_setup(flags: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
     use crate::kernel::process::PROCESS_TABLE;
+    use crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR;
     
     let enable_sqpoll = (flags & 1) != 0;
+    
+    // Get physical memory offset
+    let phys_offset = x86_64::VirtAddr::new(
+        crate::kernel::mm::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed)
+    );
+    
+    // Get frame allocator
+    let mut allocator_lock = BOOT_INFO_ALLOCATOR.lock();
+    let frame_allocator = match allocator_lock.as_mut() {
+        Some(alloc) => alloc,
+        None => return ENOMEM,
+    };
     
     let mut table = PROCESS_TABLE.lock();
     let process = match table.current_process_mut() {
@@ -1194,15 +1207,11 @@ pub fn sys_ring_setup(flags: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64
         None => return ESRCH,
     };
     
-    // Initialize ring context
-    let ring_ctx = match process.ring_setup(enable_sqpoll) {
-        Some(ctx) => ctx,
-        None => return ENOMEM,
-    };
-    
-    // Return the mapping info address
-    let info = ring_ctx.get_mapping_info();
-    info.sq_header as SyscallResult
+    // Initialize ring context with user space mapping
+    match process.ring_setup_with_mapping(enable_sqpoll, frame_allocator, phys_offset) {
+        Ok(user_addr) => user_addr as SyscallResult,
+        Err(e) => e as SyscallResult,
+    }
 }
 
 /// Syscall handler function type

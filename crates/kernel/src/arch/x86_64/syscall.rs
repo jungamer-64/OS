@@ -22,16 +22,44 @@ use x86_64::registers::rflags::RFlags;
 use crate::arch::x86_64::gdt;
 use crate::debug_println;
 
+/// Syscall mode selection
+/// 
+/// Determines which syscall entry point is used:
+/// - `Traditional`: Full register save/restore (compatible with all syscalls)
+/// - `RingBased`: Doorbell-only entry (requires ring buffer setup)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyscallMode {
+    /// Traditional syscall with full register save/restore
+    Traditional,
+    /// Ring-based syscall (doorbell only, no arguments)
+    RingBased,
+}
+
+/// Current syscall mode (set during initialization)
+static SYSCALL_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Get the current syscall mode
+pub fn current_mode() -> SyscallMode {
+    match SYSCALL_MODE.load(core::sync::atomic::Ordering::Relaxed) {
+        1 => SyscallMode::RingBased,
+        _ => SyscallMode::Traditional,
+    }
+}
+
 /// Initialize the syscall mechanism
 ///
 /// This sets up the Model Specific Registers (MSRs) required for
 /// the `syscall` and `sysret` instructions to work properly.
 /// 
+/// # Arguments
+/// 
+/// * `mode` - Which syscall entry point to use (Traditional or RingBased)
+/// 
 /// # Panics
 /// 
 /// Panics if `Star::write` fails (should never happen with valid GDT selectors).
 #[allow(clippy::missing_panics_doc)] // Star::write panic is documented
-pub fn init() {
+pub fn init_with_mode(mode: SyscallMode) {
     unsafe {
         // Enable syscall/sysret in EFER
         Efer::update(|flags| {
@@ -82,8 +110,19 @@ pub fn init() {
         star.write(star_value);
         debug_println!("[OK] STAR MSR written: 0x{:X}", star_value);
         
-        // Set up LSTAR register (syscall entry point)
-        LStar::write(VirtAddr::new(syscall_entry as *const () as u64));
+        // Set up LSTAR register based on mode
+        let entry_point = match mode {
+            SyscallMode::Traditional => {
+                SYSCALL_MODE.store(0, core::sync::atomic::Ordering::Relaxed);
+                syscall_entry as *const () as u64
+            }
+            SyscallMode::RingBased => {
+                SYSCALL_MODE.store(1, core::sync::atomic::Ordering::Relaxed);
+                super::syscall_ring::ideal_syscall_entry as *const () as u64
+            }
+        };
+        
+        LStar::write(VirtAddr::new(entry_point));
         
         // Set up SFMASK register (RFLAGS bits to clear on syscall)
         // We clear the interrupt flag to disable interrupts during syscall handling
@@ -95,10 +134,57 @@ pub fn init() {
         
         let kernel_cs = u64::from(selectors.kernel_code.0);
         let user_cs = u64::from(selectors.user_code.0);
+        let mode_str = match mode {
+            SyscallMode::Traditional => "Traditional (full context)",
+            SyscallMode::RingBased => "Ring-based (doorbell)",
+        };
         debug_println!("[OK] Syscall mechanism initialized (swapgs-based)");
+        debug_println!("  Mode: {}", mode_str);
         debug_println!("  STAR: kernel_cs=0x{:x}, user_cs=0x{:x}", kernel_cs, user_cs);
-        debug_println!("  LSTAR: 0x{:x}", syscall_entry as *const () as u64);
+        debug_println!("  LSTAR: 0x{:x}", entry_point);
     }
+}
+
+/// Initialize the syscall mechanism with traditional mode
+///
+/// This sets up the Model Specific Registers (MSRs) required for
+/// the `syscall` and `sysret` instructions to work properly.
+/// 
+/// Uses traditional syscall entry point with full register save/restore.
+/// 
+/// # Panics
+/// 
+/// Panics if `Star::write` fails (should never happen with valid GDT selectors).
+#[allow(clippy::missing_panics_doc)] // Star::write panic is documented
+pub fn init() {
+    init_with_mode(SyscallMode::Traditional);
+}
+
+/// Switch syscall mode at runtime
+///
+/// # Safety
+///
+/// This function changes the syscall entry point. All processes must be
+/// prepared to handle the new mode before calling this.
+pub unsafe fn switch_mode(mode: SyscallMode) {
+    let entry_point = match mode {
+        SyscallMode::Traditional => {
+            SYSCALL_MODE.store(0, core::sync::atomic::Ordering::Release);
+            syscall_entry as *const () as u64
+        }
+        SyscallMode::RingBased => {
+            SYSCALL_MODE.store(1, core::sync::atomic::Ordering::Release);
+            super::syscall_ring::ideal_syscall_entry as *const () as u64
+        }
+    };
+    
+    LStar::write(VirtAddr::new(entry_point));
+    
+    let mode_str = match mode {
+        SyscallMode::Traditional => "Traditional",
+        SyscallMode::RingBased => "Ring-based",
+    };
+    debug_println!("[Syscall] Mode switched to: {} (LSTAR=0x{:x})", mode_str, entry_point);
 }
 
 /// Dump CPU registers for debugging
