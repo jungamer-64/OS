@@ -35,6 +35,28 @@ pub const SYS_IO_URING_ENTER: u64 = 13;
 /// System call number for `io_uring_register`
 pub const SYS_IO_URING_REGISTER: u64 = 14;
 
+// ============================================================================
+// Fast IPC Syscalls (Strategy 1-3)
+// ============================================================================
+
+/// Benchmark syscall (minimal overhead measurement)
+pub const SYS_BENCHMARK: u64 = 1000;
+/// Fast ring poll (SQPOLL kick)
+pub const SYS_FAST_POLL: u64 = 1001;
+/// Fast I/O setup (syscall-less rings)
+pub const SYS_FAST_IO_SETUP: u64 = 1002;
+
+// ============================================================================
+// Ring-based Syscall System (Revolutionary Architecture)
+// ============================================================================
+
+/// Ring enter syscall (doorbell-only, no register arguments)
+pub const SYS_RING_ENTER: u64 = 2000;
+/// Ring register buffer syscall
+pub const SYS_RING_REGISTER: u64 = 2001;
+/// Ring setup syscall
+pub const SYS_RING_SETUP: u64 = 2002;
+
 /// System call error codes (Linux-compatible)
 pub mod errno {
     /// Operation not permitted
@@ -51,7 +73,7 @@ pub mod errno {
     pub const EBADF: i64 = -9;
     /// No child processes
     pub const ECHILD: i64 = -10;
-    /// Try again
+    /// Try again / Would block
     pub const EAGAIN: i64 = -11;
     /// Out of memory
     pub const ENOMEM: i64 = -12;
@@ -59,6 +81,8 @@ pub mod errno {
     pub const EFAULT: i64 = -14;
     /// Invalid argument
     pub const EINVAL: i64 = -22;
+    /// No space left on device
+    pub const ENOSPC: i64 = -28;
     /// Broken pipe
     pub const EPIPE: i64 = -32;
     /// Function not implemented
@@ -76,21 +100,32 @@ pub struct SyscallError {
 
 impl SyscallError {
     /// Create a new syscall error from an error code
+    #[must_use]
     pub const fn new(code: i64) -> Self {
+        Self { code }
+    }
+    
+    /// Create a syscall error from raw value (for `ring_io` compatibility)
+    #[must_use]
+    pub const fn from_raw(code: i64) -> Self {
         Self { code }
     }
 
     /// Get the error code
+    #[must_use]
     pub const fn code(self) -> i64 {
         self.code
     }
 
     /// Check if this is a specific error
+    #[must_use]
     pub const fn is(self, errno: i64) -> bool {
         self.code == errno
     }
 
     /// Get a human-readable description of the error
+    #[must_use]
+    #[allow(clippy::wildcard_imports)]
     pub const fn description(self) -> &'static str {
         use errno::*;
         match self.code {
@@ -105,6 +140,7 @@ impl SyscallError {
             ENOMEM => "Out of memory",
             EFAULT => "Bad address",
             EINVAL => "Invalid argument",
+            ENOSPC => "No space left on device",
             EPIPE => "Broken pipe",
             ENOSYS => "Function not implemented",
             _ => "Unknown error",
@@ -140,6 +176,50 @@ unsafe fn syscall6(num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u
         );
     }
     ret
+}
+
+/// Perform a system call with 1 argument
+///
+/// # Safety
+/// This function is unsafe because it performs a raw system call.
+#[inline]
+#[must_use]
+#[allow(clippy::cast_sign_loss)]
+pub unsafe fn syscall1(num: u64, arg1: i64) -> i64 {
+    unsafe { syscall6(num, arg1 as u64, 0, 0, 0, 0, 0) }
+}
+
+/// Perform a system call with 2 arguments
+///
+/// # Safety
+/// This function is unsafe because it performs a raw system call.
+#[inline]
+#[must_use]
+#[allow(clippy::cast_sign_loss)]
+pub unsafe fn syscall2(num: u64, arg1: i64, arg2: i64) -> i64 {
+    unsafe { syscall6(num, arg1 as u64, arg2 as u64, 0, 0, 0, 0) }
+}
+
+/// Perform a system call with 3 arguments
+///
+/// # Safety
+/// This function is unsafe because it performs a raw system call.
+#[inline]
+#[must_use]
+#[allow(clippy::cast_sign_loss)]
+pub unsafe fn syscall3(num: u64, arg1: i64, arg2: i64, arg3: i64) -> i64 {
+    unsafe { syscall6(num, arg1 as u64, arg2 as u64, arg3 as u64, 0, 0, 0) }
+}
+
+/// Perform a system call with 4 arguments
+///
+/// # Safety
+/// This function is unsafe because it performs a raw system call.
+#[inline]
+#[must_use]
+#[allow(clippy::cast_sign_loss)]
+pub unsafe fn syscall4(num: u64, arg1: i64, arg2: i64, arg3: i64, arg4: i64) -> i64 {
+    unsafe { syscall6(num, arg1 as u64, arg2 as u64, arg3 as u64, arg4 as u64, 0, 0) }
 }
 
 /// Helper to convert syscall result to Result type
@@ -420,6 +500,162 @@ pub fn io_uring_register(fd: u32, opcode: u32, arg: u64, nr_args: u32) -> Syscal
         )
     };
     syscall_result(ret).map(|_| ())
+}
+
+// ============================================================================
+// Fast IPC System Calls (Strategy 1-3)
+// ============================================================================
+
+/// Benchmark modes for `sys_benchmark`
+pub mod benchmark_mode {
+    /// Minimal syscall (just return)
+    pub const MINIMAL: u64 = 0;
+    /// Read timestamp (rdtsc)
+    pub const TIMESTAMP: u64 = 1;
+    /// Memory fence
+    pub const FENCE: u64 = 2;
+    /// Check shared ring
+    pub const RING_CHECK: u64 = 3;
+}
+
+/// Fast I/O setup flags
+pub mod fast_io_flags {
+    /// Enable kernel polling (SQPOLL mode)
+    pub const SQPOLL: u64 = 1 << 0;
+    /// Enable I/O completion polling
+    pub const IOPOLL: u64 = 1 << 1;
+}
+
+/// `sys_benchmark` - Minimal syscall for measuring overhead
+///
+/// This syscall does minimal work to measure raw syscall latency.
+///
+/// # Arguments
+/// * `mode` - Benchmark mode:
+///   - 0: Minimal (just return)
+///   - 1: Read timestamp (rdtsc)
+///   - 2: Memory fence
+///   - 3: Check shared ring
+///
+/// # Returns
+/// * Mode 0: 0
+/// * Mode 1: Current CPU timestamp
+/// * Mode 2: 0
+/// * Mode 3: Number of pending operations
+///
+/// # Errors
+/// * `EINVAL` - Invalid mode
+///
+/// # Example
+/// ```
+/// use libuser::syscall::{benchmark, benchmark_mode};
+///
+/// // Measure syscall overhead
+/// let start = benchmark(benchmark_mode::TIMESTAMP).unwrap();
+/// let _ = benchmark(benchmark_mode::MINIMAL);
+/// let end = benchmark(benchmark_mode::TIMESTAMP).unwrap();
+/// let overhead = end - start;
+/// ```
+#[allow(clippy::cast_sign_loss)]
+pub fn benchmark(mode: u64) -> SyscallResult<u64> {
+    let ret = unsafe {
+        syscall6(SYS_BENCHMARK, mode, 0, 0, 0, 0, 0)
+    };
+    syscall_result(ret).map(|v| v as u64)
+}
+
+/// `sys_fast_poll` - Poll fast I/O rings without blocking
+///
+/// This is the "kick" syscall for SQPOLL mode. When the kernel's
+/// polling thread is sleeping, this wakes it up to process submissions.
+///
+/// In high-throughput scenarios with SQPOLL enabled, this syscall
+/// may not be needed at all since the kernel continuously polls.
+///
+/// # Returns
+/// Number of operations processed
+///
+/// # Errors
+/// * `ESRCH` - Process not found
+#[allow(clippy::cast_sign_loss)]
+pub fn fast_poll() -> SyscallResult<u64> {
+    let ret = unsafe {
+        syscall6(SYS_FAST_POLL, 0, 0, 0, 0, 0, 0)
+    };
+    syscall_result(ret).map(|v| v as u64)
+}
+
+/// `sys_fast_io_setup` - Set up syscall-less I/O rings
+///
+/// Creates shared memory ring buffers for syscall-less I/O operations.
+/// After setup, userspace can submit I/O requests by writing to the
+/// submission queue without executing syscall instructions.
+///
+/// # Arguments
+/// * `flags` - Configuration flags:
+///   - Bit 0 (SQPOLL): Enable kernel polling
+///   - Bit 1 (IOPOLL): Enable completion polling
+///
+/// # Returns
+/// Base address of the fast I/O context (for mmap)
+///
+/// # Errors
+/// * `ENOMEM` - Out of memory
+/// * `ESRCH` - Process not found
+///
+/// # Example
+/// ```
+/// use libuser::syscall::{fast_io_setup, fast_io_flags};
+///
+/// // Set up with kernel polling enabled
+/// let ctx = fast_io_setup(fast_io_flags::SQPOLL)?;
+///
+/// // Now writes to the submission queue are processed
+/// // automatically without syscalls!
+/// ```
+#[allow(clippy::cast_sign_loss)]
+pub fn fast_io_setup(flags: u64) -> SyscallResult<u64> {
+    let ret = unsafe {
+        syscall6(SYS_FAST_IO_SETUP, flags, 0, 0, 0, 0, 0)
+    };
+    syscall_result(ret).map(|v| v as u64)
+}
+
+/// Read CPU timestamp counter directly (without syscall)
+///
+/// This is faster than `benchmark(TIMESTAMP)` since it doesn't
+/// execute a syscall instruction at all.
+///
+/// # Returns
+/// Current CPU timestamp counter value
+#[inline]
+#[must_use]
+pub fn rdtsc() -> u64 {
+    let lo: u32;
+    let hi: u32;
+    unsafe {
+        core::arch::asm!(
+            "rdtsc",
+            out("eax") lo,
+            out("edx") hi,
+            options(nostack, nomem)
+        );
+    }
+    (u64::from(hi) << 32) | u64::from(lo)
+}
+
+/// Measure syscall overhead in CPU cycles
+///
+/// Performs a minimal syscall and returns the cycle count.
+///
+/// # Returns
+/// Approximate number of CPU cycles for a minimal syscall
+#[must_use]
+pub fn measure_syscall_overhead() -> u64 {
+    let start = rdtsc();
+    let _ = benchmark(benchmark_mode::MINIMAL);
+    let end = rdtsc();
+    end.saturating_sub(start)
 }
 
 // ============================================================================

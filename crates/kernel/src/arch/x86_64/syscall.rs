@@ -291,12 +291,6 @@ pub unsafe extern "C" fn syscall_entry() {
 // - Accessed via GS segment in syscall_entry (gs:[0x08])
 // - Each CPU has its own stack, eliminating race conditions
 
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-// Legacy CURRENT_KERNEL_STACK for syscall_fast.rs compatibility
-// TODO: Migrate syscall_fast.rs to swapgs-based implementation
-pub(super) static CURRENT_KERNEL_STACK: AtomicUsize = AtomicUsize::new(0);
-
 /// Update the current kernel stack pointer (Phase 3)
 /// 
 /// This should be called during context switch to update the stack
@@ -317,9 +311,6 @@ pub fn set_kernel_stack(stack_top: VirtAddr) {
     
     // Update Per-CPU data (primary)
     super::per_cpu::update_kernel_stack(stack_top);
-    
-    // Also update legacy atomic for syscall_fast.rs compatibility
-    CURRENT_KERNEL_STACK.store(stack_addr, Ordering::Release);
 }
 
 /// Get the currently configured kernel stack

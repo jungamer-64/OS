@@ -113,6 +113,7 @@
 //! - `docs/syscall_interface.md` - Complete syscall specification
 //! - `userland/libuser/src/syscall.rs` - User-space wrappers
 
+use alloc::boxed::Box;
 use crate::arch::Cpu;
 use crate::debug_println;
 
@@ -1016,6 +1017,194 @@ pub fn sys_io_uring_register(
     ENOSYS
 }
 
+// ============================================================================
+// Fast IPC Syscalls (Strategy 1-3)
+// ============================================================================
+
+/// Benchmark syscall (ID: 1000)
+///
+/// Minimal syscall for measuring syscall overhead.
+///
+/// # Modes
+/// * 0 - Minimal (just return)
+/// * 1 - Read timestamp (rdtsc)
+/// * 2 - Memory fence
+/// * 3 - Check shared ring
+///
+/// # Returns
+/// * Mode 0: 0
+/// * Mode 1: Current timestamp
+/// * Mode 2: 0
+/// * Mode 3: Number of pending operations
+pub fn sys_benchmark(mode: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    match mode {
+        0 => 0, // Minimal - just return
+        1 => crate::arch::x86_64::cpu::read_timestamp() as SyscallResult,
+        2 => {
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+            0
+        }
+        3 => 0, // Ring check (placeholder)
+        _ => EINVAL,
+    }
+}
+
+/// Fast ring poll syscall (ID: 1001)
+///
+/// This is the "kick" syscall for SQPOLL mode.
+/// It processes submissions in the fast I/O ring without full syscall overhead.
+///
+/// # Returns
+/// * Number of operations processed
+pub fn sys_fast_poll(_arg1: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    // Poll all registered SQPOLL contexts
+    crate::arch::x86_64::syscall_ring::kernel_poll_all() as SyscallResult
+}
+
+/// Fast I/O setup syscall (ID: 1002)
+///
+/// Set up syscall-less I/O rings for the current process.
+///
+/// # Arguments
+/// * `flags` - Configuration flags
+///   - Bit 0: Enable SQPOLL (kernel polling)
+///   - Bit 1: Enable IOPOLL (completion polling)
+///
+/// # Returns
+/// * Success: Base address of the fast I/O region
+/// * Error: ENOMEM, ESRCH
+pub fn sys_fast_io_setup(flags: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    let enable_sqpoll = (flags & 1) != 0;
+    
+    match crate::arch::x86_64::syscall_ring::init_ring_for_process(enable_sqpoll) {
+        Some(ctx) => {
+            // Return the context address (will need user mapping in production)
+            Box::into_raw(ctx) as u64 as SyscallResult
+        }
+        None => ENOMEM,
+    }
+}
+
+// ============================================================================
+// Ring-based Syscall System (Syscalls 2000-2099)
+//
+// This is the new revolutionary syscall architecture that replaces
+// traditional function-call-style syscalls with io_uring-style
+// asynchronous message passing.
+// ============================================================================
+
+/// Ring enter syscall (ID: 2000)
+///
+/// This is the "doorbell" syscall - it takes no meaningful arguments.
+/// The kernel processes all pending entries in the process's ring buffer.
+///
+/// # Arguments (mostly ignored)
+/// * `min_complete` - Optional: minimum completions to wait for
+///
+/// # Returns
+/// * Number of completions generated
+pub fn sys_ring_enter(_arg1: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    use crate::kernel::process::PROCESS_TABLE;
+    
+    let mut table = PROCESS_TABLE.lock();
+    let process = match table.current_process_mut() {
+        Some(p) => p,
+        None => return ESRCH,
+    };
+    
+    // Process the ring buffer
+    let completed = process.ring_poll();
+    
+    // Check if exit was requested
+    if process.ring_exit_requested() {
+        let code = process.ring_exit_code().unwrap_or(0);
+        let pid = process.pid();
+        drop(table); // Release lock before exit
+        
+        // Terminate the process
+        crate::kernel::process::lifecycle::terminate_process(pid, code as i32);
+        return code as SyscallResult;
+    }
+    
+    completed as SyscallResult
+}
+
+/// Ring register syscall (ID: 2001)
+///
+/// Register a memory buffer for zero-copy I/O.
+/// After registration, the buffer can be accessed via buf_index
+/// instead of a pointer, eliminating per-call validation.
+///
+/// # Arguments
+/// * `addr` - User space virtual address of buffer
+/// * `len` - Buffer length
+/// * `flags` - Permissions (bit 0: read, bit 1: write)
+/// * `slot` - Preferred slot (optional, 0 = auto-assign)
+///
+/// # Returns
+/// * Success: Buffer index (0-63)
+/// * Error: EFAULT (bad address), ENOSPC (no slots), ESRCH (no process)
+pub fn sys_ring_register(addr: u64, len: u64, flags: u64, slot: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    use crate::kernel::process::PROCESS_TABLE;
+    use crate::arch::x86_64::syscall_ring::BufferPermissions;
+    
+    let mut table = PROCESS_TABLE.lock();
+    let process = match table.current_process_mut() {
+        Some(p) => p,
+        None => return ESRCH,
+    };
+    
+    // Ensure ring context exists
+    let ring_ctx = match process.ring_context_mut() {
+        Some(ctx) => ctx,
+        None => return EINVAL,
+    };
+    
+    let permissions = BufferPermissions {
+        read: (flags & 1) != 0,
+        write: (flags & 2) != 0,
+    };
+    
+    match ring_ctx.buffers_mut().register(addr, len, permissions) {
+        Ok(idx) => idx as SyscallResult,
+        Err(e) => e as SyscallResult,
+    }
+}
+
+/// Ring setup syscall (ID: 2002)
+///
+/// Initialize the ring-based syscall context for the current process.
+/// This allocates the submission and completion queues.
+///
+/// # Arguments
+/// * `flags` - Configuration flags
+///   - Bit 0: Enable SQPOLL (kernel polling mode)
+///
+/// # Returns
+/// * Success: Address of ring mapping info structure
+/// * Error: ENOMEM (allocation failed), ESRCH (no process)
+pub fn sys_ring_setup(flags: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    use crate::kernel::process::PROCESS_TABLE;
+    
+    let enable_sqpoll = (flags & 1) != 0;
+    
+    let mut table = PROCESS_TABLE.lock();
+    let process = match table.current_process_mut() {
+        Some(p) => p,
+        None => return ESRCH,
+    };
+    
+    // Initialize ring context
+    let ring_ctx = match process.ring_setup(enable_sqpoll) {
+        Some(ctx) => ctx,
+        None => return ENOMEM,
+    };
+    
+    // Return the mapping info address
+    let info = ring_ctx.get_mapping_info();
+    info.sq_header as SyscallResult
+}
+
 /// Syscall handler function type
 type SyscallHandler = fn(u64, u64, u64, u64, u64, u64) -> SyscallResult;
 
@@ -1057,8 +1246,20 @@ pub fn dispatch(
     let num = syscall_num as usize;
     
     if num >= SYSCALL_TABLE.len() {
-        debug_println!("[SYSCALL] Invalid syscall number: {}", syscall_num);
-        return ENOSYS;
+        // Check for extended syscall range (1000+)
+        return match syscall_num {
+            1000 => sys_benchmark(arg1, arg2, arg3, arg4, arg5, arg6),
+            1001 => sys_fast_poll(arg1, arg2, arg3, arg4, arg5, arg6),
+            1002 => sys_fast_io_setup(arg1, arg2, arg3, arg4, arg5, arg6),
+            // Ring-based syscall system (2000+)
+            2000 => sys_ring_enter(arg1, arg2, arg3, arg4, arg5, arg6),
+            2001 => sys_ring_register(arg1, arg2, arg3, arg4, arg5, arg6),
+            2002 => sys_ring_setup(arg1, arg2, arg3, arg4, arg5, arg6),
+            _ => {
+                debug_println!("[SYSCALL] Invalid syscall number: {}", syscall_num);
+                ENOSYS
+            }
+        };
     }
     
     debug_println!(

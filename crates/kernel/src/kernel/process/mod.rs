@@ -15,6 +15,7 @@ use spin::Mutex;
 use lazy_static::lazy_static;
 use crate::kernel::fs::FileDescriptor;
 use crate::kernel::io_uring::IoUringContext;
+use crate::arch::x86_64::syscall_ring::RingContext;
 
 pub mod lifecycle;
 pub mod switch;
@@ -128,6 +129,8 @@ pub struct Process {
     fpu_state: FpuState,
     /// io_uring context for async I/O (optional, created on demand)
     io_uring_ctx: Option<Box<IoUringContext>>,
+    /// Ring-based syscall context for async message passing (new architecture)
+    ring_ctx: Option<Box<RingContext>>,
 }
 
 impl Drop for Process {
@@ -214,6 +217,7 @@ impl Process {
             next_fd: 0,
             fpu_state: FpuState::default(),
             io_uring_ctx: None,
+            ring_ctx: None,
         }
     }
     
@@ -379,6 +383,60 @@ impl Process {
     #[must_use]
     pub fn has_io_uring(&self) -> bool {
         self.io_uring_ctx.is_some()
+    }
+    
+    // ========================================================================
+    // Ring-based syscall context methods (New Architecture)
+    // ========================================================================
+    
+    /// Initialize or get the ring context for async message passing
+    ///
+    /// Creates a new ring context if one doesn't exist.
+    /// This is the foundation for the new syscall-less I/O architecture.
+    pub fn ring_setup(&mut self, enable_sqpoll: bool) -> Option<&mut RingContext> {
+        if self.ring_ctx.is_none() {
+            let ctx = crate::arch::x86_64::syscall_ring::init_ring_for_process(enable_sqpoll)?;
+            self.ring_ctx = Some(ctx);
+            crate::debug_println!("[Process] Created ring context for PID={} (SQPOLL={})", 
+                self.pid.as_u64(), enable_sqpoll);
+        }
+        Some(self.ring_ctx.as_mut().unwrap())
+    }
+    
+    /// Get the ring context if it exists
+    #[must_use]
+    pub fn ring_context(&self) -> Option<&RingContext> {
+        self.ring_ctx.as_ref().map(|b| &**b)
+    }
+    
+    /// Get mutable ring context if it exists
+    pub fn ring_context_mut(&mut self) -> Option<&mut RingContext> {
+        self.ring_ctx.as_mut().map(|b| &mut **b)
+    }
+    
+    /// Check if ring context is initialized
+    #[must_use]
+    pub fn has_ring_context(&self) -> bool {
+        self.ring_ctx.is_some()
+    }
+    
+    /// Poll the ring buffer and process pending operations
+    ///
+    /// Returns the number of completions generated.
+    pub fn ring_poll(&mut self) -> u32 {
+        self.ring_ctx.as_mut().map(|ctx| ctx.poll()).unwrap_or(0)
+    }
+    
+    /// Check if exit was requested via ring
+    pub fn ring_exit_requested(&self) -> bool {
+        self.ring_ctx.as_ref().map(|ctx| ctx.exit_requested()).unwrap_or(false)
+    }
+    
+    /// Get exit code from ring (if exit was requested)
+    pub fn ring_exit_code(&self) -> Option<i32> {
+        self.ring_ctx.as_ref()
+            .filter(|ctx| ctx.exit_requested())
+            .map(|ctx| ctx.exit_code())
     }
 }
 

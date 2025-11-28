@@ -10,8 +10,8 @@ pub mod gdt;
 pub mod interrupts;
 pub mod pic;
 pub mod syscall;
-/// Optimized syscall entry for io_uring operations
-pub mod syscall_fast;
+/// Ring-based syscall system (io_uring-style async message passing)
+pub mod syscall_ring;
 /// CR3 switching diagnostic tests (Phase 3 preparation)
 pub mod cr3_test;
 /// Task State Segment (Phase 2: Process Management)
@@ -37,3 +37,9 @@ pub use fpu::{init as init_fpu, save_fpu_state, restore_fpu_state};
 pub use cpu_features::{detect as detect_cpu_features, get as get_cpu_features};
 pub use per_cpu::{init as init_per_cpu, update_kernel_stack as update_per_cpu_stack};
 pub use smp::{init as init_smp, cpu_count, current_cpu_id};
+pub use syscall_ring::{
+    init as init_syscall_ring,
+    RingContext, IdealSqe, IdealCqe, RingOpcode,
+    ideal_syscall_entry, kernel_poll_all, kernel_poller_loop,
+    init_ring_for_process,
+};
