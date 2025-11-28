@@ -161,13 +161,21 @@ const DEFAULT_QUEUE_SIZE: usize = 256;
 ///
 /// crossbeam-queue を使用したロックフリーキューでタスクを管理。
 /// カーネル内の非同期処理の中心となるコンポーネント。
+///
+/// # 最適化ポイント
+///
+/// - タスクは `TaskSlot` (Arc<Mutex<Option<Task>>>) で保持
+/// - Poll 時に BTreeMap から remove/insert しない（O(1) アクセス）
+/// - 完了したタスクのみ削除（遅延 GC）
 pub struct Executor {
     /// 実行待ちタスクキュー（ロックフリー）
     task_queue: Arc<ArrayQueue<TaskId>>,
-    /// タスクマップ（TaskId -> Task）
-    tasks: Mutex<BTreeMap<TaskId, Task>>,
+    /// タスクスロットマップ（TaskId -> TaskSlot）
+    task_slots: Mutex<BTreeMap<TaskId, TaskSlot>>,
     /// 実行中フラグ
     running: AtomicBool,
+    /// 完了タスク数（統計用）
+    completed_count: AtomicU64,
 }
 
 impl Executor {
@@ -180,8 +188,9 @@ impl Executor {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             task_queue: Arc::new(ArrayQueue::new(capacity)),
-            tasks: Mutex::new(BTreeMap::new()),
+            task_slots: Mutex::new(BTreeMap::new()),
             running: AtomicBool::new(false),
+            completed_count: AtomicU64::new(0),
         }
     }
 
@@ -191,9 +200,10 @@ impl Executor {
     pub fn spawn(&self, future: impl Future<Output = ()> + 'static + Send) -> TaskId {
         let task = Task::new(future);
         let task_id = task.id();
+        let slot = TaskSlot::new(task);
 
-        // タスクマップに追加
-        self.tasks.lock().insert(task_id, task);
+        // タスクスロットマップに追加
+        self.task_slots.lock().insert(task_id, slot);
         
         // 実行キューに追加
         let _ = self.task_queue.push(task_id);
@@ -202,9 +212,10 @@ impl Executor {
         task_id
     }
 
-    /// 1つのタスクをポーリング
+    /// 1つのタスクをポーリング（最適化版）
     ///
-    /// キューからタスクを1つ取り出してポーリングする。
+    /// キューからタスクを1つ取り出してインプレースでポーリングする。
+    /// タスクを BTreeMap から remove/insert しないため高速。
     /// 
     /// # Returns
     /// - `Some(true)` - タスクが完了した
@@ -214,29 +225,48 @@ impl Executor {
         // キューからタスク ID を取得
         let task_id = self.task_queue.pop()?;
 
-        // タスクを取得
-        let mut task = {
-            let mut tasks = self.tasks.lock();
-            tasks.remove(&task_id)?
+        // タスクスロットを取得（共有参照）
+        let shared_task = {
+            let slots = self.task_slots.lock();
+            slots.get(&task_id).map(|slot| slot.shared())
         };
+
+        let shared_task = shared_task?;
 
         // Waker を作成
         let waker = Arc::new(TaskWaker::new(task_id, Arc::clone(&self.task_queue)));
         let waker = waker.waker();
         let mut context = Context::from_waker(&waker);
 
-        // タスクをポーリング
-        let completed = match task.poll(&mut context) {
-            Poll::Ready(()) => {
-                crate::debug_println!("[Executor] Task {} completed", task_id.as_u64());
+        // タスクをインプレースでポーリング
+        // ロック中に poll することで、他のスレッドからの干渉を防ぐ
+        let completed = {
+            let mut task_guard = shared_task.lock();
+            
+            if let Some(task) = task_guard.as_mut() {
+                match task.poll(&mut context) {
+                    Poll::Ready(()) => {
+                        // 完了: タスクを削除マーク
+                        *task_guard = None;
+                        true
+                    }
+                    Poll::Pending => {
+                        // Pending: そのまま（Waker が次回 wake するとキューに戻る）
+                        false
+                    }
+                }
+            } else {
+                // すでに完了済み（二重 wake の場合）
                 true
             }
-            Poll::Pending => {
-                // タスクを再度マップに戻す
-                self.tasks.lock().insert(task_id, task);
-                false
-            }
         };
+
+        if completed {
+            // 完了したタスクをスロットマップから削除
+            self.task_slots.lock().remove(&task_id);
+            self.completed_count.fetch_add(1, Ordering::Relaxed);
+            crate::debug_println!("[Executor] Task {} completed", task_id.as_u64());
+        }
 
         Some(completed)
     }
@@ -272,7 +302,7 @@ impl Executor {
             // キューからタスクを処理
             if self.run_one().is_none() {
                 // キューが空の場合
-                if self.tasks.lock().is_empty() {
+                if self.task_slots.lock().is_empty() {
                     // すべてのタスクが完了
                     break;
                 }
@@ -292,7 +322,7 @@ impl Executor {
 
     /// 現在のタスク数を取得
     pub fn task_count(&self) -> usize {
-        self.tasks.lock().len()
+        self.task_slots.lock().len()
     }
 
     /// キュー内のタスク数を取得
@@ -303,6 +333,11 @@ impl Executor {
     /// 実行中かどうか
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+    
+    /// 完了したタスクの総数
+    pub fn completed_count(&self) -> u64 {
+        self.completed_count.load(Ordering::Relaxed)
     }
 }
 
