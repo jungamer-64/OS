@@ -1,4 +1,4 @@
-// src/kernel/core/traits.rs
+// kernel/src/kernel/core/traits.rs
 //! カーネルコア trait 定義
 
 use super::types::{TaskId, Priority};

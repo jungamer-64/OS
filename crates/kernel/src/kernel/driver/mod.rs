@@ -1,3 +1,4 @@
+// kernel/src/kernel/driver/mod.rs
 //! デバイスドライバモジュール
 
 pub mod console;

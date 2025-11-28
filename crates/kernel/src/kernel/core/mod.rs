@@ -1,3 +1,4 @@
+// kernel/src/kernel/core/mod.rs
 //! カーネルコア抽象化
 //! 
 //! このモジュールは、カーネル全体で使用する基本的な trait、型、

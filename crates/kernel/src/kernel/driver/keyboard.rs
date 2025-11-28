@@ -1,4 +1,4 @@
-// src/kernel/driver/keyboard.rs
+// kernel/src/kernel/driver/keyboard.rs
 //! PS/2 キーボードドライバ
 //!
 //! CharDevice trait に基づいた型安全な実装。

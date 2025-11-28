@@ -1,4 +1,4 @@
-// src/kernel/core/result.rs
+// kernel/src/kernel/core/result.rs
 //! カーネル共通エラーハンドリング
 //!
 //! コンテキスト情報付きエラーで、デバッグを容易にします。

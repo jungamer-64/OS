@@ -1,4 +1,4 @@
-// src/kernel/driver/console.rs
+// kernel/src/kernel/driver/console.rs
 //! コンソール抽象化レイヤー
 //!
 //! フレームバッファとVGAテキストモードを統一的に扱うための抽象化層。

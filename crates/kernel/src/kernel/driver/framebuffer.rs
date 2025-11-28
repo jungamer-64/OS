@@ -1,3 +1,4 @@
+// kernel/src/kernel/driver/framebuffer.rs
 //! UEFI Framebuffer ドライバ
 //!
 //! ``bootloader_api`` から渡されるフレームバッファ情報を使用して描画を行います。

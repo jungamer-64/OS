@@ -1,4 +1,4 @@
-// src/kernel/driver/serial.rs
+// kernel/src/kernel/driver/serial.rs
 //! Serial ポートドライバ (UART 16550)
 //!
 //! `CharDevice` trait に基づいた型安全な実装。

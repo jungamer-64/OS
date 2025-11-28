@@ -1,3 +1,4 @@
+// kernel/src/kernel/core/types.rs
 //! カーネル共通型定義
 
 use core::fmt;

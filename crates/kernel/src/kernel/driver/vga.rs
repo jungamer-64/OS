@@ -1,4 +1,4 @@
-// src/kernel/driver/vga.rs
+// kernel/src/kernel/driver/vga.rs
 //! VGA テキストモードドライバ
 //!
 //! CharDevice trait に基づいた型安全な実装。
