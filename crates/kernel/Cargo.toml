@@ -1,6 +1,6 @@
 [package]
 name = "tiny_os"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["jungamer-64 <your.email@example.com>"]
 edition = "2024"
 default-run = "tiny_os"
@@ -41,10 +41,8 @@ bootloader_api = "=0.11.12"
 x86_64 = { version = "0.15", features = [] }
 
 # Spin-based synchronization primitives (no_std compatible)
+# Includes Lazy for lazy initialization (replaces lazy_static)
 spin = "0.9.8"
-
-# Lazy static initialization with spin locks
-lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 
 # Heap allocator
 linked_list_allocator = "0.10.5"
@@ -52,11 +50,22 @@ linked_list_allocator = "0.10.5"
 # Keyboard scancode decoder
 pc-keyboard = "0.7.0"
 
-# Bootloader (for bootimage compatibility)
-bootloader = { version = "0.9.23", features = ["map_physical_memory"] }
-
 # CPU feature detection (CPUID instruction wrapper)
 raw-cpuid = "11.2"
+
+# --- New additions for modern async kernel ---
+
+# Standardized logging trait (integrates with external drivers)
+log = "0.4"
+
+# Async utilities for no_std (essential for ring buffer syscalls)
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+
+# Lock-free queue for kernel-userspace communication
+crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
+
+# Type-safe bitflags for hardware registers, page table flags, RFLAGS, etc.
+bitflags = "2.4"
 
 
 
