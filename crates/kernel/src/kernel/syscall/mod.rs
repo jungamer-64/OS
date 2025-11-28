@@ -187,10 +187,10 @@ pub const ENOSPC: SyscallResult = -28;
 // System Call Implementations
 // ============================================================================
 
-/// sys_write - Write to file descriptor
+/// sys_write - Write to file descriptor (capability-based)
 ///
 /// Arguments:
-/// - arg1: fd (file descriptor)
+/// - arg1: fd (capability ID: 0=stdin, 1=stdout, 2=stderr, or other capability)
 /// - arg2: buffer pointer
 /// - arg3: length
 /// 
@@ -198,53 +198,19 @@ pub const ENOSPC: SyscallResult = -28;
 /// - Positive: Number of bytes written
 /// - Negative: Error code (EFAULT, EINVAL, EBADF)
 pub fn sys_write(fd: u64, buf: u64, len: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    // Special case: FD 1 = stdout (console)
-    if fd == 1 {
-        // 1. Validate length
-        if len > MAX_WRITE_LEN {
-            debug_println!("[SYSCALL] sys_write: length too large ({})", len);
-            return EINVAL;
-        }
-        
-        // 2. Validate buffer is readable (includes address range, mapping, and permission checks)
-        if let Err(e) = validate_user_read(buf, len) {
-            debug_println!("[SYSCALL] sys_write: invalid buffer at 0x{:x}, len={}", buf, len);
-            return e;
-        }
-        
-        // 4. Safely read user buffer
-        // SAFETY: We've validated that the pointer is in user space
-        let slice = unsafe {
-            core::slice::from_raw_parts(buf as *const u8, len as usize)
-        };
-        
-        // 5. Write to console
-        use crate::kernel::driver::serial::SERIAL1;
-        if let Some(mut serial) = SERIAL1.try_lock() {
-            for &byte in slice {
-                let _ = serial.write_byte(byte);
-            }
-        }
-        
-        return len as SyscallResult;
-    }
-    
-    // For other FDs, dispatch to file descriptor
+    use crate::kernel::capability::{FileResource, Handle, Rights};
+    use crate::kernel::fs::VfsFile;
     use crate::kernel::process::PROCESS_TABLE;
     
-    let table = PROCESS_TABLE.lock();
-    let process = match table.current_process() {
-        Some(p) => p,
-        None => return ESRCH,
-    };
-    
-    let fd_arc = match process.get_file_descriptor(fd) {
-        Some(fd) => fd,
-        None => return EBADF,
-    };
+    // Validate length
+    if len > MAX_WRITE_LEN {
+        debug_println!("[SYSCALL] sys_write: length too large ({})", len);
+        return EINVAL;
+    }
     
     // Validate buffer is readable
     if let Err(e) = validate_user_read(buf, len) {
+        debug_println!("[SYSCALL] sys_write: invalid buffer at 0x{:x}, len={}", buf, len);
         return e;
     }
     
@@ -252,8 +218,34 @@ pub fn sys_write(fd: u64, buf: u64, len: u64, _arg4: u64, _arg5: u64, _arg6: u64
         core::slice::from_raw_parts(buf as *const u8, len as usize)
     };
     
-    let mut fd_lock = fd_arc.lock();
-    match fd_lock.write(slice) {
+    // Get VfsFile from capability table
+    let table = PROCESS_TABLE.lock();
+    let process = match table.current_process() {
+        Some(p) => p,
+        None => return ESRCH,
+    };
+    
+    let handle: Handle<FileResource> = unsafe { Handle::from_raw(fd) };
+    let entry = match process.capability_table().get_with_rights(&handle, Rights::WRITE) {
+        Ok(e) => e,
+        Err(_) => {
+            core::mem::forget(handle);
+            return EBADF;
+        }
+    };
+    
+    let vfs_file = match entry.downcast::<VfsFile>() {
+        Some(vfs) => vfs,
+        None => {
+            core::mem::forget(handle);
+            return EBADF;
+        }
+    };
+    
+    let result = vfs_file.write(slice);
+    core::mem::forget(handle);
+    
+    match result {
         Ok(written) => written as SyscallResult,
         Err(crate::kernel::fs::FileError::BrokenPipe) => EPIPE,
         Err(crate::kernel::fs::FileError::WouldBlock) => EAGAIN,
@@ -261,10 +253,10 @@ pub fn sys_write(fd: u64, buf: u64, len: u64, _arg4: u64, _arg5: u64, _arg6: u64
     }
 }
 
-/// sys_read - Read from file descriptor
+/// sys_read - Read from file descriptor (capability-based)
 ///
 /// Arguments:
-/// - arg1: fd (file descriptor)
+/// - arg1: fd (capability ID: 0=stdin, 1=stdout, 2=stderr, or other capability)
 /// - arg2: buffer pointer
 /// - arg3: length
 ///
@@ -273,25 +265,9 @@ pub fn sys_write(fd: u64, buf: u64, len: u64, _arg4: u64, _arg5: u64, _arg6: u64
 /// - 0: EOF
 /// - Negative: Error code
 pub fn sys_read(fd: u64, buf: u64, len: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    // Special case: FD 0 = stdin (not implemented)
-    if fd == 0 {
-        debug_println!("[SYSCALL] sys_read from stdin not implemented yet");
-        return ENOSYS;
-    }
-    
-    // For other FDs, dispatch to file descriptor
+    use crate::kernel::capability::{FileResource, Handle, Rights};
+    use crate::kernel::fs::VfsFile;
     use crate::kernel::process::PROCESS_TABLE;
-    
-    let table = PROCESS_TABLE.lock();
-    let process = match table.current_process() {
-        Some(p) => p,
-        None => return ESRCH,
-    };
-    
-    let fd_arc = match process.get_file_descriptor(fd) {
-        Some(fd) => fd,
-        None => return EBADF,
-    };
     
     // Validate buffer is writable
     if let Err(e) = validate_user_write(buf, len) {
@@ -302,8 +278,34 @@ pub fn sys_read(fd: u64, buf: u64, len: u64, _arg4: u64, _arg5: u64, _arg6: u64)
         core::slice::from_raw_parts_mut(buf as *mut u8, len as usize)
     };
     
-    let mut fd_lock = fd_arc.lock();
-    match fd_lock.read(slice) {
+    // Get VfsFile from capability table
+    let table = PROCESS_TABLE.lock();
+    let process = match table.current_process() {
+        Some(p) => p,
+        None => return ESRCH,
+    };
+    
+    let handle: Handle<FileResource> = unsafe { Handle::from_raw(fd) };
+    let entry = match process.capability_table().get_with_rights(&handle, Rights::READ) {
+        Ok(e) => e,
+        Err(_) => {
+            core::mem::forget(handle);
+            return EBADF;
+        }
+    };
+    
+    let vfs_file = match entry.downcast::<VfsFile>() {
+        Some(vfs) => vfs,
+        None => {
+            core::mem::forget(handle);
+            return EBADF;
+        }
+    };
+    
+    let result = vfs_file.read(slice);
+    core::mem::forget(handle);
+    
+    match result {
         Ok(read) => read as SyscallResult,
         Err(crate::kernel::fs::FileError::BrokenPipe) => 0, // EOF
         Err(crate::kernel::fs::FileError::WouldBlock) => EAGAIN,
@@ -974,9 +976,9 @@ pub fn sys_io_uring_enter(
         None => return ESRCH,
     };
     
-    // Check if io_uring is set up
-    let ctx = match process.io_uring_mut() {
-        Some(ctx) => ctx,
+    // Get io_uring context and capability table simultaneously
+    let (ctx, cap_table) = match process.io_uring_with_capabilities() {
+        Some(pair) => pair,
         None => {
             debug_println!("[SYSCALL] io_uring_enter: io_uring not set up");
             return EINVAL;
@@ -984,7 +986,7 @@ pub fn sys_io_uring_enter(
     };
     
     // Process submissions and completions
-    let completed = ctx.enter(min_complete as u32);
+    let completed = ctx.enter(min_complete as u32, cap_table);
     
     debug_println!(
         "[SYSCALL] io_uring_enter: to_submit={}, min_complete={}, completed={}",

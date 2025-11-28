@@ -142,9 +142,12 @@ impl IoUringContext {
     /// 3. Dispatches to handlers
     /// 4. Posts completions to CQ
     ///
+    /// # Arguments
+    /// * `cap_table` - The process's capability table for I/O operations
+    ///
     /// # Returns
     /// Number of operations completed
-    pub fn process(&mut self) -> u32 {
+    pub fn process(&mut self, cap_table: &CapabilityTable) -> u32 {
         // Harvest new submissions
         let harvested = self.ring.harvest_submissions();
         
@@ -171,8 +174,8 @@ impl IoUringContext {
                 continue;
             }
             
-            // Dispatch to handler
-            let result = dispatch_sqe(&sqe);
+            // Dispatch to handler with capability table
+            let result = dispatch_sqe(&sqe, cap_table);
             
             // Post completion
             if self.ring.post_completion(result.user_data, result.result, result.flags).is_ok() {
@@ -193,12 +196,13 @@ impl IoUringContext {
     ///
     /// # Arguments
     /// * `min_complete` - Minimum number of completions to wait for (0 = non-blocking)
+    /// * `cap_table` - The process's capability table for I/O operations
     ///
     /// # Returns
     /// Number of completions available in CQ
-    pub fn enter(&mut self, min_complete: u32) -> u32 {
+    pub fn enter(&mut self, min_complete: u32, cap_table: &CapabilityTable) -> u32 {
         // Process any pending submissions
-        self.process();
+        self.process(cap_table);
         
         // If min_complete > 0, we would wait for completions
         // For now, we just return the completion count

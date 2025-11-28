@@ -382,6 +382,17 @@ impl Process {
         self.io_uring_ctx.as_mut().map(|b| &mut **b)
     }
     
+    /// Get mutable io_uring context and capability table reference simultaneously
+    ///
+    /// This is needed for io_uring enter operations which need to modify the
+    /// context while also reading the capability table for I/O operations.
+    pub fn io_uring_with_capabilities(&mut self) -> Option<(&mut IoUringContext, &CapabilityTable)> {
+        match &mut self.io_uring_ctx {
+            Some(ctx) => Some((&mut **ctx, &self.capability_table)),
+            None => None,
+        }
+    }
+    
     /// Check if io_uring is initialized
     #[must_use]
     pub fn has_io_uring(&self) -> bool {
@@ -574,6 +585,60 @@ impl Process {
     #[must_use]
     pub fn capability_count(&self) -> u32 {
         self.capability_table.count()
+    }
+
+    /// Initialize standard I/O capabilities (stdin, stdout, stderr)
+    ///
+    /// This method registers stdin (ID=0), stdout (ID=1), and stderr (ID=2)
+    /// as capabilities in the process's capability table. These are automatically
+    /// registered when a new process is created.
+    ///
+    /// The capabilities are inserted at fixed indices with generation=0, allowing
+    /// user programs to use simple integer values (0, 1, 2) as capability IDs.
+    ///
+    /// # Returns
+    /// `Ok(())` if successful, or an error if capability registration fails.
+    pub fn init_stdio_capabilities(&self) -> Result<(), crate::abi::error::SyscallError> {
+        use crate::kernel::fs::{Stdin, Stdout, Stderr};
+        use crate::kernel::capability::{FileResource, Rights};
+        
+        // stdin (ID=0) - read only
+        let stdin_handle = self.capability_table.insert_at_index::<FileResource, _>(
+            0,  // Fixed index for stdin
+            Stdin::as_vfs_file(),
+            Rights::READ,
+        )?;
+        crate::debug_println!(
+            "[Process] Registered stdin capability: index={}, gen={}",
+            stdin_handle.index(), stdin_handle.generation()
+        );
+        core::mem::forget(stdin_handle); // Don't drop, keep in table
+        
+        // stdout (ID=1) - write only
+        let stdout_handle = self.capability_table.insert_at_index::<FileResource, _>(
+            1,  // Fixed index for stdout
+            Stdout::as_vfs_file(),
+            Rights::WRITE,
+        )?;
+        crate::debug_println!(
+            "[Process] Registered stdout capability: index={}, gen={}",
+            stdout_handle.index(), stdout_handle.generation()
+        );
+        core::mem::forget(stdout_handle);
+        
+        // stderr (ID=2) - write only
+        let stderr_handle = self.capability_table.insert_at_index::<FileResource, _>(
+            2,  // Fixed index for stderr
+            Stderr::as_vfs_file(),
+            Rights::WRITE,
+        )?;
+        crate::debug_println!(
+            "[Process] Registered stderr capability: index={}, gen={}",
+            stderr_handle.index(), stderr_handle.generation()
+        );
+        core::mem::forget(stderr_handle);
+        
+        Ok(())
     }
 }
 

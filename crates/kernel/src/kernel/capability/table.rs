@@ -234,6 +234,56 @@ impl CapabilityTable {
         Ok(Handle::new(index as u32, generation))
     }
 
+    /// Insert a capability at a specific index with generation 0
+    ///
+    /// This is used for well-known capabilities like stdin/stdout/stderr
+    /// that have fixed IDs (0, 1, 2). Using generation=0 allows user programs
+    /// to use simple integer FD values like 0, 1, 2.
+    ///
+    /// # Arguments
+    /// * `index` - The fixed index (0, 1, or 2 for stdio)
+    /// * `resource` - The resource to store
+    /// * `rights` - Access rights
+    ///
+    /// # Returns
+    /// A handle with the specified index and generation=0
+    pub fn insert_at_index<R: ResourceKind, T: Any + Send + Sync>(
+        &self,
+        index: u32,
+        resource: Arc<T>,
+        rights: Rights,
+    ) -> Result<Handle<R>, SyscallError> {
+        let index_usize = index as usize;
+
+        // Use generation 0 for well-known capabilities
+        // This allows userland to use simple values like 0, 1, 2 for stdio
+        let generation = 0u32;
+        let entry = Box::new(CapabilityEntry::new(R::TYPE_ID, generation, rights, resource));
+
+        let mut slots = self.slots.write();
+
+        // Ensure the table is large enough
+        while slots.len() <= index_usize {
+            slots.push(Slot::Empty);
+        }
+
+        // Check if slot is already occupied
+        if !slots[index_usize].is_empty() {
+            return Err(SyscallError::CapabilityTableFull);
+        }
+
+        slots[index_usize] = Slot::Occupied(entry);
+        self.count.fetch_add(1, Ordering::Release);
+
+        // Update hint to skip well-known slots
+        let current_hint = self.next_free_hint.load(Ordering::Relaxed);
+        if current_hint <= index {
+            self.next_free_hint.store(index + 1, Ordering::Relaxed);
+        }
+
+        Ok(Handle::new(index, generation))
+    }
+
     /// Get a capability entry by handle
     ///
     /// Returns the entry if valid, or an error if the handle is invalid.

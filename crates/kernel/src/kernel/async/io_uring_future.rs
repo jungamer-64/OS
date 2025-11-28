@@ -254,6 +254,7 @@ impl Drop for IoUringFuture {
 /// 操作を実際の io_uring にサブミット
 fn submit_op_to_ring(op: &IoUringOp, user_data: u64) -> i32 {
     use crate::kernel::io_uring::handlers::dispatch_sqe;
+    use crate::kernel::process::PROCESS_TABLE;
     use crate::abi::io_uring::SubmissionEntry;
     
     // SQE を構築
@@ -281,10 +282,21 @@ fn submit_op_to_ring(op: &IoUringOp, user_data: u64) -> i32 {
         }
     };
     
+    // Get the current process's capability table
+    let table = PROCESS_TABLE.lock();
+    let cap_table = match table.current_process() {
+        Some(p) => p.capability_table(),
+        None => {
+            // No current process, return error
+            complete_operation(user_data, -3); // ESRCH
+            return -3;
+        }
+    };
+    
     // 即座に実行して結果を完了に書き込む
     // 注意: 本来は io_uring キューにサブミットして非同期実行すべきだが、
     // 現在の実装ではシンプルに同期実行してから完了通知を行う
-    let result = dispatch_sqe(&sqe);
+    let result = dispatch_sqe(&sqe, cap_table);
     
     // 完了を通知
     complete_operation(user_data, result.result);

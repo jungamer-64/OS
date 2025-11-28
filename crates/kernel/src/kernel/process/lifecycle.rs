@@ -518,6 +518,12 @@ pub fn create_user_process(path: &str) -> Result<(ProcessId, VirtAddr, VirtAddr,
         crate::debug_println!("[PHASE 3] TLB flushed");
     }
     
+    // Initialize standard I/O capabilities (stdin=0, stdout=1, stderr=2)
+    if let Err(e) = process.init_stdio_capabilities() {
+        crate::debug_println!("[Process] Warning: Failed to init stdio capabilities: {:?}", e);
+        // Continue anyway - stdio will fallback to serial in handlers_v2
+    }
+    
     // 3. Add to process table
     {
         let mut table = PROCESS_TABLE.lock();

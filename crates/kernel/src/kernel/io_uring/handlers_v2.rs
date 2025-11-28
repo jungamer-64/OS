@@ -160,8 +160,8 @@ fn handle_read_v2(
 ///
 /// # Phase 1: Capability-based resource access
 ///
+/// All I/O including stdin/stdout/stderr uses the capability table.
 /// Resources are retrieved from `CapabilityEntry::resource` as `VfsFile`.
-/// No longer uses `process.get_file_descriptor()`.
 fn handle_write_v2(
     sqe: &SubmissionEntryV2,
     cap_table: &CapabilityTable,
@@ -193,19 +193,7 @@ fn handle_write_v2(
     // Limit write to requested length
     let write_len = (len as usize).min(slice.len());
 
-    // Special case: capability_id 1 or 2 = stdout/stderr (console)
-    // These are handled specially until stdin/stdout/stderr are Capability-ized (Task 3)
-    if capability_id == 1 || capability_id == 2 {
-        // Write to serial console
-        if let Some(mut serial) = SERIAL1.try_lock() {
-            for &byte in &slice[..write_len] {
-                let _ = serial.write_byte(byte);
-            }
-        }
-        return CompletionEntryV2::success(user_data, write_len as i32);
-    }
-
-    // Get VfsFile from capability table
+    // Get VfsFile from capability table (including stdout/stderr at IDs 1, 2)
     let handle: crate::kernel::capability::Handle<FileResource> =
         unsafe { crate::kernel::capability::Handle::from_raw(capability_id) };
 

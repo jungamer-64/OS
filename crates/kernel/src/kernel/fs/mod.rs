@@ -4,9 +4,11 @@
 // pub mod initrd;  // TODO: Implement
 // pub mod vfs;     // TODO: Implement
 pub mod pipe;
+pub mod stdio;
 pub mod vfs_file;
 
 pub use vfs_file::{VfsFile, VfsFileType};
+pub use stdio::{Stdin, Stdout, Stderr, STDIN_CAP_ID, STDOUT_CAP_ID, STDERR_CAP_ID, FIRST_USER_CAP_ID};
 
 /// Result type for file operations
 pub type FileResult<T> = Result<T, FileError>;

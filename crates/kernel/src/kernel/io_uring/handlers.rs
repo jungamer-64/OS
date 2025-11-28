@@ -6,10 +6,10 @@
 
 use crate::abi::io_uring::{SubmissionEntry, OpCode};
 use crate::debug_println;
-use crate::kernel::core::traits::CharDevice;
-use crate::kernel::driver::serial::SERIAL1;
+use crate::kernel::capability::table::CapabilityTable;
+use crate::kernel::capability::{FileResource, Handle, Rights};
+use crate::kernel::fs::VfsFile;
 use crate::kernel::process::PROCESS_TABLE;
-use crate::kernel::syscall::{EFAULT, EBADF, EINVAL, EIO, ENOMEM, ENOSYS};
 
 /// Result from an io_uring operation
 #[derive(Debug)]
@@ -40,10 +40,11 @@ impl OpResult {
 ///
 /// # Arguments
 /// * `sqe` - The submission entry (already validated)
+/// * `cap_table` - The process's capability table (for I/O operations)
 ///
 /// # Returns
 /// The operation result to be posted to the CQ
-pub fn dispatch_sqe(sqe: &SubmissionEntry) -> OpResult {
+pub fn dispatch_sqe(sqe: &SubmissionEntry, cap_table: &CapabilityTable) -> OpResult {
     let user_data = sqe.user_data;
     
     let op = match OpCode::from_u8(sqe.opcode) {
@@ -53,9 +54,9 @@ pub fn dispatch_sqe(sqe: &SubmissionEntry) -> OpResult {
     
     match op {
         OpCode::Nop => handle_nop(sqe),
-        OpCode::Read => handle_read(sqe),
-        OpCode::Write => handle_write(sqe),
-        OpCode::Close => handle_close(sqe),
+        OpCode::Read => handle_read(sqe, cap_table),
+        OpCode::Write => handle_write(sqe, cap_table),
+        OpCode::Close => handle_close(sqe, cap_table),
         OpCode::Mmap => handle_mmap(sqe),
         OpCode::Munmap => handle_munmap(sqe),
         
@@ -83,29 +84,29 @@ fn handle_nop(sqe: &SubmissionEntry) -> OpResult {
     OpResult::success(sqe.user_data, 0)
 }
 
-/// Handle read operation
-fn handle_read(sqe: &SubmissionEntry) -> OpResult {
-    let fd = sqe.fd;
+/// Handle read operation (capability-based)
+fn handle_read(sqe: &SubmissionEntry, cap_table: &CapabilityTable) -> OpResult {
+    let fd = sqe.fd as u64;
     let buf = sqe.addr;
     let len = sqe.len;
     let user_data = sqe.user_data;
     
-    // Special case: FD 0 = stdin (not implemented)
-    if fd == 0 {
-        debug_println!("[io_uring] read from stdin not implemented");
-        return OpResult::error(user_data, 38); // ENOSYS
-    }
-    
-    // Get file descriptor from process
-    let table = PROCESS_TABLE.lock();
-    let process = match table.current_process() {
-        Some(p) => p,
-        None => return OpResult::error(user_data, 3), // ESRCH
+    // Get VfsFile from capability table
+    let handle: Handle<FileResource> = unsafe { Handle::from_raw(fd) };
+    let entry = match cap_table.get_with_rights(&handle, Rights::READ) {
+        Ok(e) => e,
+        Err(_) => {
+            core::mem::forget(handle);
+            return OpResult::error(user_data, 9); // EBADF
+        }
     };
     
-    let fd_arc = match process.get_file_descriptor(fd as u64) {
-        Some(fd) => fd,
-        None => return OpResult::error(user_data, 9), // EBADF
+    let vfs_file: &VfsFile = match entry.downcast::<VfsFile>() {
+        Some(vfs) => vfs,
+        None => {
+            core::mem::forget(handle);
+            return OpResult::error(user_data, 9); // EBADF
+        }
     };
     
     // Read into buffer
@@ -113,8 +114,10 @@ fn handle_read(sqe: &SubmissionEntry) -> OpResult {
         core::slice::from_raw_parts_mut(buf as *mut u8, len as usize)
     };
     
-    let mut fd_lock = fd_arc.lock();
-    match fd_lock.read(slice) {
+    let result = vfs_file.read(slice);
+    core::mem::forget(handle);
+    
+    match result {
         Ok(read) => OpResult::success(user_data, read as i32),
         Err(crate::kernel::fs::FileError::BrokenPipe) => OpResult::success(user_data, 0), // EOF
         Err(crate::kernel::fs::FileError::WouldBlock) => OpResult::error(user_data, 11), // EAGAIN
@@ -122,63 +125,40 @@ fn handle_read(sqe: &SubmissionEntry) -> OpResult {
     }
 }
 
-/// Handle write operation
-fn handle_write(sqe: &SubmissionEntry) -> OpResult {
-    let fd = sqe.fd;
+/// Handle write operation (capability-based)
+fn handle_write(sqe: &SubmissionEntry, cap_table: &CapabilityTable) -> OpResult {
+    let fd = sqe.fd as u64;
     let buf = sqe.addr;
     let len = sqe.len;
     let user_data = sqe.user_data;
     
-    // Special case: FD 1 = stdout (console)
-    if fd == 1 {
-        // Safety: Buffer has been validated by validate_sqe
-        let slice = unsafe {
-            core::slice::from_raw_parts(buf as *const u8, len as usize)
-        };
-        
-        // Write to serial console
-        if let Some(mut serial) = SERIAL1.try_lock() {
-            for &byte in slice {
-                let _ = serial.write_byte(byte);
-            }
+    // Get VfsFile from capability table
+    let handle: Handle<FileResource> = unsafe { Handle::from_raw(fd) };
+    let entry = match cap_table.get_with_rights(&handle, Rights::WRITE) {
+        Ok(e) => e,
+        Err(_) => {
+            core::mem::forget(handle);
+            return OpResult::error(user_data, 9); // EBADF
         }
-        
-        return OpResult::success(user_data, len as i32);
-    }
-    
-    // FD 2 = stderr (same as stdout for now)
-    if fd == 2 {
-        let slice = unsafe {
-            core::slice::from_raw_parts(buf as *const u8, len as usize)
-        };
-        
-        if let Some(mut serial) = SERIAL1.try_lock() {
-            for &byte in slice {
-                let _ = serial.write_byte(byte);
-            }
-        }
-        
-        return OpResult::success(user_data, len as i32);
-    }
-    
-    // Get file descriptor from process
-    let table = PROCESS_TABLE.lock();
-    let process = match table.current_process() {
-        Some(p) => p,
-        None => return OpResult::error(user_data, 3), // ESRCH
     };
     
-    let fd_arc = match process.get_file_descriptor(fd as u64) {
-        Some(fd) => fd,
-        None => return OpResult::error(user_data, 9), // EBADF
+    let vfs_file: &VfsFile = match entry.downcast::<VfsFile>() {
+        Some(vfs) => vfs,
+        None => {
+            core::mem::forget(handle);
+            return OpResult::error(user_data, 9); // EBADF
+        }
     };
     
+    // Write from buffer
     let slice = unsafe {
         core::slice::from_raw_parts(buf as *const u8, len as usize)
     };
     
-    let mut fd_lock = fd_arc.lock();
-    match fd_lock.write(slice) {
+    let result = vfs_file.write(slice);
+    core::mem::forget(handle);
+    
+    match result {
         Ok(written) => OpResult::success(user_data, written as i32),
         Err(crate::kernel::fs::FileError::BrokenPipe) => OpResult::error(user_data, 32), // EPIPE
         Err(crate::kernel::fs::FileError::WouldBlock) => OpResult::error(user_data, 11), // EAGAIN
@@ -186,8 +166,8 @@ fn handle_write(sqe: &SubmissionEntry) -> OpResult {
     }
 }
 
-/// Handle close operation
-fn handle_close(sqe: &SubmissionEntry) -> OpResult {
+/// Handle close operation (capability-based)
+fn handle_close(sqe: &SubmissionEntry, cap_table: &CapabilityTable) -> OpResult {
     let fd = sqe.fd as u64;
     let user_data = sqe.user_data;
     
@@ -196,19 +176,14 @@ fn handle_close(sqe: &SubmissionEntry) -> OpResult {
         return OpResult::error(user_data, 22); // EINVAL
     }
     
-    let mut table = PROCESS_TABLE.lock();
-    let process = match table.current_process_mut() {
-        Some(p) => p,
-        None => return OpResult::error(user_data, 3), // ESRCH
-    };
-    
-    match process.remove_file_descriptor(fd) {
-        Some(fd_arc) => {
-            let mut fd_lock = fd_arc.lock();
-            let _ = fd_lock.close();
+    // Remove capability from table
+    let handle: Handle<FileResource> = unsafe { Handle::from_raw(fd) };
+    match cap_table.remove(handle) {
+        Ok(_entry) => {
+            // VfsFile::drop() will call FileDescriptor::close() automatically
             OpResult::success(user_data, 0)
         }
-        None => OpResult::error(user_data, 9), // EBADF
+        Err(_) => OpResult::error(user_data, 9), // EBADF
     }
 }
 
