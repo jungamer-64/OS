@@ -1,0 +1,133 @@
+name: Tiny OS CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # --- Fail Fast: 品質チェック（並列実行） ---
+  check-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, clippy
+      - uses: Swatinem/rust-cache@v2
+      # カスタムターゲットを指定してClippy実行
+      - run: cd crates/kernel && cargo clippy --target x86_64-rany_os.json -- -D warnings
+
+  # --- ビルド: 成果物を生成 ---
+  build:
+    needs: [check-format, clippy]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      
+      # カーネルビルド
+      - name: Build Kernel
+        run: cd crates/kernel && cargo build --target x86_64-rany_os.json
+      
+      # Builderツールのビルド（ホストターゲット）
+      - name: Build Builder Tool
+        run: cd tools/build/builder && cargo build --release
+      
+      # UEFIブートイメージ生成
+      - name: Create UEFI Boot Image
+        run: |
+          ./tools/build/builder/target/release/builder \
+            --kernel-path target/x86_64-rany_os/debug/tiny_os \
+            --output-path target/x86_64-rany_os/debug/boot-uefi-tiny_os.img
+      
+      # アーティファクト共有（テストジョブで使用）
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bootimage
+          path: target/x86_64-rany_os/debug/boot-uefi-tiny_os.img
+          retention-days: 1
+
+  # --- 統合テスト: QEMUで実行 ---
+  integration-tests:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      
+      # QEMU + OVMFインストール
+      - name: Install QEMU
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 ovmf
+      
+      # ビルド成果物をダウンロード
+      - uses: actions/download-artifact@v4
+        with:
+          name: bootimage
+          path: target/x86_64-rany_os/debug/
+      
+      # ヘッドレス実行 + 自動終了
+      - name: Run Integration Tests
+        timeout-minutes: 5
+        run: |
+          for test in tests/integration/*.rs; do
+            test_name=$(basename "$test" .rs)
+            echo "Running test: $test_name"
+            
+            # Rustのテストビルド（各統合テスト用バイナリ生成）
+            cargo test --test "$test_name" --no-run --target x86_64-rany_os.json
+            
+            # テストバイナリのパスを取得（ワイルドカード展開）
+            test_bin=$(ls target/x86_64-rany_os/debug/deps/${test_name}-* 2>/dev/null | grep -v '\.d$' | head -n1)
+            
+            if [ -z "$test_bin" ]; then
+              echo "Error: Test binary not found for $test_name"
+              exit 1
+            fi
+            
+            echo "Test binary: $test_bin"
+            
+            # QEMUでテスト実行（exit_qemuで自動終了）
+            qemu-system-x86_64 \
+              -drive format=raw,file="$test_bin" \
+              -bios /usr/share/ovmf/OVMF.fd \
+              -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+              -serial stdio \
+              -display none \
+              -no-reboot \
+              || [ $? -eq 33 ]  # exit code 33 = success (0x10 << 1 | 1)
+          done
+
+  # --- リリースビルド検証 ---
+  build-release:
+    needs: [check-format, clippy]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      
+      - name: Build Kernel (Release)
+        run: cd crates/kernel && cargo build --release --target x86_64-rany_os.json

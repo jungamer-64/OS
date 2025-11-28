@@ -148,13 +148,25 @@ extern "C" fn io_uring_fast_handler(syscall_num: u64, to_submit: u64, min_comple
         }
         
         SYSCALL_IO_URING_SETUP => {
+            use crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR;
+            
+            // Get frame allocator first
+            let mut allocator_lock = BOOT_INFO_ALLOCATOR.lock();
+            let frame_allocator = match allocator_lock.as_mut() {
+                Some(alloc) => alloc,
+                None => return (-12_i64) as u64, // ENOMEM
+            };
+            
             let mut table = PROCESS_TABLE.lock();
             let process = match table.current_process_mut() {
                 Some(p) => p,
                 None => return (-3_i64) as u64, // ESRCH
             };
             
-            let ctx = process.io_uring_setup();
+            let ctx = match process.io_uring_setup(frame_allocator) {
+                Some(ctx) => ctx,
+                None => return (-12_i64) as u64, // ENOMEM
+            };
             ctx.sq_header_addr()
         }
         

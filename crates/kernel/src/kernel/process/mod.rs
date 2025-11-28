@@ -348,13 +348,20 @@ impl Process {
     /// Initialize or get the io_uring context
     /// 
     /// Creates a new io_uring context if one doesn't exist.
-    /// Returns mutable reference to the context.
-    pub fn io_uring_setup(&mut self) -> &mut IoUringContext {
+    /// Returns mutable reference to the context, or None if allocation fails.
+    ///
+    /// # Arguments
+    /// * `allocator` - Frame allocator for page-aligned memory allocation
+    pub fn io_uring_setup(
+        &mut self,
+        allocator: &mut crate::kernel::mm::BootInfoFrameAllocator,
+    ) -> Option<&mut IoUringContext> {
         if self.io_uring_ctx.is_none() {
-            self.io_uring_ctx = Some(Box::new(IoUringContext::new()));
+            let ctx = IoUringContext::new_with_allocator(allocator)?;
+            self.io_uring_ctx = Some(Box::new(ctx));
             crate::debug_println!("[Process] Created io_uring context for PID={}", self.pid.as_u64());
         }
-        self.io_uring_ctx.as_mut().unwrap()
+        Some(self.io_uring_ctx.as_mut().unwrap())
     }
     
     /// Get the io_uring context if it exists

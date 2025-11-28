@@ -12,7 +12,7 @@
     "pre-link-args": {
         "ld.lld": [
             "--gc-sections",
-            "-Tuserland/linker.ld"
+            "-Tcrates/programs/linker.ld"
         ]
     },
     "panic-strategy": "abort",

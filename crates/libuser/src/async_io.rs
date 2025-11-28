@@ -191,6 +191,19 @@ impl<'a> AsyncOp<'a> {
     }
 }
 
+/// Fixed offsets for io_uring memory layout in user space
+/// These must match the kernel's USER_IO_URING_BASE layout
+mod async_io_offsets {
+    /// Offset to sq_header from base
+    pub const SQ_HEADER_OFFSET: usize = 0x0000;
+    /// Offset to cq_header from base
+    pub const CQ_HEADER_OFFSET: usize = 0x1000;
+    /// Offset to sq_entries from base
+    pub const SQ_ENTRIES_OFFSET: usize = 0x2000;
+    /// Offset to cq_entries from base
+    pub const CQ_ENTRIES_OFFSET: usize = 0x6000;
+}
+
 /// Asynchronous I/O context
 ///
 /// Manages the io_uring submission and completion queues.
@@ -210,6 +223,8 @@ impl AsyncContext {
     pub fn new() -> SyscallResult<Self> {
         let result = syscall::io_uring_setup(RING_SIZE as u32)?;
         
+        crate::println!("  [DEBUG] io_uring_setup returned {:#x}", result);
+        
         Ok(Self {
             ring_base: result as *mut u8,
             pending: 0,
@@ -226,34 +241,26 @@ impl AsyncContext {
 
     /// Get the submission queue header
     fn sq_header(&self) -> &RingHeader {
-        unsafe { &*(self.ring_base as *const RingHeader) }
+        use async_io_offsets::SQ_HEADER_OFFSET;
+        unsafe { &*(self.ring_base.add(SQ_HEADER_OFFSET) as *const RingHeader) }
     }
 
     /// Get the submission queue entries
     fn sq_entries(&self) -> *mut SubmissionEntry {
-        unsafe { self.ring_base.add(core::mem::size_of::<RingHeader>()) as *mut SubmissionEntry }
+        use async_io_offsets::SQ_ENTRIES_OFFSET;
+        unsafe { self.ring_base.add(SQ_ENTRIES_OFFSET) as *mut SubmissionEntry }
     }
 
     /// Get the completion queue header
     fn cq_header(&self) -> &RingHeader {
-        // CQ is after SQ (header + 256 * 64 bytes, aligned)
-        let sq_size = core::mem::size_of::<RingHeader>() 
-            + RING_SIZE * core::mem::size_of::<SubmissionEntry>();
-        let cq_offset = (sq_size + 63) & !63;
-        unsafe { &*(self.ring_base.add(cq_offset) as *const RingHeader) }
+        use async_io_offsets::CQ_HEADER_OFFSET;
+        unsafe { &*(self.ring_base.add(CQ_HEADER_OFFSET) as *const RingHeader) }
     }
 
     /// Get the completion queue entries
     fn cq_entries(&self) -> *const CompletionEntry {
-        let sq_size = core::mem::size_of::<RingHeader>() 
-            + RING_SIZE * core::mem::size_of::<SubmissionEntry>();
-        let cq_offset = (sq_size + 63) & !63;
-        unsafe { 
-            self.ring_base
-                .add(cq_offset)
-                .add(core::mem::size_of::<RingHeader>()) 
-                as *const CompletionEntry 
-        }
+        use async_io_offsets::CQ_ENTRIES_OFFSET;
+        unsafe { self.ring_base.add(CQ_ENTRIES_OFFSET) as *const CompletionEntry }
     }
 
     /// Check available space in submission queue
@@ -268,17 +275,22 @@ impl AsyncContext {
     ///
     /// Returns the user_data that can be used to correlate completions.
     pub fn submit(&mut self, op: AsyncOp) -> Result<u64, ()> {
+        crate::println!("  [DEBUG] submit: checking available...");
         if self.available() == 0 {
             return Err(());
         }
 
+        crate::println!("  [DEBUG] submit: creating sqe...");
         let sqe = op.to_sqe();
         let user_data = sqe.user_data;
         
+        crate::println!("  [DEBUG] submit: getting sq_header at {:#x}...", self.ring_base as u64);
         let header = self.sq_header();
+        crate::println!("  [DEBUG] submit: loading tail...");
         let tail = header.tail.load(Ordering::Relaxed);
         let index = (tail as usize) & RING_MASK;
         
+        crate::println!("  [DEBUG] submit: writing sqe to index {}...", index);
         unsafe {
             *self.sq_entries().add(index) = sqe;
         }
@@ -287,6 +299,7 @@ impl AsyncContext {
         header.tail.store(tail.wrapping_add(1), Ordering::Release);
         
         self.pending += 1;
+        crate::println!("  [DEBUG] submit: done");
         Ok(user_data)
     }
 

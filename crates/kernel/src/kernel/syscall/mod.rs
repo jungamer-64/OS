@@ -309,8 +309,15 @@ pub fn sys_read(fd: u64, buf: u64, len: u64, _arg4: u64, _arg5: u64, _arg6: u64)
 }
 
 /// sys_exit - Exit current process
+///
+/// When the last process exits:
+/// - In QEMU test mode: Exit QEMU with success code
+/// - Otherwise: Enter idle loop (halt)
 pub fn sys_exit(code: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    use crate::kernel::process::{PROCESS_TABLE, schedule_next, terminate_process};
+    use crate::kernel::process::{PROCESS_TABLE, terminate_process};
+    use crate::kernel::scheduler::SCHEDULER;
+    
+    debug_println!("[SYSCALL] sys_exit: code={}", code);
     
     let pid = {
         let table = PROCESS_TABLE.lock();
@@ -318,12 +325,35 @@ pub fn sys_exit(code: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6
     };
     
     if let Some(pid) = pid {
+        // Terminate the current process (marks as Terminated, frees resources)
         terminate_process(pid, code as i32);
-        // Schedule next process (this process will not be picked again)
-        schedule_next();
+        
+        // Check if there are any other ready processes to run
+        let has_ready_process = {
+            let mut scheduler = SCHEDULER.lock();
+            scheduler.schedule().is_some()
+        };
+        
+        if has_ready_process {
+            // Schedule next process
+            crate::kernel::process::schedule_next();
+            // Should not be reached if context switch happens
+        } else {
+            // No more processes to run - exit QEMU
+            debug_println!("[SYSCALL] sys_exit: No more processes to run, exiting QEMU");
+            
+            // Exit QEMU with appropriate code
+            use crate::arch::qemu;
+            if code == 0 {
+                qemu::exit_qemu(0x10); // Success
+            } else {
+                qemu::exit_qemu(0x11); // Failed
+            }
+        }
     }
     
-    // Should not be reached
+    // Fallback: halt loop (should not normally be reached)
+    debug_println!("[SYSCALL] sys_exit: Entering halt loop");
     loop {
         crate::arch::ArchCpu::halt();
     }
@@ -726,6 +756,10 @@ pub fn sys_munmap(addr: u64, len: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6
 /// is validated but ignored.
 pub fn sys_io_uring_setup(entries: u64, _params_ptr: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
     use crate::kernel::process::PROCESS_TABLE;
+    use crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR;
+    use crate::kernel::mm::user_paging::USER_IO_URING_BASE;
+    use x86_64::structures::paging::{Page, PageTableFlags, Mapper, FrameAllocator, Size4KiB, OffsetPageTable};
+    use crate::abi::io_uring::RING_SIZE;
     
     // Validate entries (must be power of 2, reasonable size)
     if entries == 0 || entries > 256 || !entries.is_power_of_two() {
@@ -733,26 +767,175 @@ pub fn sys_io_uring_setup(entries: u64, _params_ptr: u64, _arg3: u64, _arg4: u64
         return EINVAL;
     }
     
+    // Get frame allocator first (needed for io_uring allocation)
+    let mut allocator_lock = BOOT_INFO_ALLOCATOR.lock();
+    let frame_allocator = match allocator_lock.as_mut() {
+        Some(alloc) => alloc,
+        None => return ENOMEM,
+    };
+    
     let mut table = PROCESS_TABLE.lock();
     let process = match table.current_process_mut() {
         Some(p) => p,
         None => return ESRCH,
     };
     
-    // Initialize io_uring context
-    let ctx = process.io_uring_setup();
+    // Initialize io_uring context (allocates page-aligned buffers)
+    let ctx = match process.io_uring_setup(frame_allocator) {
+        Some(ctx) => ctx,
+        None => {
+            debug_println!("[SYSCALL] io_uring_setup: failed to allocate io_uring context");
+            return ENOMEM;
+        }
+    };
     
-    // Return the SQ header address (user will mmap the rest)
-    // In a real implementation, we'd return a file descriptor
-    // and the user would mmap the rings via that fd.
-    // For now, we return the kernel address (only works if user/kernel share address space)
-    let sq_header = ctx.sq_header_addr();
+    // Get all the ring buffer addresses (page-aligned kernel virtual addresses)
+    let sq_header_addr = ctx.sq_header_addr();
+    let cq_header_addr = ctx.cq_header_addr();
+    let sq_entries_addr = ctx.sq_entries_addr();
+    let cq_entries_addr = ctx.cq_entries_addr();
     
-    debug_println!("[SYSCALL] io_uring_setup: initialized, sq_header=0x{:x}", sq_header);
+    debug_println!("[SYSCALL] io_uring_setup: kernel sq_header={:#x}, sq_entries={:#x}", 
+        sq_header_addr, sq_entries_addr);
+    debug_println!("[SYSCALL] io_uring_setup: kernel cq_header={:#x}, cq_entries={:#x}",
+        cq_header_addr, cq_entries_addr);
     
-    // Return the address as a positive value
-    // In a real implementation, this would be a file descriptor
-    sq_header as SyscallResult
+    // Now we need to map these kernel addresses to user page table
+    // We'll map them to a fixed user-space address range
+    let phys_mem_offset = x86_64::VirtAddr::new(
+        crate::kernel::mm::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed)
+    );
+    
+    // Get current (user) page table
+    let (user_cr3_frame, _) = x86_64::registers::control::Cr3::read();
+    let user_l4_ptr = (phys_mem_offset + user_cr3_frame.start_address().as_u64()).as_mut_ptr();
+    let user_l4 = unsafe { &mut *user_l4_ptr };
+    let mut user_mapper = unsafe { OffsetPageTable::new(user_l4, phys_mem_offset) };
+    
+    // Layout in user space at USER_IO_URING_BASE (0x2000_0000_0000):
+    // Offset 0x0000: sq_header (32 bytes, 1 page)
+    // Offset 0x1000: cq_header (32 bytes, 1 page)
+    // Offset 0x2000: sq_entries (256 * 64 = 16384 bytes, 4 pages)
+    // Offset 0x6000: cq_entries (256 * 16 = 4096 bytes, 1 page)
+    
+    let user_sq_header = USER_IO_URING_BASE;
+    let user_cq_header = USER_IO_URING_BASE + 0x1000;
+    let user_sq_entries = USER_IO_URING_BASE + 0x2000;
+    let user_cq_entries = USER_IO_URING_BASE + 0x6000;
+    
+    // Map each region
+    let regions = [
+        (sq_header_addr, user_sq_header, 32usize, "sq_header"),
+        (cq_header_addr, user_cq_header, 32, "cq_header"),
+        (sq_entries_addr, user_sq_entries, (RING_SIZE as usize) * 64, "sq_entries"),
+        (cq_entries_addr, user_cq_entries, (RING_SIZE as usize) * 16, "cq_entries"),
+    ];
+    
+    for (kernel_addr, user_addr, size, name) in regions.iter() {
+        let result = map_kernel_region_to_user_addr(
+            &mut user_mapper,
+            *kernel_addr,
+            *user_addr,
+            *size,
+            frame_allocator,
+            phys_mem_offset,
+        );
+        if result.is_err() {
+            debug_println!("[SYSCALL] io_uring_setup: failed to map {}", name);
+            return ENOMEM;
+        }
+    }
+    
+    debug_println!(
+        "[SYSCALL] io_uring_setup: mapped to user space sq_header={:#x}",
+        user_sq_header
+    );
+    
+    // Return the user space SQ header address
+    user_sq_header as SyscallResult
+}
+
+/// Maps a kernel heap region to a specific user-space address.
+///
+/// This allocates new page table entries at `user_virt_addr` that map
+/// to the same physical memory as `kernel_virt_addr`.
+///
+/// The kernel heap uses the direct physical map: virt = phys + phys_mem_offset
+/// So we can calculate the physical address as: phys = virt - phys_mem_offset
+fn map_kernel_region_to_user_addr(
+    user_mapper: &mut x86_64::structures::paging::OffsetPageTable,
+    kernel_virt_addr: u64,
+    user_virt_addr: u64,
+    size: usize,
+    frame_allocator: &mut crate::kernel::mm::BootInfoFrameAllocator,
+    phys_mem_offset: x86_64::VirtAddr,
+) -> Result<(), ()> {
+    use x86_64::structures::paging::{Page, PageTableFlags, Mapper, Size4KiB, Translate};
+    use x86_64::structures::paging::mapper::TranslateResult;
+    use x86_64::VirtAddr;
+    
+    let num_pages = (size + 4095) / 4096;
+    
+    debug_println!(
+        "[map_kernel_to_user] Mapping {} pages: kernel {:#x} -> user {:#x}",
+        num_pages, kernel_virt_addr, user_virt_addr
+    );
+    
+    for i in 0..num_pages {
+        let kernel_virt = VirtAddr::new(kernel_virt_addr + (i * 4096) as u64);
+        let user_virt = VirtAddr::new(user_virt_addr + (i * 4096) as u64);
+        
+        // Calculate physical address from kernel virtual address
+        // Kernel heap uses direct physical map: virt = phys + phys_mem_offset
+        let phys_addr = kernel_virt.as_u64() - phys_mem_offset.as_u64();
+        let phys_frame: x86_64::structures::paging::PhysFrame<Size4KiB> = 
+            x86_64::structures::paging::PhysFrame::containing_address(
+                x86_64::PhysAddr::new(phys_addr)
+            );
+        
+        // Map this physical frame to user-space address
+        let user_page: Page<Size4KiB> = Page::containing_address(user_virt);
+        
+        // Check if user address is already mapped
+        if let TranslateResult::Mapped { flags, .. } = user_mapper.translate(user_virt) {
+            if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                debug_println!(
+                    "[map_kernel_to_user] user {:#x} already mapped with USER_ACCESSIBLE",
+                    user_virt.as_u64()
+                );
+                continue;
+            }
+            // If mapped without USER_ACCESSIBLE, we need to remap
+            // Try to unmap first (may fail for huge pages)
+            if let Ok((_, flush)) = user_mapper.unmap(user_page) {
+                flush.flush();
+            } else {
+                debug_println!("[map_kernel_to_user] Could not unmap existing mapping, trying map anyway");
+            }
+        }
+        
+        // Map with USER_ACCESSIBLE
+        let flags = PageTableFlags::PRESENT 
+            | PageTableFlags::WRITABLE 
+            | PageTableFlags::USER_ACCESSIBLE;
+        
+        unsafe {
+            match user_mapper.map_to(user_page, phys_frame, flags, frame_allocator) {
+                Ok(flush) => flush.flush(),
+                Err(e) => {
+                    debug_println!("[map_kernel_to_user] map_to failed: {:?}", e);
+                    return Err(());
+                }
+            }
+        }
+        
+        debug_println!(
+            "[map_kernel_to_user] Mapped user {:#x} -> phys {:#x}",
+            user_virt.as_u64(), phys_addr
+        );
+    }
+    
+    Ok(())
 }
 
 /// sys_io_uring_enter - Submit I/O and optionally wait for completions

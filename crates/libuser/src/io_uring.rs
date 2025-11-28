@@ -352,12 +352,27 @@ impl Default for IoUringParams {
 ///
 /// Provides a safe interface for submitting operations and retrieving completions.
 pub struct IoUring {
-    /// Submission queue base address
-    pub sq_base: *mut u8,
-    /// Completion queue base address  
-    pub cq_base: *mut u8,
-    /// Size of the ring region
-    pub ring_size: usize,
+    /// Submission queue header address
+    sq_header_ptr: *mut u8,
+    /// Completion queue header address  
+    cq_header_ptr: *mut u8,
+    /// Submission queue entries base address
+    sq_entries_ptr: *mut u8,
+    /// Completion queue entries base address
+    cq_entries_ptr: *mut u8,
+}
+
+/// Fixed offsets for io_uring memory layout in user space
+/// These must match the kernel's USER_IO_URING_BASE layout
+mod io_uring_offsets {
+    /// Offset to sq_header from base
+    pub const SQ_HEADER_OFFSET: usize = 0x0000;
+    /// Offset to cq_header from base
+    pub const CQ_HEADER_OFFSET: usize = 0x1000;
+    /// Offset to sq_entries from base
+    pub const SQ_ENTRIES_OFFSET: usize = 0x2000;
+    /// Offset to cq_entries from base
+    pub const CQ_ENTRIES_OFFSET: usize = 0x6000;
 }
 
 impl IoUring {
@@ -368,55 +383,53 @@ impl IoUring {
     /// The returned ring must be properly initialized before use.
     pub unsafe fn setup(entries: u32, params: &mut IoUringParams) -> Result<Self, i32> {
         use crate::syscall::io_uring_setup;
+        use io_uring_offsets::*;
         
         let result = match io_uring_setup(entries) {
             Ok(addr) => addr,
             Err(e) => return Err(e.code() as i32),
         };
         
-        // The kernel returns the base address of the ring region
+        // The kernel returns the base address of the ring region (USER_IO_URING_BASE)
         let base = result as *mut u8;
         
-        // Update params with actual values
-        params.sq_off = 0;
+        // Calculate addresses based on fixed offsets
+        // SAFETY: we are computing addresses within the mapped io_uring region
+        let sq_header_ptr = unsafe { base.add(SQ_HEADER_OFFSET) };
+        let cq_header_ptr = unsafe { base.add(CQ_HEADER_OFFSET) };
+        let sq_entries_ptr = unsafe { base.add(SQ_ENTRIES_OFFSET) };
+        let cq_entries_ptr = unsafe { base.add(CQ_ENTRIES_OFFSET) };
         
-        // Calculate layout based on params
-        let sq_size = core::mem::size_of::<RingHeader>() 
-            + params.sq_entries as usize * core::mem::size_of::<SubmissionEntry>();
-        let cq_offset = (sq_size + 63) & !63; // Align to 64 bytes
-        params.cq_off = cq_offset as u64;
+        // Update params with actual values (for compatibility)
+        params.sq_off = SQ_HEADER_OFFSET as u64;
+        params.cq_off = CQ_HEADER_OFFSET as u64;
         
         Ok(Self {
-            sq_base: base,
-            cq_base: unsafe { base.add(cq_offset) },
-            ring_size: result as usize,
+            sq_header_ptr,
+            cq_header_ptr,
+            sq_entries_ptr,
+            cq_entries_ptr,
         })
     }
 
     /// Get the submission queue header
     pub fn sq_header(&self) -> &RingHeader {
-        unsafe { &*(self.sq_base as *const RingHeader) }
+        unsafe { &*(self.sq_header_ptr as *const RingHeader) }
     }
 
     /// Get the submission queue entry array
     pub fn sq_entries(&self) -> &mut [SubmissionEntry] {
-        let base = unsafe { 
-            self.sq_base.add(core::mem::size_of::<RingHeader>()) 
-        } as *mut SubmissionEntry;
-        unsafe { core::slice::from_raw_parts_mut(base, RING_SIZE) }
+        unsafe { core::slice::from_raw_parts_mut(self.sq_entries_ptr as *mut SubmissionEntry, RING_SIZE) }
     }
 
     /// Get the completion queue header
     pub fn cq_header(&self) -> &RingHeader {
-        unsafe { &*(self.cq_base as *const RingHeader) }
+        unsafe { &*(self.cq_header_ptr as *const RingHeader) }
     }
 
     /// Get the completion queue entry array
     pub fn cq_entries(&self) -> &[CompletionEntry] {
-        let base = unsafe {
-            self.cq_base.add(core::mem::size_of::<RingHeader>())
-        } as *const CompletionEntry;
-        unsafe { core::slice::from_raw_parts(base, RING_SIZE) }
+        unsafe { core::slice::from_raw_parts(self.cq_entries_ptr as *const CompletionEntry, RING_SIZE) }
     }
 
     /// Submit a single entry

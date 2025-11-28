@@ -29,6 +29,10 @@ pub const USER_HEAP_BASE: u64 = 0x0000_6000_0000_0000;  // 96 TiB
 /// User stack top address (128 TiB)
 pub const USER_STACK_TOP: u64 = 0x0000_7000_0000_0000;  // 128 TiB
 
+/// io_uring shared memory base address (32 TiB)
+/// This is below USER_HEAP_BASE to avoid conflicts with huge pages
+pub const USER_IO_URING_BASE: u64 = 0x0000_2000_0000_0000;  // 32 TiB
+
 /// Default user stack size (1 MiB - increased for deeper call stacks)
 pub const DEFAULT_USER_STACK_SIZE: usize = 1024 * 1024;
 
@@ -306,6 +310,15 @@ pub enum MapError {
     
     /// Unmap operation failed
     UnmapFailed(alloc::string::String),
+    
+    /// Address is not mapped
+    NotMapped,
+    
+    /// Page already mapped
+    PageAlreadyMapped,
+    
+    /// Unsupported page size (not 4KiB)
+    UnsupportedPageSize,
 }
 
 impl fmt::Display for MapError {
@@ -315,6 +328,9 @@ impl fmt::Display for MapError {
             Self::InvalidAddress => write!(f, "Address is not in user space"),
             Self::MappingFailed(msg) => write!(f, "Mapping failed: {}", msg),
             Self::UnmapFailed(msg) => write!(f, "Unmap failed: {}", msg),
+            Self::NotMapped => write!(f, "Address is not mapped"),
+            Self::PageAlreadyMapped => write!(f, "Page is already mapped"),
+            Self::UnsupportedPageSize => write!(f, "Unsupported page size (not 4KiB)"),
         }
     }
 }
@@ -707,4 +723,99 @@ pub unsafe fn dump_page_table_entry(
             );
         }
     }
+}
+
+/// Map a kernel virtual address range into user page table
+/// 
+/// This is used for sharing memory between kernel and user space (e.g., io_uring rings).
+/// The kernel address must already be mapped in the kernel page table.
+/// 
+/// # Arguments
+/// * `user_mapper` - Page table mapper for the user address space
+/// * `kernel_virt` - Kernel virtual address to share
+/// * `user_virt` - User virtual address to map to (if None, use same as kernel_virt)
+/// * `size` - Size in bytes to map (rounded up to page size)
+/// * `kernel_mapper` - Kernel page table mapper (to look up physical addresses)
+/// * `phys_offset` - Physical memory offset for kernel direct map
+///
+/// # Safety
+/// Caller must ensure:
+/// - kernel_virt is a valid mapped kernel address
+/// - user_virt (or kernel_virt) is a valid user space address
+/// - The memory will remain valid for the lifetime of the mapping
+pub unsafe fn map_kernel_to_user(
+    user_mapper: &mut OffsetPageTable,
+    kernel_virt: VirtAddr,
+    user_virt: Option<VirtAddr>,
+    size: usize,
+    kernel_mapper: &OffsetPageTable,
+    frame_allocator: &mut BootInfoFrameAllocator,
+) -> Result<(), MapError> {
+    use x86_64::structures::paging::mapper::{TranslateResult, MappedFrame};
+    
+    let target_virt = user_virt.unwrap_or(kernel_virt);
+    let num_pages = (size + 4095) / 4096;
+    
+    crate::debug_println!(
+        "[map_kernel_to_user] Mapping {} pages from kernel {:#x} to user {:#x}",
+        num_pages, kernel_virt.as_u64(), target_virt.as_u64()
+    );
+    
+    for i in 0..num_pages {
+        let kernel_addr = kernel_virt + (i * 4096) as u64;
+        let user_addr = target_virt + (i * 4096) as u64;
+        
+        // Get physical frame from kernel mapping
+        let phys_frame: PhysFrame<Size4KiB> = match kernel_mapper.translate(kernel_addr) {
+            TranslateResult::Mapped { frame, .. } => {
+                match frame {
+                    MappedFrame::Size4KiB(f) => f,
+                    _ => {
+                        crate::debug_println!(
+                            "[map_kernel_to_user] Kernel address {:#x} uses non-4KiB page!",
+                            kernel_addr.as_u64()
+                        );
+                        return Err(MapError::UnsupportedPageSize);
+                    }
+                }
+            }
+            _ => {
+                crate::debug_println!(
+                    "[map_kernel_to_user] Kernel address {:#x} not mapped!",
+                    kernel_addr.as_u64()
+                );
+                return Err(MapError::NotMapped);
+            }
+        };
+        
+        let user_page: Page<Size4KiB> = Page::containing_address(user_addr);
+        
+        // Map with USER_ACCESSIBLE flag
+        let flags = PageTableFlags::PRESENT 
+            | PageTableFlags::WRITABLE 
+            | PageTableFlags::USER_ACCESSIBLE;
+        
+        // Check if already mapped
+        if let TranslateResult::Mapped { .. } = user_mapper.translate(user_addr) {
+            crate::debug_println!(
+                "[map_kernel_to_user] User address {:#x} already mapped, skipping",
+                user_addr.as_u64()
+            );
+            continue;
+        }
+        
+        unsafe {
+            user_mapper
+                .map_to(user_page, phys_frame, flags, frame_allocator)
+                .map_err(|_| MapError::PageAlreadyMapped)?
+                .flush();
+        }
+        
+        crate::debug_println!(
+            "[map_kernel_to_user] Mapped user {:#x} -> phys {:#x}",
+            user_addr.as_u64(), phys_frame.start_address().as_u64()
+        );
+    }
+    
+    Ok(())
 }
