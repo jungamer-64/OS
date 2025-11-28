@@ -180,6 +180,8 @@ pub const EINVAL: SyscallResult = -22;
 pub const EPIPE: SyscallResult = -32;
 /// Function not implemented
 pub const ENOSYS: SyscallResult = -38;
+/// No space left on device
+pub const ENOSPC: SyscallResult = -28;
 
 // ============================================================================
 // System Call Implementations
@@ -1214,6 +1216,169 @@ pub fn sys_ring_setup(flags: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64
     }
 }
 
+// =============================================================================
+// V2 io_uring syscalls (Next-Generation Ring-Based Async Protocol)
+// =============================================================================
+
+/// V2 io_uring enter syscall (ID: 2003)
+///
+/// Process a V2 submission entry with capability-based access control.
+/// This is the next-generation protocol using:
+/// - Capability handles instead of integer file descriptors
+/// - Registered buffers only (no raw pointers)
+/// - Type-safe error codes
+///
+/// # Arguments
+/// * `sqe_addr` - Pointer to SubmissionEntryV2 (64 bytes)
+/// * `cqe_addr` - Pointer to store CompletionEntryV2 result (32 bytes)
+///
+/// # Returns
+/// * 0 on success
+/// * EFAULT if addresses are invalid
+/// * ESRCH if no current process
+#[allow(unused)]
+pub fn sys_io_uring_enter_v2(
+    sqe_addr: u64,
+    cqe_addr: u64,
+    _arg3: u64,
+    _arg4: u64,
+    _arg5: u64,
+    _arg6: u64,
+) -> SyscallResult {
+    use crate::abi::io_uring_v2::{SubmissionEntryV2, CompletionEntryV2};
+    use crate::kernel::process::PROCESS_TABLE;
+    
+    // Validate addresses (basic check - full validation done in handler)
+    if sqe_addr == 0 || cqe_addr == 0 {
+        return EFAULT;
+    }
+    
+    // Read SQE from user space
+    let sqe: SubmissionEntryV2 = unsafe {
+        core::ptr::read_volatile(sqe_addr as *const SubmissionEntryV2)
+    };
+    
+    // Get process and process the V2 submission while holding the lock
+    let cqe = {
+        let table = PROCESS_TABLE.lock();
+        let process = match table.current_process() {
+            Some(p) => p,
+            None => return ESRCH,
+        };
+        
+        let cap_table = process.capability_table();
+        let io_uring_ctx = process.io_uring();
+        let buf_table = io_uring_ctx.map(|ctx| ctx.registered_buffer_table());
+        
+        // Process the V2 submission
+        crate::kernel::io_uring::handlers_v2::dispatch_sqe_v2(
+            &sqe,
+            cap_table,
+            buf_table,
+        )
+        // table lock dropped here
+    };
+    
+    // Write CQE to user space
+    unsafe {
+        core::ptr::write_volatile(cqe_addr as *mut CompletionEntryV2, cqe);
+    }
+    
+    0 // Success
+}
+
+/// V2 capability grant syscall (ID: 2004)
+///
+/// Grant a capability handle for an existing file descriptor.
+/// This creates a type-safe handle that can be used with V2 io_uring operations.
+///
+/// # Arguments
+/// * `fd` - Existing file descriptor to wrap
+/// * `rights` - Permissions to grant (bitfield: READ=1, WRITE=2, etc.)
+///
+/// # Returns
+/// * Success: Capability handle value (u64)
+/// * Error: Negative errno
+#[allow(unused)]
+pub fn sys_capability_grant(
+    fd: u64,
+    rights: u64,
+    _arg3: u64,
+    _arg4: u64,
+    _arg5: u64,
+    _arg6: u64,
+) -> SyscallResult {
+    use crate::kernel::capability::{Rights, FileResource};
+    use crate::kernel::process::PROCESS_TABLE;
+    use alloc::sync::Arc;
+    
+    let mut table = PROCESS_TABLE.lock();
+    let process = match table.current_process_mut() {
+        Some(p) => p,
+        None => return ESRCH,
+    };
+    
+    // Verify the fd exists
+    if process.get_file_descriptor(fd).is_none() {
+        return EBADF;
+    }
+    
+    // Create a simple resource wrapper (just stores the fd)
+    struct FdResource(u64);
+    let resource = Arc::new(FdResource(fd));
+    
+    // Convert rights
+    let rights = Rights::from_bits(rights);
+    
+    // Insert into capability table
+    match process.capability_table_mut().insert::<FileResource, _>(resource, rights) {
+        Ok(handle) => {
+            let value = handle.raw();
+            core::mem::forget(handle); // Don't drop - return to user
+            value as SyscallResult
+        }
+        Err(_) => ENOSPC, // Table full
+    }
+}
+
+/// V2 capability revoke syscall (ID: 2005)
+///
+/// Revoke a capability handle.
+///
+/// # Arguments
+/// * `handle` - Capability handle to revoke
+///
+/// # Returns
+/// * 0 on success
+/// * EINVAL if handle is invalid
+#[allow(unused)]
+pub fn sys_capability_revoke(
+    handle: u64,
+    _arg2: u64,
+    _arg3: u64,
+    _arg4: u64,
+    _arg5: u64,
+    _arg6: u64,
+) -> SyscallResult {
+    use crate::kernel::capability::FileResource;
+    use crate::kernel::process::PROCESS_TABLE;
+    
+    let mut table = PROCESS_TABLE.lock();
+    let process = match table.current_process_mut() {
+        Some(p) => p,
+        None => return ESRCH,
+    };
+    
+    let cap_handle: crate::kernel::capability::Handle<FileResource> = unsafe {
+        crate::kernel::capability::Handle::from_raw(handle)
+    };
+    
+    match process.capability_table_mut().remove(cap_handle) {
+        Ok(_) => 0,
+        Err(_) => EINVAL,
+    }
+}
+
 /// Syscall handler function type
 type SyscallHandler = fn(u64, u64, u64, u64, u64, u64) -> SyscallResult;
 
@@ -1264,6 +1429,10 @@ pub fn dispatch(
             2000 => sys_ring_enter(arg1, arg2, arg3, arg4, arg5, arg6),
             2001 => sys_ring_register(arg1, arg2, arg3, arg4, arg5, arg6),
             2002 => sys_ring_setup(arg1, arg2, arg3, arg4, arg5, arg6),
+            // V2 Next-Generation Protocol (2003+)
+            2003 => sys_io_uring_enter_v2(arg1, arg2, arg3, arg4, arg5, arg6),
+            2004 => sys_capability_grant(arg1, arg2, arg3, arg4, arg5, arg6),
+            2005 => sys_capability_revoke(arg1, arg2, arg3, arg4, arg5, arg6),
             _ => {
                 debug_println!("[SYSCALL] Invalid syscall number: {}", syscall_num);
                 ENOSYS

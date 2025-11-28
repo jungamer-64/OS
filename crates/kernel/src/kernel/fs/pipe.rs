@@ -71,7 +71,7 @@ impl FileDescriptor for PipeReader {
     }
     
     fn write(&mut self, _buf: &[u8]) -> FileResult<usize> {
-        Err(FileError::InvalidInput)
+        Err(FileError::InvalidArgument)
     }
     
     fn close(&mut self) -> FileResult<()> {
@@ -87,7 +87,7 @@ pub struct PipeWriter {
 
 impl FileDescriptor for PipeWriter {
     fn read(&mut self, _buf: &mut [u8]) -> FileResult<usize> {
-        Err(FileError::InvalidInput)
+        Err(FileError::InvalidArgument)
     }
     
     fn write(&mut self, buf: &[u8]) -> FileResult<usize> {

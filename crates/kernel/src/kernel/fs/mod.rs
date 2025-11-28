@@ -3,6 +3,13 @@
 
 // pub mod initrd;  // TODO: Implement
 // pub mod vfs;     // TODO: Implement
+pub mod pipe;
+pub mod vfs_file;
+
+pub use vfs_file::{VfsFile, VfsFileType};
+
+/// Result type for file operations
+pub type FileResult<T> = Result<T, FileError>;
 
 /// File operation errors
 #[derive(Debug, Clone, Copy)]

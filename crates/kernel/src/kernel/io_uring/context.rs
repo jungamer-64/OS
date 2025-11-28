@@ -8,9 +8,12 @@ use spin::Mutex;
 
 use super::ring::IoUring;
 use super::handlers::{dispatch_sqe, OpResult};
+use super::handlers_v2::dispatch_sqe_v2;
 use super::registered_buffers::{RegisteredBufferTable, RegisteredBufferStats};
 use crate::abi::io_uring::OpCode;
+use crate::abi::io_uring_v2::SubmissionEntryV2;
 use crate::debug_println;
+use crate::kernel::capability::table::CapabilityTable;
 use crate::kernel::mm::BootInfoFrameAllocator;
 use crate::kernel::syscall::SyscallResult;
 
@@ -218,7 +221,37 @@ impl IoUringContext {
         
         cq_count
     }
-    
+
+    /// Process a single V2 submission entry with capability verification
+    ///
+    /// This is used for the V2 protocol which uses capability-based handles
+    /// and registered buffers only.
+    ///
+    /// # Arguments
+    /// * `sqe` - V2 submission entry
+    /// * `cap_table` - Process capability table for permission verification
+    ///
+    /// # Returns
+    /// V2 completion entry with result
+    pub fn process_sqe_v2(
+        &self,
+        sqe: &SubmissionEntryV2,
+        cap_table: &CapabilityTable,
+    ) -> crate::abi::io_uring_v2::CompletionEntryV2 {
+        // Use the registered buffer table from this context
+        dispatch_sqe_v2(sqe, cap_table, Some(&self.registered_buffers))
+    }
+
+    /// Get a reference to the registered buffer table
+    pub fn registered_buffer_table(&self) -> &RegisteredBufferTable {
+        &self.registered_buffers
+    }
+
+    /// Get a mutable reference to the registered buffer table
+    pub fn registered_buffer_table_mut(&mut self) -> &mut RegisteredBufferTable {
+        &mut self.registered_buffers
+    }
+
     /// Get the SQ header address for mapping to user space
     #[must_use]
     pub fn sq_header_addr(&self) -> u64 {

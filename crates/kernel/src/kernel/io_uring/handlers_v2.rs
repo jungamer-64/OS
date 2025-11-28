@@ -3,6 +3,11 @@
 //!
 //! This module implements capability-based I/O operations for the V2 protocol.
 //! All operations use capabilities instead of file descriptors.
+//!
+//! # Phase 1 Complete: Capability-based Resource Access
+//!
+//! Resources are stored directly in `CapabilityEntry::resource` as `VfsFile`.
+//! File descriptors are no longer used for I/O operations.
 
 use alloc::sync::Arc;
 
@@ -14,6 +19,8 @@ use crate::kernel::capability::{FileResource, Rights};
 use crate::kernel::capability::table::CapabilityTable;
 use crate::kernel::core::traits::CharDevice;
 use crate::kernel::driver::serial::SERIAL1;
+use crate::kernel::fs::VfsFile;
+use crate::kernel::io_uring::registered_buffers::RegisteredBufferTable;
 use crate::kernel::process::PROCESS_TABLE;
 
 /// Dispatch a V2 SQE to its handler
@@ -23,10 +30,15 @@ use crate::kernel::process::PROCESS_TABLE;
 /// # Arguments
 /// * `sqe` - The V2 submission entry
 /// * `cap_table` - The process's capability table
+/// * `buf_table` - The registered buffer table (optional)
 ///
 /// # Returns
 /// A V2 completion entry with the result
-pub fn dispatch_sqe_v2(sqe: &SubmissionEntryV2, cap_table: &CapabilityTable) -> CompletionEntryV2 {
+pub fn dispatch_sqe_v2(
+    sqe: &SubmissionEntryV2,
+    cap_table: &CapabilityTable,
+    buf_table: Option<&RegisteredBufferTable>,
+) -> CompletionEntryV2 {
     let user_data = sqe.user_data;
 
     let op = match OpCode::from_u8(sqe.opcode) {
@@ -36,8 +48,8 @@ pub fn dispatch_sqe_v2(sqe: &SubmissionEntryV2, cap_table: &CapabilityTable) -> 
 
     match op {
         OpCode::Nop => handle_nop_v2(sqe),
-        OpCode::Read => handle_read_v2(sqe, cap_table),
-        OpCode::Write => handle_write_v2(sqe, cap_table),
+        OpCode::Read => handle_read_v2(sqe, cap_table, buf_table),
+        OpCode::Write => handle_write_v2(sqe, cap_table, buf_table),
         OpCode::Close => handle_close_v2(sqe, cap_table),
         OpCode::Mmap => handle_mmap_v2(sqe),
         OpCode::Munmap => handle_munmap_v2(sqe),
@@ -67,63 +79,133 @@ fn handle_nop_v2(sqe: &SubmissionEntryV2) -> CompletionEntryV2 {
 }
 
 /// Handle read operation with capability verification (V2)
-fn handle_read_v2(sqe: &SubmissionEntryV2, cap_table: &CapabilityTable) -> CompletionEntryV2 {
+///
+/// # Phase 1: Capability-based resource access
+///
+/// Resources are retrieved from `CapabilityEntry::resource` as `VfsFile`.
+/// No longer uses `process.get_file_descriptor()`.
+fn handle_read_v2(
+    sqe: &SubmissionEntryV2,
+    cap_table: &CapabilityTable,
+    buf_table: Option<&RegisteredBufferTable>,
+) -> CompletionEntryV2 {
     let capability_id = sqe.capability_id;
     let buf_index = sqe.buf_index;
     let len = sqe.len;
     let user_data = sqe.user_data;
 
-    // Special case: capability_id 0 with no FIXED_BUFFER flag = stdin (not implemented)
-    if capability_id == 0 && !sqe.uses_fixed_buffer() {
+    // Special case: capability_id 0 = stdin (not implemented)
+    if capability_id == 0 {
         debug_println!("[io_uring_v2] read from stdin not implemented");
         return CompletionEntryV2::error(user_data, SyscallError::NotImplemented);
     }
 
-    // Verify capability
+    // V2 requires registered buffers
+    let buf_table = match buf_table {
+        Some(t) => t,
+        None => return CompletionEntryV2::error(user_data, SyscallError::BufferNotRegistered),
+    };
+
+    // Get the registered buffer
+    let buf_ref = match buf_table.acquire(buf_index) {
+        Some(r) => r,
+        None => return CompletionEntryV2::error(user_data, SyscallError::InvalidBufferIndex),
+    };
+
+    // Validate buffer is readable (kernel can write to it)
+    let slice = match unsafe { buf_ref.as_mut_slice() } {
+        Some(s) => s,
+        None => return CompletionEntryV2::error(user_data, SyscallError::InsufficientRights),
+    };
+
+    // Limit read to requested length
+    let read_len = (len as usize).min(slice.len());
+
+    // Get VfsFile from capability table
     let handle: crate::kernel::capability::Handle<FileResource> =
         unsafe { crate::kernel::capability::Handle::from_raw(capability_id) };
 
     let entry = match cap_table.get_with_rights(&handle, Rights::READ) {
         Ok(e) => e,
         Err(e) => {
-            // Don't drop the handle (it was created from raw, not owned)
             core::mem::forget(handle);
             return CompletionEntryV2::error(user_data, e);
         }
     };
 
-    // For now, we need to get the file descriptor from the process
-    // In full V2, resources would be stored directly in the capability entry
+    // Downcast resource to VfsFile
+    let vfs_file = match entry.downcast::<VfsFile>() {
+        Some(vfs) => vfs,
+        None => {
+            core::mem::forget(handle);
+            return CompletionEntryV2::error(user_data, SyscallError::WrongCapabilityType);
+        }
+    };
+
+    // Perform read operation
+    let result = vfs_file.read(&mut slice[..read_len]);
     core::mem::forget(handle);
 
-    // TODO: Implement registered buffer lookup using buf_index
-    // For now, return not implemented
-    debug_println!(
-        "[io_uring_v2] Read with registered buffer (idx={}) not yet implemented",
-        buf_index
-    );
-    CompletionEntryV2::error(user_data, SyscallError::BufferNotRegistered)
+    match result {
+        Ok(read) => CompletionEntryV2::success(user_data, read as i32),
+        Err(crate::kernel::fs::FileError::BrokenPipe) => CompletionEntryV2::success(user_data, 0), // EOF
+        Err(crate::kernel::fs::FileError::WouldBlock) => {
+            CompletionEntryV2::error(user_data, SyscallError::WouldBlock)
+        }
+        Err(_) => CompletionEntryV2::error(user_data, SyscallError::IoError),
+    }
 }
 
 /// Handle write operation with capability verification (V2)
-fn handle_write_v2(sqe: &SubmissionEntryV2, cap_table: &CapabilityTable) -> CompletionEntryV2 {
+///
+/// # Phase 1: Capability-based resource access
+///
+/// Resources are retrieved from `CapabilityEntry::resource` as `VfsFile`.
+/// No longer uses `process.get_file_descriptor()`.
+fn handle_write_v2(
+    sqe: &SubmissionEntryV2,
+    cap_table: &CapabilityTable,
+    buf_table: Option<&RegisteredBufferTable>,
+) -> CompletionEntryV2 {
     let capability_id = sqe.capability_id;
     let buf_index = sqe.buf_index;
     let len = sqe.len;
     let user_data = sqe.user_data;
 
+    // V2 requires registered buffers
+    let buf_table = match buf_table {
+        Some(t) => t,
+        None => return CompletionEntryV2::error(user_data, SyscallError::BufferNotRegistered),
+    };
+
+    // Get the registered buffer
+    let buf_ref = match buf_table.acquire(buf_index) {
+        Some(r) => r,
+        None => return CompletionEntryV2::error(user_data, SyscallError::InvalidBufferIndex),
+    };
+
+    // Validate buffer is writable (kernel can read from it)
+    let slice = match unsafe { buf_ref.as_slice() } {
+        Some(s) => s,
+        None => return CompletionEntryV2::error(user_data, SyscallError::InsufficientRights),
+    };
+
+    // Limit write to requested length
+    let write_len = (len as usize).min(slice.len());
+
     // Special case: capability_id 1 or 2 = stdout/stderr (console)
-    // We allow these without capability verification for convenience
+    // These are handled specially until stdin/stdout/stderr are Capability-ized (Task 3)
     if capability_id == 1 || capability_id == 2 {
         // Write to serial console
-        // TODO: Use registered buffer when implemented
-        debug_println!(
-            "[io_uring_v2] stdout/stderr write with registered buffer not yet implemented"
-        );
-        return CompletionEntryV2::error(user_data, SyscallError::BufferNotRegistered);
+        if let Some(mut serial) = SERIAL1.try_lock() {
+            for &byte in &slice[..write_len] {
+                let _ = serial.write_byte(byte);
+            }
+        }
+        return CompletionEntryV2::success(user_data, write_len as i32);
     }
 
-    // Verify capability
+    // Get VfsFile from capability table
     let handle: crate::kernel::capability::Handle<FileResource> =
         unsafe { crate::kernel::capability::Handle::from_raw(capability_id) };
 
@@ -135,22 +217,44 @@ fn handle_write_v2(sqe: &SubmissionEntryV2, cap_table: &CapabilityTable) -> Comp
         }
     };
 
+    // Downcast resource to VfsFile
+    let vfs_file = match entry.downcast::<VfsFile>() {
+        Some(vfs) => vfs,
+        None => {
+            core::mem::forget(handle);
+            return CompletionEntryV2::error(user_data, SyscallError::WrongCapabilityType);
+        }
+    };
+
+    // Perform write operation
+    let result = vfs_file.write(&slice[..write_len]);
     core::mem::forget(handle);
 
-    // TODO: Implement registered buffer lookup
-    debug_println!(
-        "[io_uring_v2] Write with registered buffer (idx={}) not yet implemented",
-        buf_index
-    );
-    CompletionEntryV2::error(user_data, SyscallError::BufferNotRegistered)
+    match result {
+        Ok(written) => CompletionEntryV2::success(user_data, written as i32),
+        Err(crate::kernel::fs::FileError::BrokenPipe) => {
+            CompletionEntryV2::error(user_data, SyscallError::BrokenPipe)
+        }
+        Err(crate::kernel::fs::FileError::WouldBlock) => {
+            CompletionEntryV2::error(user_data, SyscallError::WouldBlock)
+        }
+        Err(_) => CompletionEntryV2::error(user_data, SyscallError::IoError),
+    }
 }
 
 /// Handle close operation with capability (V2)
+///
+/// # Phase 1: Capability-based resource access
+///
+/// When the capability is removed from the table, the `VfsFile` resource
+/// is automatically dropped, which calls `close()` on the underlying
+/// `FileDescriptor`.
 fn handle_close_v2(sqe: &SubmissionEntryV2, cap_table: &CapabilityTable) -> CompletionEntryV2 {
     let capability_id = sqe.capability_id;
     let user_data = sqe.user_data;
 
-    // Special capabilities 0, 1, 2 cannot be closed
+    // Special capabilities 0, 1, 2 (stdin/stdout/stderr) cannot be closed
+    // These will be proper Capabilities after Task 3 is complete
     if capability_id < 3 {
         return CompletionEntryV2::error(user_data, SyscallError::InvalidArgument);
     }
@@ -161,11 +265,13 @@ fn handle_close_v2(sqe: &SubmissionEntryV2, cap_table: &CapabilityTable) -> Comp
 
     match cap_table.remove(handle) {
         Ok(entry) => {
-            // Resource cleanup happens automatically when entry is dropped
+            // VfsFile::drop() will be called when entry goes out of scope,
+            // which calls FileDescriptor::close() automatically
             debug_println!(
-                "[io_uring_v2] Closed capability {:#x}, type={}",
+                "[io_uring_v2] Closed capability {:#x}, type={}, rights={:?}",
                 capability_id,
-                entry.type_id
+                entry.type_id,
+                entry.rights
             );
             CompletionEntryV2::success(user_data, 0)
         }
