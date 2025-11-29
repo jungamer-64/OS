@@ -11,14 +11,13 @@ pub const SYS_WRITE: u64 = 0;
 pub const SYS_READ: u64 = 1;
 pub const SYS_EXIT: u64 = 2;
 pub const SYS_GETPID: u64 = 3;
-pub const SYS_ALLOC: u64 = 4;     // Deprecated - use MMAP
-pub const SYS_DEALLOC: u64 = 5;   // Deprecated - use MUNMAP
+
 pub const SYS_FORK: u64 = 6;
 pub const SYS_EXEC: u64 = 7;
 pub const SYS_WAIT: u64 = 8;
 pub const SYS_MMAP: u64 = 9;
 pub const SYS_MUNMAP: u64 = 10;
-pub const SYS_PIPE: u64 = 11;
+
 
 // V2 io_uring syscalls
 pub const SYS_IO_URING_SETUP: u64 = 2002;
@@ -202,13 +201,7 @@ pub fn munmap(addr: u64, len: u64) -> SyscallResult<()> {
     syscall_result(ret).map(|_| ())
 }
 
-/// sys_pipe - Create a pipe
-pub fn pipe(pipefd: &mut [u64; 2]) -> SyscallResult<()> {
-    let ret = unsafe {
-        syscall6(SYS_PIPE, pipefd.as_mut_ptr() as u64, 0, 0, 0, 0, 0)
-    };
-    syscall_result(ret).map(|_| ())
-}
+
 
 // ============================================================================
 // V2 io_uring Wrappers

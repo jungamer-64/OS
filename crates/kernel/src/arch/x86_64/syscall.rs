@@ -600,10 +600,7 @@ pub enum SyscallNumber {
     Exit = 2,
     /// Get process ID
     GetPid = 3,
-    /// Allocate memory
-    Alloc = 4,
-    /// Deallocate memory
-    Dealloc = 5,
+
     /// Fork process
     Fork = 6,
     /// Execute program
@@ -614,8 +611,7 @@ pub enum SyscallNumber {
     Mmap = 9,
     /// Unmap memory
     Munmap = 10,
-    /// Create pipe
-    Pipe = 11,
+
     /// Initialize io_uring
     IoUringSetup = 12,
     /// Submit/complete io_uring operations

@@ -370,17 +370,7 @@ pub fn sys_getpid(_arg1: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _a
     1
 }
 
-/// sys_alloc - Allocate memory
-pub fn sys_alloc(size: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    debug_println!("[SYSCALL] sys_alloc not implemented yet (requested {} bytes)", size);
-    ENOSYS
-}
 
-/// sys_dealloc - Deallocate memory
-pub fn sys_dealloc(ptr: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    debug_println!("[SYSCALL] sys_dealloc not implemented yet (ptr=0x{:x})", ptr);
-    ENOSYS
-}
 
 /// sys_fork - Fork process
 pub fn sys_fork(_arg1: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
@@ -636,31 +626,7 @@ pub fn sys_mmap(addr: u64, len: u64, _prot: u64, _flags: u64, _fd: u64, _offset:
     start_addr.as_u64() as SyscallResult
 }
 
-/// sys_pipe - Create a pipe
-///
-/// Creates a pipe and stores the read/write file descriptors  in the user-provided array.
-///
-/// # Arguments
-/// * `pipefd` - Pointer to an array of 2 u64 values (read_fd, write_fd)
-///
-/// # Returns
-/// * `SUCCESS` (0) - Pipe created successfully
-/// * `EFAULT` - Invalid pointer
-/// * `ESRCH` - Current process not found
-/// * `ENOSYS` - Not yet implemented
-pub fn sys_pipe(pipefd: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    use crate::kernel::security::validate_user_write;
-    
-    // Validate pipefd pointer (array of 2 u64 values = 16 bytes)
-    if let Err(e) = validate_user_write(pipefd, 16) {
-        debug_println!("[SYSCALL] sys_pipe: invalid pipefd pointer 0x{:x}", pipefd);
-        return e;
-    }
-    
-    // TODO: Implement pipe support
-    debug_println!("[SYSCALL] sys_pipe: Not implemented yet");
-    ENOSYS // Function not implemented
-}
+
 
 /// sys_munmap - Unmap memory
 pub fn sys_munmap(addr: u64, len: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
@@ -1209,14 +1175,14 @@ static SYSCALL_TABLE: &[SyscallHandler] = &[
     sys_read,     // 1
     sys_exit,     // 2
     sys_getpid,   // 3
-    sys_alloc,    // 4
-    sys_dealloc,  // 5
+    sys_ni_syscall,         // 4 - sys_alloc (removed)
+    sys_ni_syscall,         // 5 - sys_dealloc (removed)
     sys_fork,     // 6
     sys_exec,     // 7
     sys_wait,     // 8
     sys_mmap,     // 9
     sys_munmap,   // 10
-    sys_pipe,     // 11
+    sys_ni_syscall,         // 11 - sys_pipe (removed)
     sys_ni_syscall,         // 12 - sys_io_uring_setup (removed)
     sys_ni_syscall,         // 13 - reserved
     sys_ni_syscall,         // 14 - reserved
