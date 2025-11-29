@@ -1101,29 +1101,7 @@ pub fn sys_fast_poll(_arg1: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64,
     crate::arch::x86_64::syscall_ring::kernel_poll_all() as SyscallResult
 }
 
-/// Fast I/O setup syscall (ID: 1002)
-///
-/// Set up syscall-less I/O rings for the current process.
-///
-/// # Arguments
-/// * `flags` - Configuration flags
-///   - Bit 0: Enable SQPOLL (kernel polling)
-///   - Bit 1: Enable IOPOLL (completion polling)
-///
-/// # Returns
-/// * Success: Base address of the fast I/O region
-/// * Error: ENOMEM, ESRCH
-pub fn sys_fast_io_setup(flags: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    let enable_sqpoll = (flags & 1) != 0;
-    
-    match crate::arch::x86_64::syscall_ring::init_ring_for_process(enable_sqpoll) {
-        Some(ctx) => {
-            // Return the context address (will need user mapping in production)
-            Box::into_raw(ctx) as u64 as SyscallResult
-        }
-        None => ENOMEM,
-    }
-}
+// sys_fast_io_setup removed (Legacy V1)
 
 // ============================================================================
 // Ring-based Syscall System (Syscalls 2000-2099)
@@ -1133,83 +1111,9 @@ pub fn sys_fast_io_setup(flags: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: 
 // asynchronous message passing.
 // ============================================================================
 
-/// Ring enter syscall (ID: 2000)
-///
-/// This is the "doorbell" syscall - it takes no meaningful arguments.
-/// The kernel processes all pending entries in the process's ring buffer.
-///
-/// # Arguments (mostly ignored)
-/// * `min_complete` - Optional: minimum completions to wait for
-///
-/// # Returns
-/// * Number of completions generated
-pub fn sys_ring_enter(_arg1: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    use crate::kernel::process::PROCESS_TABLE;
-    
-    let mut table = PROCESS_TABLE.lock();
-    let process = match table.current_process_mut() {
-        Some(p) => p,
-        None => return ESRCH,
-    };
-    
-    // Process the ring buffer
-    let completed = process.ring_poll();
-    
-    // Check if exit was requested
-    if process.ring_exit_requested() {
-        let code = process.ring_exit_code().unwrap_or(0);
-        let pid = process.pid();
-        drop(table); // Release lock before exit
-        
-        // Terminate the process
-        crate::kernel::process::lifecycle::terminate_process(pid, code as i32);
-        return code as SyscallResult;
-    }
-    
-    completed as SyscallResult
-}
+// sys_ring_enter removed (Legacy V1)
 
-/// Ring register syscall (ID: 2001)
-///
-/// Register a memory buffer for zero-copy I/O.
-/// After registration, the buffer can be accessed via buf_index
-/// instead of a pointer, eliminating per-call validation.
-///
-/// # Arguments
-/// * `addr` - User space virtual address of buffer
-/// * `len` - Buffer length
-/// * `flags` - Permissions (bit 0: read, bit 1: write)
-/// * `slot` - Preferred slot (optional, 0 = auto-assign)
-///
-/// # Returns
-/// * Success: Buffer index (0-63)
-/// * Error: EFAULT (bad address), ENOSPC (no slots), ESRCH (no process)
-pub fn sys_ring_register(addr: u64, len: u64, flags: u64, slot: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    use crate::kernel::process::PROCESS_TABLE;
-    use crate::arch::x86_64::syscall_ring::BufferPermissions;
-    
-    let mut table = PROCESS_TABLE.lock();
-    let process = match table.current_process_mut() {
-        Some(p) => p,
-        None => return ESRCH,
-    };
-    
-    // Ensure ring context exists
-    let ring_ctx = match process.ring_context_mut() {
-        Some(ctx) => ctx,
-        None => return EINVAL,
-    };
-    
-    let permissions = BufferPermissions {
-        read: (flags & 1) != 0,
-        write: (flags & 2) != 0,
-    };
-    
-    match ring_ctx.buffers_mut().register(addr, len, permissions) {
-        Ok(idx) => idx as SyscallResult,
-        Err(e) => e as SyscallResult,
-    }
-}
+// sys_ring_register removed (Legacy V1)
 
 /// Ring setup syscall (ID: 2002)
 ///
@@ -1223,13 +1127,13 @@ pub fn sys_ring_register(addr: u64, len: u64, flags: u64, slot: u64, _arg5: u64,
 /// # Returns
 /// * Success: User-space address of the RingContext
 /// * Error: ENOMEM (allocation failed), ESRCH (no process)
-pub fn sys_ring_setup(flags: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+pub fn sys_io_uring_setup(flags: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
     use crate::kernel::process::PROCESS_TABLE;
     use crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR;
     
     let enable_sqpoll = (flags & 1) != 0;
     crate::debug_println!(
-        "[SYSCALL] sys_ring_setup: enable_sqpoll={} (flags={:#x})",
+        "[SYSCALL] sys_io_uring_setup: enable_sqpoll={} (flags={:#x})",
         enable_sqpoll,
         flags
     );
@@ -1453,9 +1357,14 @@ static SYSCALL_TABLE: &[SyscallHandler] = &[
     sys_munmap,   // 10
     sys_pipe,     // 11
     sys_io_uring_setup,     // 12 - io_uring initialization
-    sys_io_uring_enter,     // 13 - io_uring submit/complete
-    sys_io_uring_register,  // 14 - io_uring resource registration
+    sys_ni_syscall,         // 13 - reserved
+    sys_ni_syscall,         // 14 - reserved
 ];
+
+/// Not implemented syscall handler
+fn sys_ni_syscall(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    ENOSYS
+}
 
 /// Dispatch a syscall to its handler
 pub fn dispatch(
@@ -1480,11 +1389,11 @@ pub fn dispatch(
         return match syscall_num {
             1000 => sys_benchmark(arg1, arg2, arg3, arg4, arg5, arg6),
             1001 => sys_fast_poll(arg1, arg2, arg3, arg4, arg5, arg6),
-            1002 => sys_fast_io_setup(arg1, arg2, arg3, arg4, arg5, arg6),
+            1002 => ENOSYS, // sys_fast_io_setup removed
             // Ring-based syscall system (2000+)
-            2000 => sys_ring_enter(arg1, arg2, arg3, arg4, arg5, arg6),
-            2001 => sys_ring_register(arg1, arg2, arg3, arg4, arg5, arg6),
-            2002 => sys_ring_setup(arg1, arg2, arg3, arg4, arg5, arg6),
+            2000 => ENOSYS, // sys_ring_enter removed
+            2001 => ENOSYS, // sys_ring_register removed
+            2002 => sys_io_uring_setup(arg1, arg2, arg3, arg4, arg5, arg6),
             // V2 Next-Generation Protocol (2003+)
             2003 => sys_io_uring_enter_v2(arg1, arg2, arg3, arg4, arg5, arg6),
             2004 => sys_capability_dup(arg1, arg2, arg3, arg4, arg5, arg6),

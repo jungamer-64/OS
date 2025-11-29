@@ -32,7 +32,7 @@ pub mod result;
 
 // Re-export V1 types for compatibility
 pub use io_uring::{
-    CompletionEntry, IoUringFlags, OpCode, RingHeader, SubmissionEntry, RING_MASK, RING_SIZE,
+    IoUringFlags, OpCode, RING_MASK, RING_SIZE,
 };
 
 // Re-export V2 types
