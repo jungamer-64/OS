@@ -8,10 +8,8 @@ use spin::Mutex;
 
 use super::doorbell::Doorbell;
 use super::ring::IoUring;
-use super::handlers::{dispatch_sqe, OpResult};
 use super::handlers_v2::dispatch_sqe_v2;
 use super::registered_buffers::{RegisteredBufferTable, RegisteredBufferStats};
-use crate::abi::io_uring::OpCode;
 use crate::abi::io_uring_v2::SubmissionEntryV2;
 use crate::debug_println;
 use crate::kernel::capability::table::CapabilityTable;
@@ -143,9 +141,8 @@ impl IoUringContext {
     ///
     /// This function:
     /// 1. Harvests pending submissions from SQ
-    /// 2. Validates each SQE
-    /// 3. Dispatches to handlers
-    /// 4. Posts completions to CQ
+    /// 2. Dispatches to V2 handlers
+    /// 3. Posts completions to CQ
     ///
     /// # Arguments
     /// * `cap_table` - The process's capability table for I/O operations
@@ -164,26 +161,13 @@ impl IoUringContext {
         
         // Process pending SQEs
         while let Some(sqe) = self.ring.pop_pending() {
-            // Validate SQE
-            if let Err(e) = super::ring::validate_sqe(&sqe) {
-                // Post error completion
-                let _ = self.ring.post_completion(sqe.user_data, e.to_errno() as i32, 0);
-                completed += 1;
-                continue;
-            }
-            
-            // Handle exit specially (doesn't use ring)
-            if sqe.opcode == OpCode::Exit as u8 {
-                debug_println!("[io_uring] Exit requested via SQE, user_data={}", sqe.user_data);
-                // Exit will be handled at syscall level
-                continue;
-            }
-            
-            // Dispatch to handler with capability table
-            let result = dispatch_sqe(&sqe, cap_table);
+            // Dispatch to V2 handler with capability table
+            // dispatch_sqe_v2 handles validation internally
+            // We allow_raw_addr = false for user-space requests for security
+            let completion = dispatch_sqe_v2(&sqe, cap_table, Some(&self.registered_buffers), false);
             
             // Post completion
-            if self.ring.post_completion(result.user_data, result.result, result.flags).is_ok() {
+            if self.ring.post_completion(completion).is_ok() {
                 completed += 1;
                 // Notify userspace via doorbell if present
                 if let Some(db_addr) = self.doorbell {

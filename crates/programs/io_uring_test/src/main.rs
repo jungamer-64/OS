@@ -99,6 +99,7 @@ fn test_ring_setup() {
 
 fn test_ring_sqpoll_doorbell() {
     println!("[TEST] Ring::setup(true) - SQPOLL + Doorbell (Zero-syscall)");
+    println!("[DEBUG] Entering test_ring_sqpoll_doorbell()");
     println!("  Calling Ring::setup(true)...");
     match Ring::setup(true) {
         Ok(mut ring) => {

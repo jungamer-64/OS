@@ -186,6 +186,12 @@ unsafe fn syscall6(num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u
 #[must_use]
 #[allow(clippy::cast_sign_loss)]
 pub unsafe fn syscall1(num: u64, arg1: i64) -> i64 {
+    // Temporary debug instrumentation: log when ring setup syscall is invoked
+    if num == SYS_RING_SETUP {
+        // Avoid complex formatting to minimize allocations.
+        crate::println!("[DEBUG] libuser::syscall1: SYS_RING_SETUP invoked");
+        crate::println!("[DEBUG] libuser::syscall1: arg1 (raw) = {}", arg1);
+    }
     unsafe { syscall6(num, arg1 as u64, 0, 0, 0, 0, 0) }
 }
 
