@@ -21,17 +21,15 @@
 //! - **ABI-safe Result**: `AbiResult<T, E>` for safe Result passing
 //! - **Registered buffers only**: No raw pointers in V2 mode
 
-// Legacy io_uring ABI (V1)
-pub mod io_uring;
-
 // Next-generation ABI (V2)
 pub mod error;
+pub mod io_uring_common;
 pub mod io_uring_v2;
 pub mod native;
 pub mod result;
 
 // Re-export V1 types for compatibility
-pub use io_uring::{
+pub use io_uring_common::{
     IoUringFlags, OpCode, RING_MASK, RING_SIZE,
 };
 

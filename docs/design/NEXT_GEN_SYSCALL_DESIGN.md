@@ -339,7 +339,7 @@ const _: () = assert!(core::mem::size_of::<SubmissionEntryV2>() == 64);
 
 ---
 
-## 5. Phase 2: Doorbell / ゼロシステムコールモード（1週間）
+## 4. Phase 2: Doorbell / ゼロシステムコールモード（1週間）
 
 **目的**: SQPOLL の完全活用と Doorbell 方式の実装
 
@@ -540,7 +540,7 @@ impl ZeroSyscallIo {
 
 ---
 
-## 6. Phase 3: Result<T, E> 型の徹底（1週間）
+## 5. Phase 3: Result<T, E> 型の徹底（1週間）
 
 **目的**: errno 整数を完全に廃止し、型安全な Result に移行
 
@@ -686,7 +686,7 @@ pub enum SyscallError {
 
 ---
 
-## 7. 完全Rustネイティブ化のメリット
+## 6. 完全Rustネイティブ化のメリット
 
 | 側面 | メリット | 具体例 |
 |------|---------|--------|
@@ -699,7 +699,7 @@ pub enum SyscallError {
 
 ---
 
-## 8. 改訂ロードマップ（8週間計画）
+## 7. 改訂ロードマップ（8週間計画）
 
 ### Week 1: Phase 0（完全Rust化準備）
 
@@ -739,7 +739,7 @@ pub enum SyscallError {
 
 ---
 
-## 9. 最終的なアーキテクチャ
+## 8. 最終的なアーキテクチャ
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
@@ -779,7 +779,7 @@ pub enum SyscallError {
 
 ---
 
-## 10. 設計比較表（最終版）
+## 9. 設計比較表（最終版）
 
 | 特徴 | POSIX/Linux | 現在の TinyOS | **次世代 TinyOS** |
 |-----|-------------|--------------|-------------------|
@@ -795,7 +795,7 @@ pub enum SyscallError {
 
 ---
 
-## 11. 将来の拡張（長期計画）
+## 10. 将来の拡張（長期計画）
 
 ### 11.1 In-Kernel Scripting (eBPF スタイル)
 
@@ -825,7 +825,7 @@ NVMe SSD との DMA フロー:
 
 ---
 
-## 12. 次のアクション（即座に開始）
+## 11. 次のアクション（即座に開始）
 
 1. **`crates/kernel/src/abi/native.rs` 作成** - Rust専用ABI
 2. **`crates/kernel/src/abi/syscall_numbers.rs` 作成** - 型付きsyscall番号
@@ -834,7 +834,7 @@ NVMe SSD との DMA フロー:
 
 ---
 
-## 13. 参考資料
+## 12. 参考資料
 
 - [io_uring の設計](https://kernel.dk/io_uring.pdf)
 - [Capability-based Security](https://en.wikipedia.org/wiki/Capability-based_security)

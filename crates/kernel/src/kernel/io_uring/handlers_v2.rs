@@ -12,7 +12,7 @@
 use alloc::sync::Arc;
 
 use crate::abi::error::SyscallError;
-use crate::abi::io_uring::OpCode;
+use crate::abi::io_uring_common::OpCode;
 use crate::abi::io_uring_v2::{CompletionEntryV2, SubmissionEntryV2};
 use crate::debug_println;
 use crate::kernel::capability::{FileResource, Rights};
@@ -472,27 +472,6 @@ fn handle_munmap_v2(sqe: &SubmissionEntryV2) -> CompletionEntryV2 {
     CompletionEntryV2::success(user_data, 0)
 }
 
-/// Convert a V2 SQE to V1 format for backward compatibility
-///
-/// This allows gradual migration by converting V2 requests to V1
-/// when the full V2 path is not yet implemented.
-pub fn sqe_v2_to_v1(sqe_v2: &SubmissionEntryV2) -> crate::abi::io_uring::SubmissionEntry {
-    crate::abi::io_uring::SubmissionEntry {
-        opcode: sqe_v2.opcode,
-        flags: sqe_v2.flags,
-        ioprio: sqe_v2.ioprio,
-        fd: sqe_v2.capability_id as i32, // Truncate to i32 for V1 compatibility
-        off: sqe_v2.off,
-        addr: 0, // V2 uses registered buffers, not addresses
-        len: sqe_v2.len,
-        op_flags: sqe_v2.op_flags,
-        user_data: sqe_v2.user_data,
-        buf_index: sqe_v2.buf_index as u16,
-        personality: 0,
-        splice_fd_in: 0,
-        _reserved: [0; 2],
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -505,16 +484,5 @@ mod tests {
         assert!(cqe.is_ok());
         assert_eq!(cqe.user_data, 42);
         assert_eq!(cqe.result_value, 0);
-    }
-
-    #[test]
-    fn test_sqe_v2_to_v1_conversion() {
-        let sqe_v2 = SubmissionEntryV2::read(0x12345678, 0, 1024, 100, 42);
-        let sqe_v1 = sqe_v2_to_v1(&sqe_v2);
-
-        assert_eq!(sqe_v1.opcode, sqe_v2.opcode);
-        assert_eq!(sqe_v1.fd, 0x12345678); // Truncated from u64
-        assert_eq!(sqe_v1.len, sqe_v2.len);
-        assert_eq!(sqe_v1.user_data, sqe_v2.user_data);
     }
 }

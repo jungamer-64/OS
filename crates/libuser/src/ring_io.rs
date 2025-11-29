@@ -1,13 +1,11 @@
-//! Ring-based Async I/O API
+//! Ring-based Async I/O API (V2)
 //!
-//! This module provides userspace API for the revolutionary ring-based
-//! syscall system that completely replaces traditional syscalls with
-//! io_uring-style asynchronous message passing.
+//! This module provides userspace API for the V2 io_uring syscall system
+//! with capability-based security.
 //!
 //! # Architecture
 //!
-//! Instead of traditional syscalls where each operation requires a kernel
-//! entry/exit cycle, this API uses shared memory ring buffers:
+//! Instead of traditional syscalls, this API uses shared memory ring buffers:
 //!
 //! ```text
 //! User Space                  Kernel Space
@@ -20,18 +18,14 @@
 //! +--------------+            +--------------+
 //! ```
 //!
-//! # Benefits
+//! # V2 Features
 //!
-//! 1. **Zero syscalls for I/O**: After setup, all I/O goes through shared memory
-//! 2. **Batched operations**: Submit multiple ops, wait once
-//! 3. **Pre-validated buffers**: Register buffers once, use forever
-//! 4. **SQPOLL mode**: Kernel polls automatically, no user action needed
-//!
-//! # Usage Example
-//!
+//! 1. **Capability-based**: Uses capability IDs instead of file descriptors
+//! 2. **Type-safe results**: AbiResult<T, E> instead of errno
+//! 3. **Doorbell notifications**: Zero-syscall mode with shared memory flags
+//! 4. **64-byte SQE**: Extended submission entries with auxiliary fields
+//! 5. **40-byte CQE**: Completion entries with typed results
 
-// Allow various clippy lints for this module to prioritize functionality
-// over strict pedantic requirements during initial development
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::must_use_candidate)]
@@ -39,390 +33,165 @@
 #![allow(clippy::cast_possible_wrap)]
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::volatile_composites)]
-//! ```no_run
-//! use libuser::ring_io::{Ring, RingBuilder, Op};
-//!
-//! // Create a ring with SQPOLL enabled
-//! let ring = RingBuilder::new()
-//!     .sqpoll(true)
-//!     .build()
-//!     .expect("Failed to create ring");
-//!
-//! // Register a buffer for I/O (validated once, used forever)
-//! let buf_id = ring.register_buffer(&my_buffer).expect("Failed to register");
-//!
-//! // Submit a write operation
-//! let user_data = 42;
-//! ring.submit(Op::write(1, buf_id, 0, data.len() as u32, user_data));
-//!
-//! // With SQPOLL, no need to kick - kernel polls automatically
-//! // Without SQPOLL, call ring.enter() to notify kernel
-//!
-//! // Wait for completion
-//! let cqe = ring.wait_cqe();
-//! assert_eq!(cqe.user_data, 42);
-//! ```
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 use crate::syscall::{SyscallResult, SyscallError, errno};
+use crate::abi::io_uring_common::{OpCode, RING_MASK, RING_SIZE as COMMON_RING_SIZE};
+use crate::abi::io_uring_v2::{SubmissionEntryV2, CompletionEntryV2, RingHeaderV2};
+
+// =============================================================================
+// Re-exports (V2 Types)
+// =============================================================================
+
+/// Submission Queue Entry (V2)
+pub type Sqe = SubmissionEntryV2;
+
+/// Completion Queue Entry (V2)
+pub type Cqe = CompletionEntryV2;
+
+/// Ring Header (V2)
+pub type RingHeader = RingHeaderV2;
 
 // =============================================================================
 // Constants
 // =============================================================================
 
-/// Ring buffer size (must match kernel's `RING_SIZE`)
-pub const RING_SIZE: usize = 256;
-const RING_MASK: u32 = (RING_SIZE - 1) as u32;
-
 /// Maximum number of registered buffers
 pub const MAX_BUFFERS: usize = 64;
 
-// Syscall numbers for ring operations
-// These map to the io_uring syscalls (12/13/14) for now
-// TODO: When the new Ring syscall (2000/2001/2002) is fully integrated, switch back
+/// Ring setup syscall - V2 io_uring setup
+pub const SYSCALL_IO_URING_SETUP: u64 = 12;
 
-/// Ring setup syscall - currently uses `io_uring_setup` (syscall 12)
-pub const SYS_IO_URING_SETUP: u64 = 12;
-/// Ring enter syscall - currently uses `io_uring_enter` (syscall 13)
-pub const SYS_IO_URING_ENTER: u64 = 13;
-/// Ring register syscall - currently uses `io_uring_register` (syscall 14)
-pub const SYS_IO_URING_REGISTER: u64 = 14;
-
-// Future syscall numbers when fully integrated
 /// Ring enter syscall - signals kernel to process pending operations
-pub const SYSCALL_RING_ENTER: u64 = 2000;
+pub const SYSCALL_IO_URING_ENTER: u64 = 13;
+
 /// Ring register syscall - registers a memory buffer for zero-copy I/O
-pub const SYSCALL_RING_REGISTER: u64 = 2001;
-/// Ring setup syscall - initializes ring context for a process
-pub const SYSCALL_RING_SETUP: u64 = 2002;
+pub const SYSCALL_IO_URING_REGISTER: u64 = 14;
 
 // =============================================================================
-// Operation Codes
+// Doorbell Layout
 // =============================================================================
 
-/// Operation codes matching kernel's `RingOpcode`
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Opcode {
-    /// No operation
-    Nop = 0,
-    /// Write to file descriptor
-    Write = 1,
-    /// Read from file descriptor
-    Read = 2,
-    /// Get timestamp
-    GetTime = 3,
-    /// Get process ID
-    GetPid = 4,
-    /// Yield CPU
-    Yield = 5,
-    /// Memory fence
-    Fence = 6,
-    /// Exit process
-    Exit = 7,
-    /// Register buffer
-    RegisterBuffer = 8,
-    /// Unregister buffer
-    UnregisterBuffer = 9,
-    /// Console write
-    ConsoleWrite = 15,
-}
-
-// =============================================================================
-// Submission Queue Entry (User View)
-// =============================================================================
-
-/// Submission Queue Entry for user code
+/// Doorbell for zero-syscall notifications
 ///
-/// This structure is cache-line aligned and uses handle-based
-/// addressing instead of raw pointers.
+/// Shared between user and kernel for lock-free communication.
 #[repr(C, align(64))]
-#[derive(Debug, Clone, Copy)]
-pub struct Sqe {
-    /// Operation code
-    pub opcode: u8,
-    /// Flags
-    pub flags: u8,
-    /// I/O priority
-    pub ioprio: u16,
-    /// File descriptor
-    pub fd: u32,
-    /// Registered buffer index
-    pub buf_index: u16,
-    /// Offset within buffer
-    pub buf_offset: u32,
-    /// Operation length
-    pub len: u32,
-    /// Generic argument 1
-    pub arg1: u64,
-    /// Generic argument 2
-    pub arg2: u64,
-    /// User data (returned in completion)
-    pub user_data: u64,
-    /// Padding
-    _padding: [u8; 14],
+pub struct DoorbellLayout {
+    /// CQ has entries ready (kernel writes, user reads)
+    pub cq_ready: AtomicBool,
+    /// Kernel needs wakeup (user writes, kernel reads)
+    pub needs_wakeup: AtomicBool,
+    /// Padding to 64 bytes
+    _padding: [u8; 62],
 }
+
+impl DoorbellLayout {
+    /// Check if completions are ready
+    #[inline]
+    pub fn is_cq_ready(&self) -> bool {
+        self.cq_ready.load(Ordering::Acquire)
+    }
+    
+    /// Clear CQ ready flag
+    #[inline]
+    pub fn clear_cq_ready(&self) {
+        self.cq_ready.store(false, Ordering::Release);
+    }
+    
+    /// Check if kernel needs wakeup
+    #[inline]
+    pub fn check_needs_wakeup(&self) -> bool {
+        self.needs_wakeup.load(Ordering::Acquire)
+    }
+    
+    /// Set needs wakeup flag
+    #[inline]
+    pub fn set_needs_wakeup(&self, value: bool) {
+        self.needs_wakeup.store(value, Ordering::Release);
+    }
+}
+
+// =============================================================================
+// Helper Methods for V2 Types
+// =============================================================================
 
 impl Sqe {
-    /// Create an empty SQE
-    pub const fn empty() -> Self {
-        Self {
-            opcode: 0,
-            flags: 0,
-            ioprio: 0,
-            fd: 0,
-            buf_index: 0,
-            buf_offset: 0,
-            len: 0,
-            arg1: 0,
-            arg2: 0,
-            user_data: 0,
-            _padding: [0; 14],
-        }
+    /// Create a write operation (capability-based)
+    #[must_use]
+    pub const fn write_cap(capability_id: u64, buf_index: u32, len: u32, offset: u64, user_data: u64) -> Self {
+        Self::write(capability_id, buf_index, len, offset, user_data)
     }
     
-    
-    /// Create a NOP (no operation) for testing
-    pub const fn nop(user_data: u64) -> Self {
-        Self {
-            opcode: Opcode::Nop as u8,
-            flags: 0,
-            ioprio: 0,
-            fd: 0,
-            buf_index: 0,
-            buf_offset: 0,
-            len: 0,
-            arg1: 0,
-            arg2: 0,
-            user_data,
-            _padding: [0; 14],
-        }
+    /// Create a read operation (capability-based)
+    #[must_use]
+    pub const fn read_cap(capability_id: u64, buf_index: u32, len: u32, offset: u64, user_data: u64) -> Self {
+        Self::read(capability_id, buf_index, len, offset, user_data)
     }
     
-    /// Create a write operation
-    pub const fn write(fd: u32, buf_index: u16, offset: u32, len: u32, user_data: u64) -> Self {
-        Self {
-            opcode: Opcode::Write as u8,
-            flags: 0,
-            ioprio: 0,
-            fd,
-            buf_index,
-            buf_offset: offset,
-            len,
-            arg1: 0,
-            arg2: 0,
-            user_data,
-            _padding: [0; 14],
-        }
+    /// Create a close operation (capability-based)
+    #[must_use]
+    pub const fn close_cap(capability_id: u64, user_data: u64) -> Self {
+        Self::close(capability_id, user_data)
     }
-    
-    /// Create a read operation
-    pub const fn read(fd: u32, buf_index: u16, offset: u32, len: u32, user_data: u64) -> Self {
-        Self {
-            opcode: Opcode::Read as u8,
-            flags: 0,
-            ioprio: 0,
-            fd,
-            buf_index,
-            buf_offset: offset,
-            len,
-            arg1: 0,
-            arg2: 0,
-            user_data,
-            _padding: [0; 14],
-        }
-    }
-    
-    /// Create a console write operation
-    pub const fn console_write(buf_index: u16, offset: u32, len: u32, user_data: u64) -> Self {
-        Self {
-            opcode: Opcode::ConsoleWrite as u8,
-            flags: 0,
-            ioprio: 0,
-            fd: 1, // stdout
-            buf_index,
-            buf_offset: offset,
-            len,
-            arg1: 0,
-            arg2: 0,
-            user_data,
-            _padding: [0; 14],
-        }
-    }
-    
-    /// Create a getpid operation
-    pub const fn getpid(user_data: u64) -> Self {
-        Self {
-            opcode: Opcode::GetPid as u8,
-            flags: 0,
-            ioprio: 0,
-            fd: 0,
-            buf_index: 0,
-            buf_offset: 0,
-            len: 0,
-            arg1: 0,
-            arg2: 0,
-            user_data,
-            _padding: [0; 14],
-        }
-    }
-    
-    /// Create an exit operation
-    pub const fn exit(code: i32, user_data: u64) -> Self {
-        Self {
-            opcode: Opcode::Exit as u8,
-            flags: 0,
-            ioprio: 0,
-            fd: 0,
-            buf_index: 0,
-            buf_offset: 0,
-            len: 0,
-            arg1: code as u64,
-            arg2: 0,
-            user_data,
-            _padding: [0; 14],
-        }
-    }
-    
-    /// Create a yield operation
-    pub const fn yield_cpu(user_data: u64) -> Self {
-        Self {
-            opcode: Opcode::Yield as u8,
-            flags: 0,
-            ioprio: 0,
-            fd: 0,
-            buf_index: 0,
-            buf_offset: 0,
-            len: 0,
-            arg1: 0,
-            arg2: 0,
-            user_data,
-            _padding: [0; 14],
-        }
-    }
-    
-    /// Create a timestamp operation
-    pub const fn get_time(user_data: u64) -> Self {
-        Self {
-            opcode: Opcode::GetTime as u8,
-            flags: 0,
-            ioprio: 0,
-            fd: 0,
-            buf_index: 0,
-            buf_offset: 0,
-            len: 0,
-            arg1: 0,
-            arg2: 0,
-            user_data,
-            _padding: [0; 14],
-        }
-    }
-}
-
-// =============================================================================
-// Completion Queue Entry (User View)
-// =============================================================================
-
-/// Completion Queue Entry
-#[repr(C, align(16))]
-#[derive(Debug, Clone, Copy)]
-pub struct Cqe {
-    /// User data from submission
-    pub user_data: u64,
-    /// Result (positive = success, negative = -errno)
-    pub result: i64,
 }
 
 impl Cqe {
-    /// Check if this completion indicates success
-    #[inline]
-    pub fn is_ok(&self) -> bool {
-        self.result >= 0
-    }
-    
-    /// Check if this completion indicates an error
-    #[inline]
-    pub fn is_err(&self) -> bool {
-        self.result < 0
-    }
-    
     /// Get the result as a `SyscallResult`
-    pub fn to_result(&self) -> SyscallResult<i64> {
-        if self.result >= 0 {
-            Ok(self.result)
-        } else {
-            Err(SyscallError::from_raw(-self.result))
+    pub fn to_syscall_result(&self) -> SyscallResult<i32> {
+        match self.into_result() {
+            Ok(val) => Ok(val),
+            Err(e) => Err(SyscallError::from_raw(e as i64)),
         }
     }
 }
 
 // =============================================================================
-// Ring Header
+// Ring Context Layout
 // =============================================================================
 
-/// Ring header for lock-free producer/consumer
-#[repr(C, align(64))]
-pub struct RingHeader {
-    /// Head (consumer reads here)
-    pub head: AtomicU32,
-    /// Tail (producer writes here)
-    pub tail: AtomicU32,
-    /// Ring mask (size - 1)
-    pub ring_mask: u32,
-    /// Flags
-    pub flags: AtomicU32,
-    /// Padding
-    _padding: [u32; 12],
-}
+/// Fixed user-space address where RingContext is mapped
+/// This must match USER_IO_URING_BASE in kernel
+pub const USER_IO_URING_BASE: u64 = 0x2000_0000_0000;
 
-impl RingHeader {
-    /// Check if entries are available
-    #[inline]
-    pub fn has_entries(&self) -> bool {
-        self.head.load(Ordering::Acquire) != self.tail.load(Ordering::Acquire)
-    }
-    
-    /// Get number of available entries
-    #[inline]
-    pub fn available(&self) -> u32 {
-        let tail = self.tail.load(Ordering::Acquire);
-        let head = self.head.load(Ordering::Acquire);
-        tail.wrapping_sub(head)
-    }
-    
-    /// Get number of free slots
-    #[inline]
-    pub fn free_slots(&self) -> u32 {
-        RING_SIZE as u32 - self.available()
-    }
-}
+/// Doorbell offset within ring context
+const DOORBELL_OFFSET: u64 = 0x7000;
 
-/// Ring flags
-pub mod flags {
-    /// Kernel polling active
-    pub const SQPOLL: u32 = 1 << 0;
-    /// Kernel poller needs wakeup
-    pub const NEED_WAKEUP: u32 = 1 << 3;
+/// Ring size
+const RING_SIZE: usize = COMMON_RING_SIZE as usize;
+
+/// RingContext layout in user memory
+///
+/// This mirrors the kernel's memory layout for io_uring V2.
+#[repr(C)]
+struct RingContextLayout {
+    sq_header: RingHeaderV2,        // Offset 0x0000 (1 page)
+    cq_header: RingHeaderV2,        // Offset 0x1000 (1 page)
+    sq_entries: [SubmissionEntryV2; RING_SIZE],  // Offset 0x2000 (4 pages)
+    cq_entries: [CompletionEntryV2; RING_SIZE],  // Offset 0x6000 (3 pages)
+    // Doorbell at offset 0x7000 (1 page)
 }
 
 // =============================================================================
 // Ring Structure (Main API)
 // =============================================================================
 
-/// Ring-based I/O context
+/// Ring-based I/O context (V2)
 ///
-/// This is the main interface for async I/O operations.
+/// This is the main interface for async I/O operations using
+/// V2 io_uring with capability-based security.
 pub struct Ring {
     /// Submission queue header
-    sq: *mut RingHeader,
+    sq: *mut RingHeaderV2,
     /// Completion queue header
-    cq: *mut RingHeader,
+    cq: *mut RingHeaderV2,
     /// Submission queue entries
-    sq_entries: *mut Sqe,
+    sq_entries: *mut SubmissionEntryV2,
     /// Completion queue entries
-    cq_entries: *mut Cqe,
+    cq_entries: *mut CompletionEntryV2,
+    /// Doorbell for zero-syscall mode
+    doorbell: *mut DoorbellLayout,
     /// Ring size
-    #[allow(clippy::struct_field_names)]
+    #[allow(dead_code)]
     ring_size: u32,
     /// SQPOLL enabled
     sqpoll: bool,
@@ -430,167 +199,73 @@ pub struct Ring {
     registered_buffers: [bool; MAX_BUFFERS],
 }
 
-/// Fixed user-space address where `RingContext` is mapped
-/// This must match `USER_RING_CONTEXT_BASE` in kernel
-pub const USER_RING_CONTEXT_BASE: u64 = 0x0000_1000_0000_0000;
-/// Doorbell offset within ring context
-const DOORBELL_OFFSET: u64 = 0x7000;
-
-/// `RingContext` layout in user memory
-/// This mirrors the kernel's `RingContext` structure layout
-#[repr(C)]
-struct RingContextLayout {
-    sq_header: RingHeader,
-    cq_header: RingHeader,
-    sq_entries: [Sqe; RING_SIZE],
-    cq_entries: [Cqe; RING_SIZE],
-    // ... rest of fields (buffer registry, etc.)
-}
-
 impl Ring {
     /// Set up a new ring via syscall
     ///
-    /// This calls the kernel's `ring_setup` syscall which:
-    /// 1. Allocates a `RingContext` in kernel memory
-    /// 2. Maps it to `USER_RING_CONTEXT_BASE` in user address space
-    /// 3. Returns the user-space address
+    /// This calls the kernel's V2 `io_uring_setup` syscall which:
+    /// 1. Allocates ring buffers in kernel memory
+    /// 2. Maps them to USER_IO_URING_BASE in user address space
+    /// 3. Sets up doorbell for zero-syscall mode
     ///
     /// # Errors
     ///
-    /// Returns an error if the syscall fails (e.g., ring already set up).
+    /// Returns an error if the syscall fails.
     #[allow(clippy::cast_possible_truncation)]
     pub fn setup(sqpoll: bool) -> SyscallResult<Self> {
-        // Convert bool to integer explicitly and log it for debugging
-        let flag_val: i64 = i64::from(sqpoll as i8);
-        // Print a simple string describing the flags to avoid macro formatting issues
-        if sqpoll {
-            crate::println("[DEBUG] Ring::setup called: sqpoll=true flag_val=1");
-        } else {
-            crate::println("[DEBUG] Ring::setup called: sqpoll=false flag_val=0");
-        }
-
-        // Call ring setup syscall
+        // Call io_uring_setup V2
+        let entries = COMMON_RING_SIZE as i64;
+        let flags = if sqpoll { 1 } else { 0 };
+        
         let result = unsafe {
-            super::syscall::syscall1(SYSCALL_RING_SETUP, flag_val)
+            crate::syscall::syscall2(SYSCALL_IO_URING_SETUP, entries, flags)
         };
         
         if result < 0 {
             return Err(SyscallError::from_raw(-result));
         }
-    
-
-    
         
-        // The kernel returns the user-space address of the RingContext
-        // SAFETY: We checked result >= 0 above
+        // The kernel returns the base address
         #[allow(clippy::cast_sign_loss)]
         let base_addr = result as u64;
         
-        // The RingContext is mapped at USER_RING_CONTEXT_BASE
-        // Calculate pointers to sub-structures
+        // SAFETY: Kernel has mapped this address properly
+        unsafe { Self::from_address(base_addr, sqpoll) }
+    }
+    
+    /// Create a ring from a raw address
+    ///
+    /// # Safety
+    ///
+    /// The address must point to a valid, mapped RingContext structure.
+    #[must_use]
+    pub unsafe fn from_address(base_addr: u64, sqpoll: bool) -> SyscallResult<Self> {
         let ctx = base_addr as *mut RingContextLayout;
         
-        // SAFETY: Kernel has mapped this address properly
+        // SAFETY: The caller guarantees base_addr points to a valid RingContextLayout
         unsafe {
             let sq = core::ptr::addr_of_mut!((*ctx).sq_header);
             let cq = core::ptr::addr_of_mut!((*ctx).cq_header);
-            let sq_entries = core::ptr::addr_of_mut!((*ctx).sq_entries).cast::<Sqe>();
-            let cq_entries = core::ptr::addr_of_mut!((*ctx).cq_entries).cast::<Cqe>();
+            let sq_entries = core::ptr::addr_of_mut!((*ctx).sq_entries).cast::<SubmissionEntryV2>();
+            let cq_entries = core::ptr::addr_of_mut!((*ctx).cq_entries).cast::<CompletionEntryV2>();
+            let doorbell = (base_addr + DOORBELL_OFFSET) as *mut DoorbellLayout;
             
             Ok(Self {
                 sq,
                 cq,
                 sq_entries,
                 cq_entries,
-                ring_size: RING_SIZE as u32,
+                doorbell,
+                ring_size: COMMON_RING_SIZE,
                 sqpoll,
                 registered_buffers: [false; MAX_BUFFERS],
             })
         }
     }
     
-    /// Get a reference to the doorbell layout
-    #[allow(clippy::cast_ptr_alignment)]
+    /// Get a reference to the doorbell
     #[inline]
-    fn doorbell(&self) -> &crate::io_uring::DoorbellLayout {
-        let base = self.sq as u64; // sq header is at base of mapping
-        let db_ptr = (base + DOORBELL_OFFSET) as *const crate::io_uring::DoorbellLayout;
-        unsafe { &*db_ptr }
-    }
-
-    /// Ring the doorbell (user-space, no syscall)
-    pub fn ring_doorbell(&self) {
-        let db = self.doorbell();
-        db.ring.fetch_add(1, Ordering::Release);
-    }
-
-    /// Check if CQ is ready via doorbell
-    pub fn check_cq_ready(&self) -> bool {
-        let db = self.doorbell();
-        db.cq_ready.load(Ordering::Acquire)
-    }
-
-    /// Clear CQ ready flag on doorbell
-    pub fn clear_cq_ready(&self) {
-        let db = self.doorbell();
-        db.cq_ready.store(false, Ordering::Release);
-    }
-
-    /// Create a ring from a raw address (e.g., passed in RDI at startup)
-    ///
-    /// This is useful when the kernel passes the ring address directly
-    /// to the user program during process creation.
-    ///
-    /// # Safety
-    ///
-    /// The address must point to a valid, mapped `RingContext` structure.
-    #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
-    pub unsafe fn from_address(base_addr: u64, sqpoll: bool) -> Self {
-        let ctx = base_addr as *mut RingContextLayout;
-        
-        // SAFETY: Called function is unsafe, caller guarantees validity
-        unsafe {
-            let sq = core::ptr::addr_of_mut!((*ctx).sq_header);
-            let cq = core::ptr::addr_of_mut!((*ctx).cq_header);
-            let sq_entries = core::ptr::addr_of_mut!((*ctx).sq_entries).cast::<Sqe>();
-            let cq_entries = core::ptr::addr_of_mut!((*ctx).cq_entries).cast::<Cqe>();
-            
-            Self {
-                sq,
-                cq,
-                sq_entries,
-                cq_entries,
-                ring_size: RING_SIZE as u32,
-                sqpoll,
-                registered_buffers: [false; MAX_BUFFERS],
-            }
-        }
-    }
-    
-    /// Create a ring from raw pointers (for testing/debugging)
-    ///
-    /// # Safety
-    ///
-    /// All pointers must be valid and point to properly initialized structures.
-    #[must_use]
-    pub const unsafe fn from_raw(
-        sq: *mut RingHeader,
-        cq: *mut RingHeader,
-        sq_entries: *mut Sqe,
-        cq_entries: *mut Cqe,
-        ring_size: u32,
-        sqpoll: bool,
-    ) -> Self {
-        Self {
-            sq,
-            cq,
-            sq_entries,
-            cq_entries,
-            ring_size,
-            sqpoll,
-            registered_buffers: [false; MAX_BUFFERS],
-        }
+    fn doorbell(&self) -> &DoorbellLayout {
+        unsafe { &*self.doorbell }
     }
     
     /// Submit an operation to the ring
@@ -637,17 +312,14 @@ impl Ring {
     
     /// Kick the kernel to process submissions (for non-SQPOLL mode)
     ///
-    /// In SQPOLL mode, this checks if kernel needs wakeup.
+    /// In SQPOLL mode, checks doorbell's needs_wakeup flag.
     pub fn enter(&self) -> SyscallResult<u64> {
         if self.sqpoll {
-            // Check if kernel poller needs wakeup (either via header flags or doorbell's needs_wakeup)
-            let sq = unsafe { &*self.sq };
-            let needs_wakeup_flag = (sq.flags.load(Ordering::Acquire) & flags::NEED_WAKEUP) != 0;
-            let needs_wakeup_doorbell = self.doorbell().needs_wakeup.load(Ordering::Acquire);
-            if needs_wakeup_flag || needs_wakeup_doorbell {
+            // Check if kernel poller needs wakeup via doorbell
+            if self.doorbell().check_needs_wakeup() {
                 // Kernel poller sleeping, need to wake it
                 unsafe {
-                    let result = super::syscall::syscall1(SYSCALL_RING_ENTER, 0);
+                    let result = crate::syscall::syscall1(SYSCALL_IO_URING_ENTER, 0);
                     if result < 0 {
                         return Err(SyscallError::from_raw(-result));
                     }
@@ -659,7 +331,7 @@ impl Ring {
         } else {
             // Non-SQPOLL: must call syscall
             unsafe {
-                let result = super::syscall::syscall1(SYSCALL_RING_ENTER, 0);
+                let result = crate::syscall::syscall1(SYSCALL_IO_URING_ENTER, 0);
                 if result < 0 {
                     return Err(SyscallError::from_raw(-result));
                 }
@@ -671,13 +343,13 @@ impl Ring {
     /// Check if completions are available
     #[inline]
     pub fn has_completions(&self) -> bool {
-        unsafe { (*self.cq).has_entries() }
+        unsafe { (*self.cq).pending_count() > 0 }
     }
     
     /// Get number of pending completions
     #[inline]
     pub fn pending_completions(&self) -> u32 {
-        unsafe { (*self.cq).available() }
+        unsafe { (*self.cq).pending_count() }
     }
     
     /// Try to get a completion without blocking
@@ -699,6 +371,11 @@ impl Ring {
             // Advance head
             cq.head.store(head.wrapping_add(1), Ordering::Release);
             
+            // Clear doorbell CQ ready flag if no more entries
+            if cq.head.load(Ordering::Acquire) == cq.tail.load(Ordering::Acquire) {
+                self.doorbell().clear_cq_ready();
+            }
+            
             Some(cqe)
         }
     }
@@ -706,6 +383,12 @@ impl Ring {
     /// Wait for a completion (busy-wait)
     pub fn wait_cqe(&mut self) -> Cqe {
         loop {
+            // Check doorbell first for efficiency
+            if self.sqpoll && !self.doorbell().is_cq_ready() {
+                core::hint::spin_loop();
+                continue;
+            }
+            
             if let Some(cqe) = self.try_get_cqe() {
                 return cqe;
             }
@@ -738,8 +421,8 @@ impl Ring {
         // Call kernel to register
         let flags = (if read { 1 } else { 0 }) | (if write { 2 } else { 0 });
         unsafe {
-            let result = super::syscall::syscall4(
-                SYSCALL_RING_REGISTER,
+            let result = crate::syscall::syscall4(
+                SYSCALL_IO_URING_REGISTER,
                 addr as i64,
                 len as i64,
                 flags,
@@ -774,11 +457,11 @@ impl Ring {
         self.sqpoll
     }
     
-    /// Get number of free slots in submission queue (for debugging)
+    /// Get number of free slots in submission queue
     #[inline]
     #[must_use]
     pub fn sq_free_slots(&self) -> u32 {
-        unsafe { (*self.sq).free_slots() }
+        unsafe { (*self.sq).available_count() }
     }
 }
 
@@ -789,18 +472,14 @@ impl Ring {
 /// Builder for creating Ring instances
 pub struct RingBuilder {
     sqpoll: bool,
-    #[allow(dead_code)]
-    ring_size: u32,
 }
 
 impl RingBuilder {
     /// Create a new builder with default settings
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub fn new() -> Self {
         Self {
             sqpoll: false,
-            ring_size: RING_SIZE as u32,
         }
     }
     
@@ -827,30 +506,5 @@ impl Default for RingBuilder {
     }
 }
 
-// =============================================================================
-// Convenience Functions
-// =============================================================================
-
-/// Quick write using ring I/O
-///
-/// This creates a temporary ring, performs the write, and returns.
-/// For repeated operations, create a Ring and reuse it.
-///
-/// # Errors
-///
-/// Returns an error if the operation is not implemented.
-#[allow(unused_variables)]
-pub fn ring_write(fd: u32, buf_index: u16, offset: u32, data: &[u8]) -> SyscallResult<usize> {
-    // This would need a pre-initialized ring
-    // For now, return not implemented
-    Err(SyscallError::from_raw(errno::ENOSYS))
-}
-
-/// Get current timestamp using ring I/O
-///
-/// # Errors
-///
-/// Returns an error if the operation is not implemented.
-pub fn ring_timestamp() -> SyscallResult<u64> {
-    Err(SyscallError::from_raw(errno::ENOSYS))
-}
+// Note: Ring is not Send/Sync due to raw pointers
+// This is intentional as it should only be used from the creating thread

@@ -1,19 +1,8 @@
-// kernel/src/abi/io_uring.rs
-//! io_uring-style ABI definitions
+// kernel/src/abi/io_uring_common.rs
+//! Common io_uring-style ABI definitions
 //!
-//! Shared data structures for asynchronous I/O between user space and kernel space.
-//!
-//! # Memory Layout
-//!
-//! All structures are `#[repr(C)]` for stable ABI across Rust versions
-//! and potential future C interoperability.
-//!
-//! # Safety Invariants
-//!
-//! - All atomic operations use appropriate memory ordering
-//! - Ring indices are always masked with `RING_MASK` before use
-//! - User space can only modify SQ tail and CQ head
-//! - Kernel can only modify SQ head and CQ tail
+//! Shared data structures for asynchronous I/O between user space and kernel space,
+//! used by both V1 (legacy) and V2 (capability-based) io_uring protocols.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -137,12 +126,3 @@ impl core::ops::BitAnd for IoUringFlags {
         Self(self.0 & rhs.0)
     }
 }
-
-// SubmissionEntry removed (Legacy V1)
-
-// CompletionEntry removed (Legacy V1)
-
-// RingHeader removed (Legacy V1)
-
-// Compile-time size assertions
-// Tests removed (Legacy V1)

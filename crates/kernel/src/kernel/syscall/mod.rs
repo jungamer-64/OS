@@ -754,147 +754,7 @@ pub fn sys_munmap(addr: u64, len: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6
 ///
 /// # Returns
 /// * Success: Returns addresses packed in a structure
-/// * Error: EINVAL, ENOMEM
-///
-/// # Note
-/// Currently, we use a fixed ring size of 256. The entries parameter
-/// is validated but ignored.
-pub fn sys_io_uring_setup(entries: u64, _params_ptr: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    use crate::kernel::process::PROCESS_TABLE;
-    use crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR;
-    use crate::kernel::mm::user_paging::USER_IO_URING_BASE;
-    use x86_64::structures::paging::{Page, PageTableFlags, Mapper, FrameAllocator, Size4KiB, OffsetPageTable};
-    use crate::abi::io_uring::RING_SIZE;
-    
-    // Validate entries (must be power of 2, reasonable size)
-    if entries == 0 || entries > 256 || !entries.is_power_of_two() {
-        debug_println!("[SYSCALL] io_uring_setup: invalid entries {}", entries);
-        return EINVAL;
-    }
-    
-    // Get frame allocator first (needed for io_uring allocation)
-    let mut allocator_lock = BOOT_INFO_ALLOCATOR.lock();
-    let frame_allocator = match allocator_lock.as_mut() {
-        Some(alloc) => alloc,
-        None => return ENOMEM,
-    };
-    
-    let mut table = PROCESS_TABLE.lock();
-    let process = match table.current_process_mut() {
-        Some(p) => p,
-        None => return ESRCH,
-    };
-    
-    // Initialize io_uring context (allocates page-aligned buffers)
-    let ctx = match process.io_uring_setup(frame_allocator) {
-        Some(ctx) => ctx,
-        None => {
-            debug_println!("[SYSCALL] io_uring_setup: failed to allocate io_uring context");
-            return ENOMEM;
-        }
-    };
-    
-    // Get all the ring buffer addresses (page-aligned kernel virtual addresses)
-    let sq_header_addr = ctx.sq_header_addr();
-    let cq_header_addr = ctx.cq_header_addr();
-    let sq_entries_addr = ctx.sq_entries_addr();
-    let cq_entries_addr = ctx.cq_entries_addr();
-    
-    debug_println!("[SYSCALL] io_uring_setup: kernel sq_header={:#x}, sq_entries={:#x}", 
-        sq_header_addr, sq_entries_addr);
-    debug_println!("[SYSCALL] io_uring_setup: kernel cq_header={:#x}, cq_entries={:#x}",
-        cq_header_addr, cq_entries_addr);
-    
-    // Now we need to map these kernel addresses to user page table
-    // We'll map them to a fixed user-space address range
-    let phys_mem_offset = x86_64::VirtAddr::new(
-        crate::kernel::mm::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed)
-    );
-    
-    // Get current (user) page table
-    let (user_cr3_frame, _) = x86_64::registers::control::Cr3::read();
-    let user_l4_ptr = (phys_mem_offset + user_cr3_frame.start_address().as_u64()).as_mut_ptr();
-    let user_l4 = unsafe { &mut *user_l4_ptr };
-    let mut user_mapper = unsafe { OffsetPageTable::new(user_l4, phys_mem_offset) };
-    
-    // Layout in user space at USER_IO_URING_BASE (0x2000_0000_0000):
-    // Offset 0x0000: sq_header (32 bytes, 1 page)
-    // Offset 0x1000: cq_header (32 bytes, 1 page)
-    // Offset 0x2000: sq_entries (256 * 64 = 16384 bytes, 4 pages)
-    // Offset 0x6000: cq_entries (256 * 16 = 4096 bytes, 1 page)
-    
-    let user_sq_header = USER_IO_URING_BASE;
-    let user_cq_header = USER_IO_URING_BASE + 0x1000;
-    let user_sq_entries = USER_IO_URING_BASE + 0x2000;
-    let user_cq_entries = USER_IO_URING_BASE + 0x6000;
-    
-    // Map each region
-    let regions = [
-        (sq_header_addr, user_sq_header, 32usize, "sq_header"),
-        (cq_header_addr, user_cq_header, 32, "cq_header"),
-        (sq_entries_addr, user_sq_entries, (RING_SIZE as usize) * 64, "sq_entries"),
-        (cq_entries_addr, user_cq_entries, (RING_SIZE as usize) * 16, "cq_entries"),
-    ];
-    
-    for (kernel_addr, user_addr, size, name) in regions.iter() {
-        let result = map_kernel_region_to_user_addr(
-            &mut user_mapper,
-            *kernel_addr,
-            *user_addr,
-            *size,
-            frame_allocator,
-            phys_mem_offset,
-        );
-        if result.is_err() {
-            debug_println!("[SYSCALL] io_uring_setup: failed to map {}", name);
-            return ENOMEM;
-        }
-    }
-    
-    debug_println!(
-        "[SYSCALL] io_uring_setup: mapped to user space sq_header={:#x}",
-        user_sq_header
-    );
-    
-    // Map doorbell page for user-space notification (zero-syscall mode)
-    // Allocate a doorbell page backed by a physical frame
-    let (doorbell_id, kernel_doorbell_ptr) = match crate::kernel::io_uring::doorbell::manager().allocate(frame_allocator) {
-        Some(p) => p,
-        None => {
-            debug_println!("[SYSCALL] io_uring_setup: failed to allocate doorbell");
-            return ENOMEM;
-        }
-    };
-
-    let user_doorbell = USER_IO_URING_BASE + 0x7000u64; // Next page after cq_entries
-
-    if map_kernel_region_to_user_addr(
-        &mut user_mapper,
-        kernel_doorbell_ptr as u64,
-        user_doorbell,
-        4096usize,
-        frame_allocator,
-        phys_mem_offset,
-    ).is_err() {
-        debug_println!("[SYSCALL] io_uring_setup: failed to map doorbell to user space");
-        return ENOMEM;
-    }
-
-    debug_println!("[SYSCALL] io_uring_setup: mapped doorbell to user {:#x}", user_doorbell);
-
-    // Set the doorbell pointer on the IoUringContext so kernel can write CQ_READY
-    ctx.set_doorbell(kernel_doorbell_ptr);
-
-    // Register with SQPOLL if the io_uring context requested polling
-    if ctx.is_sqpoll_enabled() {
-        // Note: We register ring id 0 for now (single ring per process)
-        let sq_tail_addr = sq_header_addr + 4; // tail is second field (AtomicU32) at offset 4
-        crate::kernel::io_uring::sqpoll::register_ring(process.pid(), 0, sq_tail_addr, kernel_doorbell_ptr as u64);
-    }
-
-    // Return the user space SQ header address
-    user_sq_header as SyscallResult
-}
+// sys_io_uring_setup (V1) removed - see V2 implementation at line 1130+
 
 /// Maps a kernel heap region to a specific user-space address.
 ///
@@ -1356,7 +1216,7 @@ static SYSCALL_TABLE: &[SyscallHandler] = &[
     sys_mmap,     // 9
     sys_munmap,   // 10
     sys_pipe,     // 11
-    sys_io_uring_setup,     // 12 - io_uring initialization
+    sys_ni_syscall,         // 12 - sys_io_uring_setup (removed)
     sys_ni_syscall,         // 13 - reserved
     sys_ni_syscall,         // 14 - reserved
 ];

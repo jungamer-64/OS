@@ -28,12 +28,7 @@ pub const SYS_MMAP: u64 = 9;
 pub const SYS_MUNMAP: u64 = 10;
 /// System call number for pipe operation
 pub const SYS_PIPE: u64 = 11;
-/// System call number for `io_uring_setup`
-pub const SYS_IO_URING_SETUP: u64 = 12;
-/// System call number for `io_uring_enter`
-pub const SYS_IO_URING_ENTER: u64 = 13;
-/// System call number for `io_uring_register`
-pub const SYS_IO_URING_REGISTER: u64 = 14;
+
 
 // ============================================================================
 // Fast IPC Syscalls (Strategy 1-3)
@@ -423,90 +418,6 @@ pub fn pipe(pipefd: &mut [u64; 2]) -> SyscallResult<()> {
     syscall_result(ret).map(|_| ())
 }
 
-// ============================================================================
-// io_uring System Calls
-// ============================================================================
-
-/// `io_uring_setup` - Initialize io_uring for the current process
-///
-/// # Arguments
-/// * `entries` - Number of entries (must be power of 2, max 256)
-///
-/// # Returns
-/// Address of the SQ header (for future mmap)
-///
-/// # Errors
-/// * `EINVAL` - Invalid entries count
-/// * `ENOMEM` - Out of memory
-/// * `ESRCH` - Process not found
-pub fn io_uring_setup(entries: u32) -> SyscallResult<u64> {
-    let ret = unsafe {
-        syscall6(SYS_IO_URING_SETUP, u64::from(entries), 0, 0, 0, 0, 0)
-    };
-    syscall_result(ret).map(|addr| addr as u64)
-}
-
-/// `io_uring_enter` - Submit I/O and optionally wait for completions
-///
-/// This is the main io_uring syscall for batched I/O operations.
-///
-/// # Arguments
-/// * `fd` - io_uring file descriptor (currently ignored)
-/// * `to_submit` - Number of submissions to process (0 = all available)
-/// * `min_complete` - Minimum completions to wait for (0 = non-blocking)
-/// * `flags` - Operation flags
-///
-/// # Returns
-/// Number of completions available in the CQ
-///
-/// # Errors
-/// * `EINVAL` - io_uring not set up
-/// * `ESRCH` - Process not found
-pub fn io_uring_enter(fd: u32, to_submit: u32, min_complete: u32, flags: u32) -> SyscallResult<u32> {
-    let ret = unsafe {
-        syscall6(
-            SYS_IO_URING_ENTER,
-            u64::from(fd),
-            u64::from(to_submit),
-            u64::from(min_complete),
-            u64::from(flags),
-            0,
-            0,
-        )
-    };
-    syscall_result(ret).map(|n| n as u32)
-}
-
-/// `io_uring_register` - Register resources with io_uring
-///
-/// Used to register buffers or file descriptors for zero-copy operations.
-/// Currently not implemented.
-///
-/// # Arguments
-/// * `fd` - io_uring file descriptor
-/// * `opcode` - Registration operation
-/// * `arg` - Operation-specific argument
-/// * `nr_args` - Number of arguments
-///
-/// # Returns
-/// Success (0) or error
-///
-/// # Errors
-/// * `ENOSYS` - Not implemented
-pub fn io_uring_register(fd: u32, opcode: u32, arg: u64, nr_args: u32) -> SyscallResult<()> {
-    let ret = unsafe {
-        syscall6(
-            SYS_IO_URING_REGISTER,
-            u64::from(fd),
-            u64::from(opcode),
-            arg,
-            u64::from(nr_args),
-            0,
-            0,
-        )
-    };
-    syscall_result(ret).map(|_| ())
-}
 
 // ============================================================================
 // Fast IPC System Calls (Strategy 1-3)

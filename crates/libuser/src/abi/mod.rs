@@ -8,6 +8,8 @@
 pub mod native;
 pub mod error;
 pub mod result;
+pub mod io_uring_common;
+pub mod io_uring_v2;
 
 pub use native::{
     SyscallNumber, SyscallCategory, ResourceId, ResourceMarker,
@@ -17,3 +19,4 @@ pub use native::{
 
 pub use error::{SyscallError, ErrorCategory};
 pub use result::{SyscallResult, AbiResult};
+pub use io_uring_common::{OpCode, IoUringFlags, RING_MASK, RING_SIZE};

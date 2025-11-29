@@ -55,7 +55,7 @@ pub use registered_buffers::{RegisteredBufferTable, RegisteredBufferStats};
 pub use handlers_v2::dispatch_sqe_v2;
 pub use doorbell::{Doorbell, DoorbellManager};
 
-use crate::abi::io_uring::{RING_SIZE, RING_MASK};
+use crate::abi::io_uring_common::{RING_SIZE, RING_MASK};
 
 /// Initialize the io_uring subsystem
 pub fn init() {

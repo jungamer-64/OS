@@ -283,10 +283,8 @@ impl Drop for IoUringFuture {
 
 /// 操作を実際の io_uring にサブミット
 fn submit_op_to_ring(op: &IoUringOp, user_data: u64) -> i32 {
-    use crate::kernel::io_uring::handlers::dispatch_sqe;
     use crate::kernel::io_uring::handlers_v2::dispatch_sqe_v2;
     use crate::kernel::process::PROCESS_TABLE;
-    use crate::abi::io_uring::SubmissionEntry;
     
     // Get the current process's capability table
     let table = PROCESS_TABLE.lock();
@@ -332,45 +330,13 @@ fn submit_op_to_ring(op: &IoUringOp, user_data: u64) -> i32 {
             complete_operation(user_data, result);
             return 0;
         }
-        _ => {} // Fall through to V1
+        _ => {
+            // Unsupported V1 operation - shouldn't happen
+            debug_println!("[IO_URING] Unsupported V1 operation: {:?}", op);
+            complete_operation(user_data, -38); // ENOSYS
+            return -38;
+        }
     }
-
-    // SQE を構築 (V1)
-    let sqe = match op {
-        IoUringOp::Nop => SubmissionEntry::nop(user_data),
-        
-        IoUringOp::Read { fd, buf, len } => {
-            SubmissionEntry::read(*fd, *buf as u64, *len, 0, user_data)
-        }
-        
-        IoUringOp::Write { fd, buf, len } => {
-            SubmissionEntry::write(*fd, *buf as u64, *len, 0, user_data)
-        }
-        
-        IoUringOp::Close { fd } => {
-            SubmissionEntry::close(*fd, user_data)
-        }
-        
-        IoUringOp::Mmap { hint, len } => {
-            SubmissionEntry::mmap(*hint, *len as u32, user_data)
-        }
-        
-        IoUringOp::Munmap { addr, len } => {
-            SubmissionEntry::munmap(*addr, *len as u32, user_data)
-        }
-
-        _ => unreachable!("V2 ops handled above"),
-    };
-    
-    // 即座に実行して結果を完了に書き込む
-    // 注意: 本来は io_uring キューにサブミットして非同期実行すべきだが、
-    // 現在の実装ではシンプルに同期実行してから完了通知を行う
-    let result = dispatch_sqe(&sqe, cap_table);
-    
-    // 完了を通知
-    complete_operation(user_data, result.result);
-    
-    0 // サブミット成功
 }
 
 // ============================================================================
