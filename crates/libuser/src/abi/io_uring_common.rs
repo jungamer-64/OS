@@ -1,4 +1,4 @@
-// kernel/src/abi/io_uring_common.rs
+// libuser/src/abi/io_uring_common.rs
 //! Common io_uring-style ABI definitions
 //!
 //! Shared data structures for asynchronous I/O between user space and kernel space,

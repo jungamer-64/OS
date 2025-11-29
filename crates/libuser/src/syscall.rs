@@ -1,145 +1,68 @@
+// libuser/src/syscall.rs
 //! Low-level system call interface
 //!
 //! This module provides direct wrappers around the kernel's system calls.
 //! For higher-level APIs, see the parent modules (io, process, mem).
 
+use crate::abi::error::SyscallError;
+
 /// System call numbers
-/// System call number for write operation
 pub const SYS_WRITE: u64 = 0;
-/// System call number for read operation
 pub const SYS_READ: u64 = 1;
-/// System call number for exit operation
 pub const SYS_EXIT: u64 = 2;
-/// System call number for getpid operation
 pub const SYS_GETPID: u64 = 3;
-/// System call number for alloc operation (deprecated - use MMAP)
 pub const SYS_ALLOC: u64 = 4;     // Deprecated - use MMAP
-/// System call number for dealloc operation (deprecated - use MUNMAP)
 pub const SYS_DEALLOC: u64 = 5;   // Deprecated - use MUNMAP
-/// System call number for fork operation
 pub const SYS_FORK: u64 = 6;
-/// System call number for exec operation
 pub const SYS_EXEC: u64 = 7;
-/// System call number for wait operation
 pub const SYS_WAIT: u64 = 8;
-/// System call number for mmap operation
 pub const SYS_MMAP: u64 = 9;
-/// System call number for munmap operation
 pub const SYS_MUNMAP: u64 = 10;
-/// System call number for pipe operation
 pub const SYS_PIPE: u64 = 11;
 
-
-// ============================================================================
-// Fast IPC Syscalls (Strategy 1-3)
-// ============================================================================
-
-/// Benchmark syscall (minimal overhead measurement)
-pub const SYS_BENCHMARK: u64 = 1000;
-/// Fast ring poll (SQPOLL kick)
-pub const SYS_FAST_POLL: u64 = 1001;
-/// Fast I/O setup (syscall-less rings)
-pub const SYS_FAST_IO_SETUP: u64 = 1002;
-
-// ============================================================================
-// Ring-based Syscall System (Revolutionary Architecture)
-// ============================================================================
-
-/// Ring enter syscall (doorbell-only, no register arguments)
-pub const SYS_RING_ENTER: u64 = 2000;
-/// Ring register buffer syscall
-pub const SYS_RING_REGISTER: u64 = 2001;
-/// Ring setup syscall
-pub const SYS_RING_SETUP: u64 = 2002;
-
-/// System call error codes (Linux-compatible)
-pub mod errno {
-    /// Operation not permitted
-    pub const EPERM: i64 = -1;
-    /// No such file or directory
-    pub const ENOENT: i64 = -2;
-    /// No such process
-    pub const ESRCH: i64 = -3;
-    /// Interrupted system call
-    pub const EINTR: i64 = -4;
-    /// I/O error
-    pub const EIO: i64 = -5;
-    /// Bad file descriptor
-    pub const EBADF: i64 = -9;
-    /// No child processes
-    pub const ECHILD: i64 = -10;
-    /// Try again / Would block
-    pub const EAGAIN: i64 = -11;
-    /// Out of memory
-    pub const ENOMEM: i64 = -12;
-    /// Bad address
-    pub const EFAULT: i64 = -14;
-    /// Invalid argument
-    pub const EINVAL: i64 = -22;
-    /// No space left on device
-    pub const ENOSPC: i64 = -28;
-    /// Broken pipe
-    pub const EPIPE: i64 = -32;
-    /// Function not implemented
-    pub const ENOSYS: i64 = -38;
-}
+// V2 io_uring syscalls
+pub const SYS_IO_URING_SETUP: u64 = 2002;
+pub const SYS_IO_URING_ENTER: u64 = 2003;
+pub const SYS_CAPABILITY_DUP: u64 = 2004;
+pub const SYS_CAPABILITY_REVOKE: u64 = 2005;
 
 /// System call result type
 pub type SyscallResult<T> = Result<T, SyscallError>;
 
-/// System call error type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SyscallError {
-    code: i64,
+/// Convert errno (negative) to SyscallError
+fn errno_to_syscall_error(errno: i64) -> SyscallError {
+    match errno {
+        -1 => SyscallError::NotPermitted,      // EPERM
+        -2 => SyscallError::NotFound,          // ENOENT
+        -3 => SyscallError::NoProcess,         // ESRCH
+        -4 => SyscallError::Interrupted,       // EINTR
+        -5 => SyscallError::IoError,           // EIO
+        -9 => SyscallError::InvalidHandle,     // EBADF
+        -11 => SyscallError::WouldBlock,       // EAGAIN
+        -12 => SyscallError::OutOfMemory,      // ENOMEM
+        -13 => SyscallError::AccessDenied,     // EACCES
+        -14 => SyscallError::BadAddress,       // EFAULT
+        -16 => SyscallError::Busy,             // EBUSY
+        -17 => SyscallError::AlreadyExists,    // EEXIST
+        -22 => SyscallError::InvalidArgument,  // EINVAL
+        -24 => SyscallError::TableFull,        // EMFILE
+        -32 => SyscallError::BrokenPipe,       // EPIPE
+        -34 => SyscallError::OutOfRange,       // ERANGE
+        -38 => SyscallError::NotSupported,     // ENOSYS
+        -104 => SyscallError::ConnectionReset, // ECONNRESET
+        -110 => SyscallError::Timeout,         // ETIMEDOUT
+        -111 => SyscallError::ConnectionRefused, // ECONNREFUSED
+        _ => SyscallError::Internal,           // Fallback
+    }
 }
 
-impl SyscallError {
-    /// Create a new syscall error from an error code
-    #[must_use]
-    pub const fn new(code: i64) -> Self {
-        Self { code }
-    }
-    
-    /// Create a syscall error from raw value (for `ring_io` compatibility)
-    #[must_use]
-    pub const fn from_raw(code: i64) -> Self {
-        Self { code }
-    }
-
-    /// Get the error code
-    #[must_use]
-    pub const fn code(self) -> i64 {
-        self.code
-    }
-
-    /// Check if this is a specific error
-    #[must_use]
-    pub const fn is(self, errno: i64) -> bool {
-        self.code == errno
-    }
-
-    /// Get a human-readable description of the error
-    #[must_use]
-    #[allow(clippy::wildcard_imports)]
-    pub const fn description(self) -> &'static str {
-        use errno::*;
-        match self.code {
-            EPERM => "Operation not permitted",
-            ENOENT => "No such file or directory",
-            ESRCH => "No such process",
-            EINTR => "Interrupted system call",
-            EIO => "I/O error",
-            EBADF => "Bad file descriptor",
-            ECHILD => "No child processes",
-            EAGAIN => "Resource temporarily unavailable",
-            ENOMEM => "Out of memory",
-            EFAULT => "Bad address",
-            EINVAL => "Invalid argument",
-            ENOSPC => "No space left on device",
-            EPIPE => "Broken pipe",
-            ENOSYS => "Function not implemented",
-            _ => "Unknown error",
-        }
+/// Helper to convert syscall result to Result type
+#[inline]
+fn syscall_result(ret: i64) -> SyscallResult<i64> {
+    if ret >= 0 {
+        Ok(ret)
+    } else {
+        Err(errno_to_syscall_error(ret))
     }
 }
 
@@ -149,7 +72,7 @@ impl SyscallError {
 /// This function is unsafe because it performs a raw system call.
 /// The caller must ensure that the arguments are valid for the given syscall number.
 #[inline(always)]
-unsafe fn syscall6(num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u64, arg6: u64) -> i64 {
+pub unsafe fn syscall6(num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u64, arg6: u64) -> i64 {
     let ret: i64;
     unsafe {
         core::arch::asm!(
@@ -174,63 +97,31 @@ unsafe fn syscall6(num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u
 }
 
 /// Perform a system call with 1 argument
-///
-/// # Safety
-/// This function is unsafe because it performs a raw system call.
 #[inline]
 #[must_use]
-#[allow(clippy::cast_sign_loss)]
 pub unsafe fn syscall1(num: u64, arg1: i64) -> i64 {
-    // Temporary debug instrumentation: log when ring setup syscall is invoked
-    if num == SYS_RING_SETUP {
-        // Avoid complex formatting to minimize allocations.
-        crate::println!("[DEBUG] libuser::syscall1: SYS_RING_SETUP invoked");
-        crate::println!("[DEBUG] libuser::syscall1: arg1 (raw) = {}", arg1);
-    }
     unsafe { syscall6(num, arg1 as u64, 0, 0, 0, 0, 0) }
 }
 
 /// Perform a system call with 2 arguments
-///
-/// # Safety
-/// This function is unsafe because it performs a raw system call.
 #[inline]
 #[must_use]
-#[allow(clippy::cast_sign_loss)]
 pub unsafe fn syscall2(num: u64, arg1: i64, arg2: i64) -> i64 {
     unsafe { syscall6(num, arg1 as u64, arg2 as u64, 0, 0, 0, 0) }
 }
 
 /// Perform a system call with 3 arguments
-///
-/// # Safety
-/// This function is unsafe because it performs a raw system call.
 #[inline]
 #[must_use]
-#[allow(clippy::cast_sign_loss)]
 pub unsafe fn syscall3(num: u64, arg1: i64, arg2: i64, arg3: i64) -> i64 {
     unsafe { syscall6(num, arg1 as u64, arg2 as u64, arg3 as u64, 0, 0, 0) }
 }
 
 /// Perform a system call with 4 arguments
-///
-/// # Safety
-/// This function is unsafe because it performs a raw system call.
 #[inline]
 #[must_use]
-#[allow(clippy::cast_sign_loss)]
 pub unsafe fn syscall4(num: u64, arg1: i64, arg2: i64, arg3: i64, arg4: i64) -> i64 {
     unsafe { syscall6(num, arg1 as u64, arg2 as u64, arg3 as u64, arg4 as u64, 0, 0) }
-}
-
-/// Helper to convert syscall result to Result type
-#[inline]
-fn syscall_result(ret: i64) -> SyscallResult<i64> {
-    if ret >= 0 {
-        Ok(ret)
-    } else {
-        Err(SyscallError::new(ret))
-    }
 }
 
 // ============================================================================
@@ -238,20 +129,6 @@ fn syscall_result(ret: i64) -> SyscallResult<i64> {
 // ============================================================================
 
 /// sys_write - Write to file descriptor
-///
-/// # Arguments
-/// * `fd` - File descriptor
-/// * `buf` - Buffer to write
-///
-/// # Returns
-/// Number of bytes written, or error
-///
-/// # Errors
-/// * `EBADF` - Invalid file descriptor
-/// * `EFAULT` - Invalid buffer pointer
-/// * `EINVAL` - Invalid length
-/// * `EIO` - I/O error
-/// * `EPIPE` - Broken pipe
 pub fn write(fd: u64, buf: &[u8]) -> SyscallResult<usize> {
     let ret = unsafe {
         syscall6(SYS_WRITE, fd, buf.as_ptr() as u64, buf.len() as u64, 0, 0, 0)
@@ -260,19 +137,6 @@ pub fn write(fd: u64, buf: &[u8]) -> SyscallResult<usize> {
 }
 
 /// sys_read - Read from file descriptor
-///
-/// # Arguments
-/// * `fd` - File descriptor
-/// * `buf` - Buffer to read into
-///
-/// # Returns
-/// Number of bytes read, or error (0 = EOF)
-///
-/// # Errors
-/// * `EBADF` - Invalid file descriptor
-/// * `EFAULT` - Invalid buffer pointer
-/// * `EIO` - I/O error
-/// * `EAGAIN` - Would block (non-blocking I/O)
 pub fn read(fd: u64, buf: &mut [u8]) -> SyscallResult<usize> {
     let ret = unsafe {
         syscall6(SYS_READ, fd, buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0)
@@ -281,11 +145,6 @@ pub fn read(fd: u64, buf: &mut [u8]) -> SyscallResult<usize> {
 }
 
 /// sys_exit - Exit current process
-///
-/// This function never returns.
-///
-/// # Arguments
-/// * `code` - Exit code
 pub fn exit(code: i32) -> ! {
     unsafe {
         syscall6(SYS_EXIT, code as u64, 0, 0, 0, 0, 0);
@@ -294,9 +153,6 @@ pub fn exit(code: i32) -> ! {
 }
 
 /// sys_getpid - Get process ID
-///
-/// # Returns
-/// Current process ID
 pub fn getpid() -> u64 {
     let ret = unsafe {
         syscall6(SYS_GETPID, 0, 0, 0, 0, 0, 0)
@@ -305,14 +161,6 @@ pub fn getpid() -> u64 {
 }
 
 /// sys_fork - Fork process
-///
-/// # Returns
-/// * In parent: Child PID
-/// * In child: 0
-/// * On error: Error code
-///
-/// # Errors
-/// * `ENOMEM` - Out of memory
 pub fn fork() -> SyscallResult<u64> {
     let ret = unsafe {
         syscall6(SYS_FORK, 0, 0, 0, 0, 0, 0)
@@ -321,38 +169,15 @@ pub fn fork() -> SyscallResult<u64> {
 }
 
 /// sys_exec - Execute program
-///
-/// This function only returns on error.
-///
-/// # Arguments
-/// * `path` - Path to program (currently ignored)
-///
-/// # Returns
-/// Only returns on error
-///
-/// # Errors
-/// * `ENOMEM` - Out of memory
 pub fn exec(path: &str) -> SyscallError {
     let ret = unsafe {
         syscall6(SYS_EXEC, path.as_ptr() as u64, path.len() as u64, 0, 0, 0, 0)
     };
     // exec should not return on success
-    SyscallError::new(ret)
+    errno_to_syscall_error(ret)
 }
 
 /// sys_wait - Wait for child process
-///
-/// # Arguments
-/// * `pid` - Process ID to wait for (currently ignored, waits for any child)
-/// * `status` - Optional pointer to store exit status
-///
-/// # Returns
-/// PID of terminated child
-///
-/// # Errors
-/// * `ECHILD` - No child processes
-/// * `ESRCH` - Process not found
-/// * `EFAULT` - Invalid status pointer
 pub fn wait(pid: i64, status: Option<&mut i32>) -> SyscallResult<u64> {
     let status_ptr = status.map_or(0, |s| s as *mut i32 as u64);
     let ret = unsafe {
@@ -362,19 +187,6 @@ pub fn wait(pid: i64, status: Option<&mut i32>) -> SyscallResult<u64> {
 }
 
 /// sys_mmap - Map memory
-///
-/// # Arguments
-/// * `addr` - Desired address (0 = kernel chooses)
-/// * `len` - Length in bytes
-/// * `prot` - Protection flags (currently ignored)
-/// * `flags` - Mapping flags (currently ignored)
-///
-/// # Returns
-/// Address of mapped memory
-///
-/// # Errors
-/// * `EINVAL` - Invalid arguments
-/// * `ENOMEM` - Out of memory
 pub fn mmap(addr: u64, len: u64, prot: u64, flags: u64) -> SyscallResult<u64> {
     let ret = unsafe {
         syscall6(SYS_MMAP, addr, len, prot, flags, 0, 0)
@@ -383,16 +195,6 @@ pub fn mmap(addr: u64, len: u64, prot: u64, flags: u64) -> SyscallResult<u64> {
 }
 
 /// sys_munmap - Unmap memory
-///
-/// # Arguments
-/// * `addr` - Address to unmap
-/// * `len` - Length in bytes
-///
-/// # Returns
-/// Success (0) or error
-///
-/// # Errors
-/// * `EINVAL` - Invalid arguments
 pub fn munmap(addr: u64, len: u64) -> SyscallResult<()> {
     let ret = unsafe {
         syscall6(SYS_MUNMAP, addr, len, 0, 0, 0, 0)
@@ -401,16 +203,6 @@ pub fn munmap(addr: u64, len: u64) -> SyscallResult<()> {
 }
 
 /// sys_pipe - Create a pipe
-///
-/// # Arguments
-/// * `pipefd` - Array to store file descriptors [read_fd, write_fd]
-///
-/// # Returns
-/// Success (0) or error
-///
-/// # Errors
-/// * `EFAULT` - Invalid pipefd pointer
-/// * `ESRCH` - Process not found
 pub fn pipe(pipefd: &mut [u64; 2]) -> SyscallResult<()> {
     let ret = unsafe {
         syscall6(SYS_PIPE, pipefd.as_mut_ptr() as u64, 0, 0, 0, 0, 0)
@@ -418,161 +210,40 @@ pub fn pipe(pipefd: &mut [u64; 2]) -> SyscallResult<()> {
     syscall_result(ret).map(|_| ())
 }
 
-
 // ============================================================================
-// Fast IPC System Calls (Strategy 1-3)
+// V2 io_uring Wrappers
 // ============================================================================
 
-/// Benchmark modes for `sys_benchmark`
-pub mod benchmark_mode {
-    /// Minimal syscall (just return)
-    pub const MINIMAL: u64 = 0;
-    /// Read timestamp (rdtsc)
-    pub const TIMESTAMP: u64 = 1;
-    /// Memory fence
-    pub const FENCE: u64 = 2;
-    /// Check shared ring
-    pub const RING_CHECK: u64 = 3;
-}
-
-/// Fast I/O setup flags
-pub mod fast_io_flags {
-    /// Enable kernel polling (SQPOLL mode)
-    pub const SQPOLL: u64 = 1 << 0;
-    /// Enable I/O completion polling
-    pub const IOPOLL: u64 = 1 << 1;
-}
-
-/// `sys_benchmark` - Minimal syscall for measuring overhead
-///
-/// This syscall does minimal work to measure raw syscall latency.
-///
-/// # Arguments
-/// * `mode` - Benchmark mode:
-///   - 0: Minimal (just return)
-///   - 1: Read timestamp (rdtsc)
-///   - 2: Memory fence
-///   - 3: Check shared ring
-///
-/// # Returns
-/// * Mode 0: 0
-/// * Mode 1: Current CPU timestamp
-/// * Mode 2: 0
-/// * Mode 3: Number of pending operations
-///
-/// # Errors
-/// * `EINVAL` - Invalid mode
-///
-/// # Example
-/// ```
-/// use libuser::syscall::{benchmark, benchmark_mode};
-///
-/// // Measure syscall overhead
-/// let start = benchmark(benchmark_mode::TIMESTAMP).unwrap();
-/// let _ = benchmark(benchmark_mode::MINIMAL);
-/// let end = benchmark(benchmark_mode::TIMESTAMP).unwrap();
-/// let overhead = end - start;
-/// ```
-#[allow(clippy::cast_sign_loss)]
-pub fn benchmark(mode: u64) -> SyscallResult<u64> {
+/// sys_io_uring_setup - Setup io_uring context
+pub fn io_uring_setup(entries: u32, flags: u32) -> SyscallResult<u64> {
     let ret = unsafe {
-        syscall6(SYS_BENCHMARK, mode, 0, 0, 0, 0, 0)
+        syscall6(SYS_IO_URING_SETUP, entries as u64, flags as u64, 0, 0, 0, 0)
     };
-    syscall_result(ret).map(|v| v as u64)
+    syscall_result(ret).map(|addr| addr as u64)
 }
 
-/// `sys_fast_poll` - Poll fast I/O rings without blocking
-///
-/// This is the "kick" syscall for SQPOLL mode. When the kernel's
-/// polling thread is sleeping, this wakes it up to process submissions.
-///
-/// In high-throughput scenarios with SQPOLL enabled, this syscall
-/// may not be needed at all since the kernel continuously polls.
-///
-/// # Returns
-/// Number of operations processed
-///
-/// # Errors
-/// * `ESRCH` - Process not found
-#[allow(clippy::cast_sign_loss)]
-pub fn fast_poll() -> SyscallResult<u64> {
+/// sys_io_uring_enter - Submit and wait for completion
+pub fn io_uring_enter(sqe_addr: u64, cqe_addr: u64) -> SyscallResult<()> {
     let ret = unsafe {
-        syscall6(SYS_FAST_POLL, 0, 0, 0, 0, 0, 0)
+        syscall6(SYS_IO_URING_ENTER, sqe_addr, cqe_addr, 0, 0, 0, 0)
     };
-    syscall_result(ret).map(|v| v as u64)
+    syscall_result(ret).map(|_| ())
 }
 
-/// `sys_fast_io_setup` - Set up syscall-less I/O rings
-///
-/// Creates shared memory ring buffers for syscall-less I/O operations.
-/// After setup, userspace can submit I/O requests by writing to the
-/// submission queue without executing syscall instructions.
-///
-/// # Arguments
-/// * `flags` - Configuration flags:
-///   - Bit 0 (SQPOLL): Enable kernel polling
-///   - Bit 1 (IOPOLL): Enable completion polling
-///
-/// # Returns
-/// Base address of the fast I/O context (for mmap)
-///
-/// # Errors
-/// * `ENOMEM` - Out of memory
-/// * `ESRCH` - Process not found
-///
-/// # Example
-/// ```
-/// use libuser::syscall::{fast_io_setup, fast_io_flags};
-///
-/// // Set up with kernel polling enabled
-/// let ctx = fast_io_setup(fast_io_flags::SQPOLL)?;
-///
-/// // Now writes to the submission queue are processed
-/// // automatically without syscalls!
-/// ```
-#[allow(clippy::cast_sign_loss)]
-pub fn fast_io_setup(flags: u64) -> SyscallResult<u64> {
+/// sys_capability_dup - Duplicate capability
+pub fn capability_dup(capability_id: u64, rights: u64) -> SyscallResult<u64> {
     let ret = unsafe {
-        syscall6(SYS_FAST_IO_SETUP, flags, 0, 0, 0, 0, 0)
+        syscall6(SYS_CAPABILITY_DUP, capability_id, rights, 0, 0, 0, 0)
     };
-    syscall_result(ret).map(|v| v as u64)
+    syscall_result(ret).map(|cap| cap as u64)
 }
 
-/// Read CPU timestamp counter directly (without syscall)
-///
-/// This is faster than `benchmark(TIMESTAMP)` since it doesn't
-/// execute a syscall instruction at all.
-///
-/// # Returns
-/// Current CPU timestamp counter value
-#[inline]
-#[must_use]
-pub fn rdtsc() -> u64 {
-    let lo: u32;
-    let hi: u32;
-    unsafe {
-        core::arch::asm!(
-            "rdtsc",
-            out("eax") lo,
-            out("edx") hi,
-            options(nostack, nomem)
-        );
-    }
-    (u64::from(hi) << 32) | u64::from(lo)
-}
-
-/// Measure syscall overhead in CPU cycles
-///
-/// Performs a minimal syscall and returns the cycle count.
-///
-/// # Returns
-/// Approximate number of CPU cycles for a minimal syscall
-#[must_use]
-pub fn measure_syscall_overhead() -> u64 {
-    let start = rdtsc();
-    let _ = benchmark(benchmark_mode::MINIMAL);
-    let end = rdtsc();
-    end.saturating_sub(start)
+/// sys_capability_revoke - Revoke capability
+pub fn capability_revoke(handle: u64) -> SyscallResult<()> {
+    let ret = unsafe {
+        syscall6(SYS_CAPABILITY_REVOKE, handle, 0, 0, 0, 0, 0)
+    };
+    syscall_result(ret).map(|_| ())
 }
 
 // ============================================================================
@@ -580,17 +251,6 @@ pub fn measure_syscall_overhead() -> u64 {
 // ============================================================================
 
 /// Macro for performing system calls with cleaner syntax
-///
-/// # Examples
-/// ```
-/// use libuser::syscall;
-///
-/// // Write to stdout
-/// let result = syscall!(WRITE, 1, message.as_ptr(), message.len());
-///
-/// // Get process ID
-/// let pid = syscall!(GETPID);
-/// ```
 #[macro_export]
 macro_rules! syscall {
     ($num:expr) => {

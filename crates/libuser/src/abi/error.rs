@@ -1,4 +1,4 @@
-// kernel/src/abi/error.rs
+// libuser/src/abi/error.rs
 //! Type-safe System Call Errors
 //!
 //! This module defines a comprehensive error type for system calls,

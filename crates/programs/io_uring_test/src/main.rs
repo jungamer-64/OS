@@ -11,6 +11,11 @@ use libuser::ring_io::{Ring, Sqe, Opcode};
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     println!("=== io_uring Test (V2 API) ===\n");
+    println!("[VERSION_MARKER] DEBUG_MARKER_ABC123");
+    // Raw syscall direct test (entries, flags) via inline assembly to verify
+    // that the kernel receives the correct argument order.
+    let raw_res = raw_io_uring_setup(128, 1);
+    println!("[DEBUG] raw_io_uring_setup(128, 1) returned {}", raw_res);
     
     test_ring_setup();
     
@@ -147,6 +152,25 @@ fn print_error(code: i64) {
     } else {
         println!("unknown error");
     }
+}
+
+/// Direct raw syscall invocation for io_uring_setup using inline assembly
+/// This bypasses the libuser syscall wrapper to help debug register ordering.
+fn raw_io_uring_setup(entries: u64, flags: u64) -> i64 {
+    let ret: i64;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") 2002u64 => ret,
+            in("rdi") entries,
+            in("rsi") flags,
+            // rcx and r11 are clobbered by syscall
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack)
+        );
+    }
+    ret
 }
 
 #[panic_handler]

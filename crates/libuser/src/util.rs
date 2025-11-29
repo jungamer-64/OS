@@ -3,7 +3,7 @@
 //! This module provides various helper functions that don't fit
 //! into other modules.
 
-use crate::syscall::{SyscallError, SyscallResult};
+use crate::syscall::SyscallResult;
 
 /// Convert a syscall result to a boolean
 ///

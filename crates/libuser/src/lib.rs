@@ -154,7 +154,8 @@ pub mod ring_io;
 // Re-export commonly used items for convenience
 pub use io::{print, println};
 pub use process::{exit, getpid};
-pub use syscall::{SyscallResult, SyscallError};
+pub use syscall::SyscallResult;
+pub use crate::abi::error::SyscallError;
 pub use constants::PAGE_SIZE;
 
 // Re-export ABI types for next-gen syscall interface

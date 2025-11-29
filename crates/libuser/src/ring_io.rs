@@ -1,3 +1,4 @@
+// libuser/src/ring_io.rs
 //! Ring-based Async I/O API (V2)
 //!
 //! This module provides userspace API for the V2 io_uring syscall system
@@ -35,8 +36,9 @@
 #![allow(clippy::volatile_composites)]
 
 use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
-use crate::syscall::{SyscallResult, SyscallError, errno};
-use crate::abi::io_uring_common::{OpCode, RING_MASK, RING_SIZE as COMMON_RING_SIZE};
+use crate::syscall::SyscallResult;
+use crate::abi::error::SyscallError;
+use crate::abi::io_uring_common::{RING_MASK, RING_SIZE as COMMON_RING_SIZE};
 use crate::abi::io_uring_v2::{SubmissionEntryV2, CompletionEntryV2, RingHeaderV2};
 
 // =============================================================================
@@ -56,17 +58,7 @@ pub type RingHeader = RingHeaderV2;
 // Constants
 // =============================================================================
 
-/// Maximum number of registered buffers
-pub const MAX_BUFFERS: usize = 64;
 
-/// Ring setup syscall - V2 io_uring setup
-pub const SYSCALL_IO_URING_SETUP: u64 = 12;
-
-/// Ring enter syscall - signals kernel to process pending operations
-pub const SYSCALL_IO_URING_ENTER: u64 = 13;
-
-/// Ring register syscall - registers a memory buffer for zero-copy I/O
-pub const SYSCALL_IO_URING_REGISTER: u64 = 14;
 
 // =============================================================================
 // Doorbell Layout
@@ -75,15 +67,22 @@ pub const SYSCALL_IO_URING_REGISTER: u64 = 14;
 /// Doorbell for zero-syscall notifications
 ///
 /// Shared between user and kernel for lock-free communication.
-#[repr(C, align(64))]
+#[repr(C, align(4096))]
 pub struct DoorbellLayout {
-    /// CQ has entries ready (kernel writes, user reads)
-    pub cq_ready: AtomicBool,
-    /// Kernel needs wakeup (user writes, kernel reads)
+    /// Doorbell counter (user writes, kernel reads)
+    pub ring: AtomicU32,
+    /// Needs wakeup flag (kernel sets, user reads)
     pub needs_wakeup: AtomicBool,
-    /// Padding to 64 bytes
-    _padding: [u8; 62],
+    /// CQ has entries ready (kernel sets, user reads)
+    pub cq_ready: AtomicBool,
+    /// SQPOLL running flag (kernel sets, user reads)
+    pub sqpoll_running: AtomicBool,
+    /// Padding to fill the page
+    _pad: [u8; 4096 - 10],
 }
+
+// Ensure userspace doorbell (page) is exactly one page in size to match kernel
+const _: () = assert!(core::mem::size_of::<DoorbellLayout>() == 4096);
 
 impl DoorbellLayout {
     /// Check if completions are ready
@@ -108,6 +107,24 @@ impl DoorbellLayout {
     #[inline]
     pub fn set_needs_wakeup(&self, value: bool) {
         self.needs_wakeup.store(value, Ordering::Release);
+    }
+
+    /// Increment the doorbell counter (user-space ring)
+    #[inline]
+    pub fn ring_doorbell(&self) {
+        self.ring.fetch_add(1, Ordering::Release);
+    }
+
+    /// Peek at the current doorbell counter without changing it
+    #[inline]
+    pub fn peek_ring(&self) -> u32 {
+        self.ring.load(Ordering::Acquire)
+    }
+
+    /// Check if SQPOLL is running on the kernel side
+    #[inline]
+    pub fn is_sqpoll_running(&self) -> bool {
+        self.sqpoll_running.load(Ordering::Acquire)
     }
 }
 
@@ -138,10 +155,7 @@ impl Sqe {
 impl Cqe {
     /// Get the result as a `SyscallResult`
     pub fn to_syscall_result(&self) -> SyscallResult<i32> {
-        match self.into_result() {
-            Ok(val) => Ok(val),
-            Err(e) => Err(SyscallError::from_raw(e as i64)),
-        }
+        self.into_result()
     }
 }
 
@@ -195,8 +209,6 @@ pub struct Ring {
     ring_size: u32,
     /// SQPOLL enabled
     sqpoll: bool,
-    /// Registered buffer IDs
-    registered_buffers: [bool; MAX_BUFFERS],
 }
 
 impl Ring {
@@ -210,26 +222,16 @@ impl Ring {
     /// # Errors
     ///
     /// Returns an error if the syscall fails.
-    #[allow(clippy::cast_possible_truncation)]
     pub fn setup(sqpoll: bool) -> SyscallResult<Self> {
-        // Call io_uring_setup V2
-        let entries = COMMON_RING_SIZE as i64;
-        let flags = if sqpoll { 1 } else { 0 };
-        
-        let result = unsafe {
-            crate::syscall::syscall2(SYSCALL_IO_URING_SETUP, entries, flags)
-        };
-        
-        if result < 0 {
-            return Err(SyscallError::from_raw(-result));
-        }
-        
-        // The kernel returns the base address
-        #[allow(clippy::cast_sign_loss)]
-        let base_addr = result as u64;
-        
-        // SAFETY: Kernel has mapped this address properly
-        unsafe { Self::from_address(base_addr, sqpoll) }
+        // Entries is currently fixed by the ABI (COMMON_RING_SIZE)
+        let entries = RING_SIZE as u32;
+        let flags = if sqpoll { 1u32 } else { 0u32 };
+
+        // Call the kernel to set up the ring and map it to the fixed user address
+        let user_addr = crate::syscall::io_uring_setup(entries, flags)?;
+
+        // Create Ring from the mapped address
+        unsafe { Ring::from_address(user_addr, sqpoll) }
     }
     
     /// Create a ring from a raw address
@@ -257,7 +259,6 @@ impl Ring {
                 doorbell,
                 ring_size: COMMON_RING_SIZE,
                 sqpoll,
-                registered_buffers: [false; MAX_BUFFERS],
             })
         }
     }
@@ -279,7 +280,7 @@ impl Ring {
             
             // Check for full ring
             if tail.wrapping_sub(head) >= self.ring_size {
-                return Err(SyscallError::from_raw(errno::EAGAIN));
+                return Err(SyscallError::WouldBlock);
             }
             
             // Write entry
@@ -318,26 +319,40 @@ impl Ring {
             // Check if kernel poller needs wakeup via doorbell
             if self.doorbell().check_needs_wakeup() {
                 // Kernel poller sleeping, need to wake it
-                unsafe {
-                    let result = crate::syscall::syscall1(SYSCALL_IO_URING_ENTER, 0);
-                    if result < 0 {
-                        return Err(SyscallError::from_raw(-result));
-                    }
-                    return Ok(result as u64);
-                }
+                crate::syscall::io_uring_enter(0, 0)?;
+                // We don't get the number of processed items from enter anymore in V2?
+                // Actually sys_io_uring_enter_v2 returns 0 on success.
+                // The completion count is in the CQ.
+                return Ok(0);
             }
             // Kernel is actively polling, no syscall needed!
             Ok(0)
         } else {
             // Non-SQPOLL: must call syscall
-            unsafe {
-                let result = crate::syscall::syscall1(SYSCALL_IO_URING_ENTER, 0);
-                if result < 0 {
-                    return Err(SyscallError::from_raw(-result));
-                }
-                Ok(result as u64)
-            }
+            crate::syscall::io_uring_enter(0, 0)?;
+            Ok(0)
         }
+    }
+
+    /// Ring the doorbell to notify kernel about new submissions (no syscall)
+    ///
+    /// In SQPOLL mode the kernel will poll the submission queue and process
+    /// new submissions; userspace sets the `needs_wakeup` flag to ask the
+    /// kernel poller to wake up if it is idle.
+    pub fn ring_doorbell(&self) {
+        self.doorbell().ring_doorbell()
+    }
+
+    /// Check if the kernel has set the CQ ready flag via the doorbell
+    #[inline]
+    pub fn check_cq_ready(&self) -> bool {
+        self.doorbell().is_cq_ready()
+    }
+
+    /// Clear the CQ ready flag
+    #[inline]
+    pub fn clear_cq_ready(&self) {
+        self.doorbell().clear_cq_ready();
     }
     
     /// Check if completions are available
@@ -406,68 +421,9 @@ impl Ring {
             count += 1;
             Some(self.wait_cqe())
         })
-    }
-    
-    /// Register a buffer for zero-copy I/O
-    ///
-    /// After registration, use the returned buffer ID instead of pointers.
-    #[allow(clippy::bool_to_int_with_if)]
-    pub fn register_buffer(&mut self, addr: u64, len: u64, read: bool, write: bool) -> SyscallResult<u16> {
-        // Find free slot
-        let slot = self.registered_buffers.iter()
-            .position(|&used| !used)
-            .ok_or(SyscallError::from_raw(errno::ENOSPC))?;
-        
-        // Call kernel to register
-        let flags = (if read { 1 } else { 0 }) | (if write { 2 } else { 0 });
-        unsafe {
-            let result = crate::syscall::syscall4(
-                SYSCALL_IO_URING_REGISTER,
-                addr as i64,
-                len as i64,
-                flags,
-                slot as i64,
-            );
-            
-            if result < 0 {
-                return Err(SyscallError::from_raw(-result));
-            }
-            
-            self.registered_buffers[slot] = true;
-            Ok(slot as u16)
-        }
-    }
-    
-    /// Unregister a buffer
-    pub fn unregister_buffer(&mut self, buf_id: u16) -> SyscallResult<()> {
-        if buf_id as usize >= MAX_BUFFERS || !self.registered_buffers[buf_id as usize] {
-            return Err(SyscallError::from_raw(errno::EINVAL));
-        }
-        
-        // Call kernel to unregister
-        // For now, just mark as free
-        self.registered_buffers[buf_id as usize] = false;
-        Ok(())
-    }
-    
-    /// Check if SQPOLL is enabled
-    #[inline]
-    #[must_use]
-    pub fn is_sqpoll(&self) -> bool {
-        self.sqpoll
-    }
-    
-    /// Get number of free slots in submission queue
-    #[inline]
-    #[must_use]
-    pub fn sq_free_slots(&self) -> u32 {
-        unsafe { (*self.sq).available_count() }
+        // from_fn returns an iterator that yields N CQEs
     }
 }
-
-// =============================================================================
-// Builder Pattern
-// =============================================================================
 
 /// Builder for creating Ring instances
 pub struct RingBuilder {

@@ -1,5 +1,14 @@
 # システムコール実装 - 改善完了レポート
 
+> [!WARNING]
+> **DEPRECATED / 非推奨**
+>
+> このドキュメントは古いシステムコール設計（V1, FDベース）に基づいています。
+> 現在の設計（V2, Capabilityベース）については以下のドキュメントを参照してください：
+>
+> - [NEXT_GEN_SYSCALL_DESIGN.md](../design/NEXT_GEN_SYSCALL_DESIGN.md)
+> - [SYSCALL_INTERFACE_V2.md](../design/SYSCALL_INTERFACE_V2.md)
+
 **日付**: 2025年11月23日  
 **対象**: Phase 1システムコール機構の改善
 
@@ -10,6 +19,7 @@
 ### 1. ✅ Linux互換エラーコード導入
 
 **Before**:
+
 ```rust
 pub const ERR_INVALID_SYSCALL: SyscallResult = -1;
 pub const ERR_INVALID_ARG: SyscallResult = -2;
@@ -17,6 +27,7 @@ pub const ERR_NOT_IMPLEMENTED: SyscallResult = -3;
 ```
 
 **After**:
+
 ```rust
 // Linux-compatible error codes
 pub const EPERM: SyscallResult = -1;     // Operation not permitted
@@ -31,6 +42,7 @@ pub const ENOSYS: SyscallResult = -38;   // Function not implemented
 ```
 
 **利点**:
+
 - 将来的なPOSIX互換性
 - 標準的なツール（strace等）との親和性
 - ドキュメントが豊富
@@ -40,6 +52,7 @@ pub const ENOSYS: SyscallResult = -38;   // Function not implemented
 ### 2. ✅ ユーザーポインタ検証機構
 
 **新規追加**:
+
 ```rust
 /// Check if an address is in user space
 #[inline]
@@ -61,6 +74,7 @@ fn is_user_range(addr: u64, len: u64) -> bool {
 ```
 
 **検証項目**:
+
 1. ポインタがNULLでないか
 2. ユーザー空間アドレス範囲か（0x0000_8000_0000_0000未満）
 3. メモリ範囲がオーバーフローしないか
@@ -71,6 +85,7 @@ fn is_user_range(addr: u64, len: u64) -> bool {
 ### 3. ✅ sys_write の完全実装
 
 **Before**:
+
 ```rust
 pub fn sys_write(_buf: u64, len: u64, ...) -> SyscallResult {
     println!("[SYSCALL] sys_write called with len={}", len);
@@ -79,6 +94,7 @@ pub fn sys_write(_buf: u64, len: u64, ...) -> SyscallResult {
 ```
 
 **After**:
+
 ```rust
 pub fn sys_write(buf: u64, len: u64, ...) -> SyscallResult {
     // 1. Validate pointer is in user space
@@ -111,6 +127,7 @@ pub fn sys_write(buf: u64, len: u64, ...) -> SyscallResult {
 ```
 
 **セキュリティ向上**:
+
 - ✅ NULLポインタを拒否
 - ✅ カーネルアドレスを拒否
 - ✅ オーバーフローを検出
@@ -121,6 +138,7 @@ pub fn sys_write(buf: u64, len: u64, ...) -> SyscallResult {
 ### 4. ✅ スタック管理の警告
 
 **追加したコメント**:
+
 ```rust
 // ⚠️ WARNING: CRITICAL LIMITATION ⚠️
 // This is a single global stack shared by ALL system calls.
@@ -141,6 +159,7 @@ pub fn sys_write(buf: u64, len: u64, ...) -> SyscallResult {
 ```
 
 **現状の安全性**:
+
 - ✅ SFMASKで割り込みフラグをクリア
 - ✅ シングルコアのみサポート
 - ⚠️ Phase 2でプロセスごとのスタックが必須
@@ -152,6 +171,7 @@ pub fn sys_write(buf: u64, len: u64, ...) -> SyscallResult {
 #### `src/userland/mod.rs`
 
 システムコールラッパーライブラリ:
+
 ```rust
 pub unsafe fn syscall0(num: u64) -> i64 { ... }
 pub unsafe fn syscall1(num: u64, arg1: u64) -> i64 { ... }
@@ -167,6 +187,7 @@ pub fn exit(code: i32) -> ! { ... }
 #### `src/userland/test_syscall.rs`
 
 包括的なテストプログラム:
+
 ```rust
 pub extern "C" fn user_main() -> ! {
     test_getpid();             // ✓ Test 1: PID取得
@@ -178,6 +199,7 @@ pub extern "C" fn user_main() -> ! {
 ```
 
 **テスト結果（期待値）**:
+
 ```
 ✓ Test 1 PASSED: getpid() = 1
 ✓ Test 2 PASSED: sys_write with valid buffer
@@ -195,6 +217,7 @@ All tests completed. Exiting with code 0...
 **問題**: ユーザープログラムがカーネルメモリを読める
 
 **Before**:
+
 ```rust
 let slice = unsafe {
     core::slice::from_raw_parts(buf as *const u8, count as usize)
@@ -203,6 +226,7 @@ let slice = unsafe {
 ```
 
 **After**:
+
 ```rust
 if !is_user_range(buf, len) {
     return EFAULT;  // カーネルアドレスを拒否
@@ -210,6 +234,7 @@ if !is_user_range(buf, len) {
 ```
 
 **検証**:
+
 ```rust
 test_write_kernel_addr() {
     let kernel_addr = 0xFFFF_8000_0000_0000u64;
@@ -225,14 +250,17 @@ test_write_kernel_addr() {
 ### ⚠️ スタック共有問題（Phase 2で解決予定）
 
 **現状**:
+
 - 単一のグローバルスタック
 - プロセスごとに分離されていない
 
 **リスク**:
+
 - マルチコアで競合状態
 - 割り込みでスタック破壊（SFMASKで緩和済み）
 
 **Phase 2での解決策**:
+
 ```rust
 pub struct Process {
     kernel_stack: VirtAddr,  // プロセスごとのスタック
@@ -250,10 +278,12 @@ impl Process {
 ### ⚠️ メモリマッピング検証なし
 
 **現状**:
+
 - アドレス範囲のみチェック
 - 実際にマップされているか未検証
 
 **Phase 2での追加**:
+
 ```rust
 fn is_user_readable(addr: u64, len: u64) -> bool {
     // ページテーブルを参照
@@ -276,6 +306,7 @@ fn is_user_readable(addr: u64, len: u64) -> bool {
 | **合計** | **~18 cycles** |
 
 **syscall/sysret全体**（参考）:
+
 - syscall命令: ~60 cycles
 - レジスタ保存/復元: ~50 cycles
 - スタック切り替え: ~10 cycles
@@ -337,6 +368,7 @@ All tests completed. Exiting with code 0...
 ### Phase 2で実装すべきもの
 
 1. **プロセスごとのカーネルスタック** 🔴 最優先
+
    ```rust
    pub struct Process {
        pid: ProcessId,
@@ -347,6 +379,7 @@ All tests completed. Exiting with code 0...
    ```
 
 2. **ページテーブル検証**
+
    ```rust
    fn is_user_readable(addr: VirtAddr, len: usize) -> bool {
        // ページテーブルをウォーク
@@ -355,6 +388,7 @@ All tests completed. Exiting with code 0...
    ```
 
 3. **コンテキストスイッチ**
+
    ```rust
    pub unsafe fn switch_to_user(entry: VirtAddr) {
        // 1. ページテーブル切り替え
@@ -390,6 +424,7 @@ All tests completed. Exiting with code 0...
 **準備完了**: Phase 2（プロセス管理）の実装を開始できます。
 
 **推奨順序**:
+
 1. プロセス構造体完成
 2. ページテーブル作成
 3. スタック割り当て

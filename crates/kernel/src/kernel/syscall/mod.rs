@@ -987,13 +987,14 @@ pub fn sys_fast_poll(_arg1: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64,
 /// # Returns
 /// * Success: User-space address of the RingContext
 /// * Error: ENOMEM (allocation failed), ESRCH (no process)
-pub fn sys_io_uring_setup(flags: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+pub fn sys_io_uring_setup(entries: u64, flags: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
     use crate::kernel::process::PROCESS_TABLE;
     use crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR;
     
     let enable_sqpoll = (flags & 1) != 0;
     crate::debug_println!(
-        "[SYSCALL] sys_io_uring_setup: enable_sqpoll={} (flags={:#x})",
+        "[SYSCALL] sys_io_uring_setup: entries={}, enable_sqpoll={} (flags={:#x})",
+        entries,
         enable_sqpoll,
         flags
     );

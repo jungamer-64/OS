@@ -1,5 +1,14 @@
 # システムコールインターフェース仕様書
 
+> [!WARNING]
+> **DEPRECATED / 非推奨**
+>
+> このドキュメントは古いシステムコール設計（V1, FDベース）に基づいています。
+> 現在の設計（V2, Capabilityベース）については以下のドキュメントを参照してください：
+>
+> - [NEXT_GEN_SYSCALL_DESIGN.md](NEXT_GEN_SYSCALL_DESIGN.md)
+> - [SYSCALL_INTERFACE_V2.md](SYSCALL_INTERFACE_V2.md)
+
 このドキュメントは、Tiny OS のカーネルとユーザーランドの境界を定義するシステムコールインターフェースの完全な仕様を記述します。
 
 ## 概要
