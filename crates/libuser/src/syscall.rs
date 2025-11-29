@@ -12,11 +12,12 @@ pub const SYS_READ: u64 = 1;
 pub const SYS_EXIT: u64 = 2;
 pub const SYS_GETPID: u64 = 3;
 
-pub const SYS_FORK: u64 = 6;
-pub const SYS_EXEC: u64 = 7;
+
+pub const SYS_SPAWN: u64 = 6;
 pub const SYS_WAIT: u64 = 8;
 pub const SYS_MMAP: u64 = 9;
 pub const SYS_MUNMAP: u64 = 10;
+
 
 
 // V2 io_uring syscalls
@@ -31,27 +32,27 @@ pub type SyscallResult<T> = Result<T, SyscallError>;
 /// Convert errno (negative) to SyscallError
 fn errno_to_syscall_error(errno: i64) -> SyscallError {
     match errno {
-        -1 => SyscallError::NotPermitted,      // EPERM
+        -1 => SyscallError::PermissionDenied,  // EPERM
         -2 => SyscallError::NotFound,          // ENOENT
-        -3 => SyscallError::NoProcess,         // ESRCH
+        -3 => SyscallError::NoSuchProcess,     // ESRCH
         -4 => SyscallError::Interrupted,       // EINTR
         -5 => SyscallError::IoError,           // EIO
-        -9 => SyscallError::InvalidHandle,     // EBADF
+        -9 => SyscallError::InvalidCapability, // EBADF
         -11 => SyscallError::WouldBlock,       // EAGAIN
         -12 => SyscallError::OutOfMemory,      // ENOMEM
-        -13 => SyscallError::AccessDenied,     // EACCES
-        -14 => SyscallError::BadAddress,       // EFAULT
+        -13 => SyscallError::PermissionDenied, // EACCES
+        -14 => SyscallError::InvalidAddress,   // EFAULT
         -16 => SyscallError::Busy,             // EBUSY
         -17 => SyscallError::AlreadyExists,    // EEXIST
         -22 => SyscallError::InvalidArgument,  // EINVAL
-        -24 => SyscallError::TableFull,        // EMFILE
+        -24 => SyscallError::TooManyOpen,      // EMFILE
         -32 => SyscallError::BrokenPipe,       // EPIPE
-        -34 => SyscallError::OutOfRange,       // ERANGE
-        -38 => SyscallError::NotSupported,     // ENOSYS
+        -34 => SyscallError::InvalidArgument,  // ERANGE
+        -38 => SyscallError::NotImplemented,   // ENOSYS
         -104 => SyscallError::ConnectionReset, // ECONNRESET
         -110 => SyscallError::Timeout,         // ETIMEDOUT
         -111 => SyscallError::ConnectionRefused, // ECONNREFUSED
-        _ => SyscallError::Internal,           // Fallback
+        _ => SyscallError::InternalError,      // Fallback
     }
 }
 
@@ -159,21 +160,36 @@ pub fn getpid() -> u64 {
     ret as u64
 }
 
-/// sys_fork - Fork process
-pub fn fork() -> SyscallResult<u64> {
+/// sys_spawn - Spawn a new process
+pub fn spawn(path: &str, args: &[&str]) -> SyscallResult<u64> {
+    use alloc::vec::Vec;
+    use alloc::string::String;
+    
+    // Create null-terminated copies of args
+    let mut args_store: Vec<String> = Vec::new();
+    for arg in args {
+        let mut s = String::from(*arg);
+        s.push('\0');
+        args_store.push(s);
+    }
+    
+    // Create array of pointers
+    let mut args_ptrs: Vec<u64> = Vec::new();
+    for arg in &args_store {
+        args_ptrs.push(arg.as_ptr() as u64);
+    }
+    
     let ret = unsafe {
-        syscall6(SYS_FORK, 0, 0, 0, 0, 0, 0)
+        syscall6(
+            SYS_SPAWN,
+            path.as_ptr() as u64,
+            path.len() as u64,
+            args_ptrs.as_ptr() as u64,
+            args_ptrs.len() as u64,
+            0, 0
+        )
     };
     syscall_result(ret).map(|pid| pid as u64)
-}
-
-/// sys_exec - Execute program
-pub fn exec(path: &str) -> SyscallError {
-    let ret = unsafe {
-        syscall6(SYS_EXEC, path.as_ptr() as u64, path.len() as u64, 0, 0, 0, 0)
-    };
-    // exec should not return on success
-    errno_to_syscall_error(ret)
 }
 
 /// sys_wait - Wait for child process
@@ -206,6 +222,8 @@ pub fn munmap(addr: u64, len: u64) -> SyscallResult<()> {
 // ============================================================================
 // V2 io_uring Wrappers
 // ============================================================================
+
+
 
 /// sys_io_uring_setup - Setup io_uring context
 pub fn io_uring_setup(entries: u32, flags: u32) -> SyscallResult<u64> {

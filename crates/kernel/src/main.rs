@@ -131,7 +131,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     
     // Phase 2: Create initial user process
     // This is required for the scheduler to have something to run
-    match tiny_os::kernel::process::create_user_process("/bin/init") {
+    match tiny_os::kernel::process::create_user_process("/bin/init", &[]) {
         Ok((pid, entry_point, user_stack, user_cr3)) => {
             debug_println!("[Process] Created initial user process: PID={}", pid.as_u64());
             

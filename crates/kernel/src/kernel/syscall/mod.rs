@@ -372,22 +372,22 @@ pub fn sys_getpid(_arg1: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _a
 
 
 
-/// sys_fork - Fork process
-pub fn sys_fork(_arg1: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    match crate::kernel::process::lifecycle::fork_process() {
-        Ok(pid) => pid.as_u64() as SyscallResult,
-        Err(_) => ENOMEM,
-    }
-}
-
-/// sys_exec - Execute program
-pub fn sys_exec(path_ptr: u64, path_len: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
-    // Validate path pointer
+/// sys_spawn - Spawn a new process
+///
+/// Arguments:
+/// - path_ptr: Pointer to path string
+/// - path_len: Length of path string
+/// - args_ptr: Pointer to array of string pointers (argv)
+/// - args_len: Number of arguments (argc)
+pub fn sys_spawn(path_ptr: u64, path_len: u64, args_ptr: u64, args_len: u64, _arg5: u64, _arg6: u64) -> SyscallResult {
+    use crate::kernel::security::validate_user_read;
+    use alloc::vec::Vec;
+    
+    // Validate path
     if let Err(e) = validate_user_read(path_ptr, path_len) {
         return e;
     }
     
-    // Read path string
     let path_slice = unsafe {
         core::slice::from_raw_parts(path_ptr as *const u8, path_len as usize)
     };
@@ -397,8 +397,54 @@ pub fn sys_exec(path_ptr: u64, path_len: u64, _arg3: u64, _arg4: u64, _arg5: u64
         Err(_) => return EINVAL,
     };
     
-    match crate::kernel::process::lifecycle::exec_process(path_str) {
-        Ok(_) => 0,
+    // Validate and read args
+    let mut args_vec = Vec::new();
+    if args_len > 0 {
+        // Validate args array (array of u64 pointers)
+        if let Err(e) = validate_user_read(args_ptr, args_len * 8) {
+            return e;
+        }
+        
+        let args_ptrs = unsafe {
+            core::slice::from_raw_parts(args_ptr as *const u64, args_len as usize)
+        };
+        
+        for &arg_ptr in args_ptrs {
+            // Scan for null terminator to determine length
+            let mut len = 0;
+            let max_len = 4096; // Reasonable limit for an argument
+            loop {
+                if len >= max_len {
+                    return EINVAL; // Argument too long
+                }
+                
+                // Check if address is valid before reading
+                if let Err(e) = validate_user_read(arg_ptr + len, 1) {
+                    return e;
+                }
+                
+                let b = unsafe { core::ptr::read((arg_ptr + len) as *const u8) };
+                if b == 0 {
+                    break;
+                }
+                len += 1;
+            }
+            
+            let arg_slice = unsafe {
+                core::slice::from_raw_parts(arg_ptr as *const u8, len as usize)
+            };
+            
+            let arg_str = match core::str::from_utf8(arg_slice) {
+                Ok(s) => s,
+                Err(_) => return EINVAL,
+            };
+            
+            args_vec.push(arg_str);
+        }
+    }
+    
+    match crate::kernel::process::lifecycle::spawn_process(path_str, &args_vec) {
+        Ok(pid) => pid.as_u64() as SyscallResult,
         Err(crate::kernel::process::lifecycle::CreateError::FileNotFound) => ENOENT,
         Err(_) => ENOMEM,
     }
@@ -1177,8 +1223,8 @@ static SYSCALL_TABLE: &[SyscallHandler] = &[
     sys_getpid,   // 3
     sys_ni_syscall,         // 4 - sys_alloc (removed)
     sys_ni_syscall,         // 5 - sys_dealloc (removed)
-    sys_fork,     // 6
-    sys_exec,     // 7
+    sys_spawn,    // 6
+    sys_ni_syscall, // 7 - sys_exec (removed)
     sys_wait,     // 8
     sys_mmap,     // 9
     sys_munmap,   // 10

@@ -1,6 +1,7 @@
 //! Process management API
 
-use crate::syscall::{self, SyscallResult, SyscallError};
+use crate::syscall::{self, SyscallResult};
+use crate::abi::error::SyscallError;
 
 /// Exit the current process with the given exit code
 ///
@@ -17,54 +18,7 @@ pub fn getpid() -> u64 {
     syscall::getpid()
 }
 
-/// Fork the current process
-///
-/// # Returns
-/// * `Ok(0)` - In child process
-/// * `Ok(child_pid)` - In parent process
-/// * `Err(error)` - On failure
-///
-/// # Errors
-/// * `ENOMEM` - Out of memory
-///
-/// # Examples
-/// ```no_run
-/// use libuser::process::fork;
-///
-/// match fork() {
-///     Ok(0) => {
-///         // Child process
-///         println!("I am the child");
-///     }
-///     Ok(pid) => {
-///         // Parent process
-///         println!("Child PID: {}", pid);
-///     }
-///     Err(e) => {
-///         println!("Fork failed: {}", e.description());
-///     }
-/// }
-/// ```
-pub fn fork() -> SyscallResult<u64> {
-    syscall::fork()
-}
 
-/// Execute a program
-///
-/// This function only returns on error. On success, the current process
-/// image is replaced with the new program.
-///
-/// # Arguments
-/// * `path` - Path to program (currently ignored in Phase 1)
-///
-/// # Returns
-/// Only returns on error
-///
-/// # Errors
-/// * `ENOMEM` - Out of memory
-pub fn exec(path: &str) -> SyscallError {
-    syscall::exec(path)
-}
 
 /// Wait for a child process to terminate
 ///
@@ -104,40 +58,30 @@ pub fn wait(pid: i64, status: Option<&mut i32>) -> SyscallResult<u64> {
     syscall::wait(pid, status)
 }
 
-/// Spawn a new process (fork + exec pattern)
+/// Spawn a new process
 ///
-/// This is a convenience function that combines fork and exec.
+/// This creates a new process directly (replacing fork+exec).
 ///
 /// # Arguments
 /// * `path` - Path to program to execute
+/// * `args` - Command line arguments
 ///
 /// # Returns
-/// Child PID in parent process
+/// Child PID
 ///
 /// # Errors
-/// * Fork or exec errors
+/// * `ENOENT` - File not found
+/// * `ENOMEM` - Out of memory
 ///
 /// # Examples
 /// ```no_run
 /// use libuser::process::spawn;
 ///
-/// match spawn("/bin/shell") {
+/// match spawn("/bin/shell", &["arg1", "arg2"]) {
 ///     Ok(pid) => println!("Spawned child {}", pid),
 ///     Err(e) => println!("Spawn failed: {}", e.description()),
 /// }
 /// ```
-pub fn spawn(path: &str) -> SyscallResult<u64> {
-    match fork()? {
-        0 => {
-            // Child process
-            let _err = exec(path);
-            // If exec returns, it failed
-            crate::io::println("exec failed");
-            exit(1);
-        }
-        pid => {
-            // Parent process
-            Ok(pid)
-        }
-    }
+pub fn spawn(path: &str, args: &[&str]) -> SyscallResult<u64> {
+    syscall::spawn(path, args)
 }

@@ -7,7 +7,7 @@ PHDRS {
 }
 
 SECTIONS {
-    . = 0x400000;
+    . = 0x8000000000;
 
     .text : ALIGN(0x1000) {
         KEEP(*(.text._start))

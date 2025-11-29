@@ -94,14 +94,8 @@ extern "x86-interrupt" fn page_fault_handler(
     use crate::kernel::mm::PHYS_MEM_OFFSET;
     use x86_64::structures::paging::OffsetPageTable;
     
-    // [DEBUG] Immediate serial output to see if we reach here
-    unsafe {
-        use crate::arch::x86_64::port::PortWriteOnly;
-        let mut serial = PortWriteOnly::<u8>::new(0x3F8);
-        for byte in b"PF!" {
-            serial.write(*byte);
-        }
-    }
+    // [DEBUG] Immediate serial output removed to avoid spam
+    // unsafe { ... }
     
     // Get the faulting address from CR2
     let fault_addr = Cr2::read().unwrap_or(VirtAddr::new(0));
@@ -116,6 +110,7 @@ extern "x86-interrupt" fn page_fault_handler(
         
         // Try to handle the user-space page fault
         let handled = (|| -> Result<(), ()> {
+            crate::debug_println!("[PageFault] Handling user fault at {:#x}", fault_addr.as_u64());
             // Get current process
             let mut table = PROCESS_TABLE.lock();
             let process = table.current_process_mut().ok_or(())?;
@@ -152,33 +147,54 @@ extern "x86-interrupt" fn page_fault_handler(
     
     unsafe {
         let mut serial = PortWriteOnly::<u8>::new(0x3F8);
-        for byte in b"[EXCEPTION] PAGE FAULT\n" {
+        for byte in b"\n[EXCEPTION] PAGE FAULT\n" {
             serial.write(*byte);
         }
+        
+        // Helper to print u64 in hex
+        let print_u64 = |mut val: u64, serial: &mut PortWriteOnly<u8>| {
+            serial.write(b'0');
+            serial.write(b'x');
+            if val == 0 {
+                serial.write(b'0');
+                return;
+            }
+            // Buffer for 16 hex digits
+            let mut buf = [0u8; 16];
+            let mut i = 0;
+            while val > 0 {
+                let digit = (val & 0xF) as u8;
+                buf[i] = if digit < 10 { digit + b'0' } else { digit - 10 + b'a' };
+                val >>= 4;
+                i += 1;
+            }
+            while i > 0 {
+                i -= 1;
+                serial.write(buf[i]);
+            }
+        };
         
         // Print fault address
         for byte in b"Fault address: " {
             serial.write(*byte);
         }
-        for byte in alloc::format!("{:#x}\n", fault_addr.as_u64()).bytes() {
-            serial.write(byte);
-        }
+        print_u64(fault_addr.as_u64(), &mut serial);
+        serial.write(b'\n');
         
         // Print error code
         for byte in b"Error code: " {
             serial.write(*byte);
         }
-        for byte in alloc::format!("{:?}\n", error_code).bytes() {
-            serial.write(byte);
-        }
+        // Error code is simple enough to print as debug if we could, but let's just print bits
+        print_u64(error_code.bits(), &mut serial);
+        serial.write(b'\n');
         
         // Print instruction pointer
         for byte in b"Instruction pointer: " {
             serial.write(*byte);
         }
-        for byte in alloc::format!("{:#x}\n", stack_frame.instruction_pointer.as_u64()).bytes() {
-            serial.write(byte);
-        }
+        print_u64(stack_frame.instruction_pointer.as_u64(), &mut serial);
+        serial.write(b'\n');
     }
     
     loop {
