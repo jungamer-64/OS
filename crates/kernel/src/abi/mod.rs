@@ -38,7 +38,7 @@ pub use io_uring::{
 // Re-export V2 types
 pub use error::{ErrorCategory, SyscallError, SyscallResult};
 pub use io_uring_v2::{
-    CompletionEntryV2, ResultTag, RingHeaderV2, SubmissionEntryV2, V2Features,
+    CompletionEntryV2, RingHeaderV2, SubmissionEntryV2, V2Features,
 };
 pub use native::{
     BufferHandle, BufferMarker, DirectoryHandle, DirectoryMarker, FileHandle, FileMarker, Handle,

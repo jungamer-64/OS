@@ -45,6 +45,7 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::error::SyscallError;
+use super::result::AbiResult;
 use super::io_uring::{IoUringFlags, OpCode, RING_MASK, RING_SIZE};
 
 /// V2 Submission Queue Entry
@@ -291,33 +292,29 @@ impl Default for SubmissionEntryV2 {
     }
 }
 
-/// Result tag for CompletionEntryV2
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResultTag {
-    /// Operation succeeded
-    Ok = 0,
-    /// Operation failed with error
-    Err = 1,
-}
 
 /// V2 Completion Queue Entry
 ///
 /// A completion entry that uses typed results instead of errno.
-#[repr(C, align(32))]
+/// 
+/// This structure uses `AbiResult` to provide type-safe, ABI-stable
+/// result passing consistent with the rest of the V2 protocol.
+///
+/// # Memory Layout
+/// - user_data: 8 bytes
+/// - result (AbiResult): 16 bytes (tag + padding + data)
+/// - flags: 4 bytes
+/// - aux: 8 bytes
+/// - _pad: 4 bytes
+/// Total: 40 bytes
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CompletionEntryV2 {
     /// User data from the corresponding SQE
     pub user_data: u64,
 
-    /// Result tag (0 = Ok, 1 = Err)
-    pub result_tag: u32,
-
-    /// Result value (bytes transferred on success)
-    pub result_value: i32,
-
-    /// Error code (only valid if result_tag == Err)
-    pub error_code: u32,
+    /// Operation result (Ok with value, or Err with error code)
+    pub result: AbiResult<i32, SyscallError>,
 
     /// Completion flags
     pub flags: u32,
@@ -326,84 +323,83 @@ pub struct CompletionEntryV2 {
     /// - For accept: peer address info
     /// - For recv: message flags
     pub aux: u64,
+
+    /// Padding to maintain alignment
+    _pad: u32,
 }
 
 // Compile-time size check
 const _: () = assert!(
-    core::mem::size_of::<CompletionEntryV2>() == 32,
-    "CompletionEntryV2 must be 32 bytes"
+    core::mem::size_of::<CompletionEntryV2>() == 40,
+    "CompletionEntryV2 must be 40 bytes"
 );
 
 impl CompletionEntryV2 {
     /// Create a successful completion
     #[must_use]
-    pub const fn success(user_data: u64, value: i32) -> Self {
+    #[inline]
+    pub fn success(user_data: u64, value: i32) -> Self {
         Self {
             user_data,
-            result_tag: ResultTag::Ok as u32,
-            result_value: value,
-            error_code: 0,
+            result: AbiResult::ok(value),
             flags: 0,
             aux: 0,
+            _pad: 0,
         }
     }
 
     /// Create a successful completion with auxiliary data
     #[must_use]
-    pub const fn success_with_aux(user_data: u64, value: i32, aux: u64) -> Self {
+    #[inline]
+    pub fn success_with_aux(user_data: u64, value: i32, aux: u64) -> Self {
         Self {
             user_data,
-            result_tag: ResultTag::Ok as u32,
-            result_value: value,
-            error_code: 0,
+            result: AbiResult::ok(value),
             flags: 0,
             aux,
+            _pad: 0,
         }
     }
 
     /// Create an error completion
     #[must_use]
-    pub const fn error(user_data: u64, err: SyscallError) -> Self {
+    #[inline]
+    pub fn error(user_data: u64, err: SyscallError) -> Self {
         Self {
             user_data,
-            result_tag: ResultTag::Err as u32,
-            result_value: 0,
-            error_code: err as u32,
+            result: AbiResult::err(err),
             flags: 0,
             aux: 0,
+            _pad: 0,
         }
     }
 
     /// Check if this is a success
     #[must_use]
-    pub const fn is_ok(&self) -> bool {
-        self.result_tag == ResultTag::Ok as u32
+    #[inline]
+    pub fn is_ok(&self) -> bool {
+        self.result.is_ok()
     }
 
     /// Check if this is an error
     #[must_use]
-    pub const fn is_err(&self) -> bool {
-        self.result_tag == ResultTag::Err as u32
+    #[inline]
+    pub fn is_err(&self) -> bool {
+        self.result.is_err()
     }
 
     /// Get the result as a Rust Result
     #[must_use]
+    #[inline]
     pub fn into_result(self) -> Result<i32, SyscallError> {
-        if self.is_ok() {
-            Ok(self.result_value)
-        } else {
-            Err(SyscallError::from_u32(self.error_code))
-        }
+        self.result.into_result()
     }
 
     /// Get the error, if any
     #[must_use]
+    #[inline]
     pub fn get_error(&self) -> Option<SyscallError> {
-        if self.is_err() {
-            Some(SyscallError::from_u32(self.error_code))
-        } else {
-            None
-        }
+        self.result.err_value()
     }
 }
 
