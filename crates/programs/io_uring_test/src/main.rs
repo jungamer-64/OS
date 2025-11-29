@@ -13,11 +13,10 @@ use libuser::ring_io::{Ring, Sqe, Opcode};
 pub extern "C" fn _start() -> ! {
     println!("=== io_uring Test (New API) ===\n");
     
-    // Test new Ring API first
-    test_ring_setup();
-    
-    // Test 1: Setup io_uring via AsyncContext
-    test_context_setup();
+    // Only run SQPOLL test for debugging SQPOLL registration
+    println!("=== io_uring Test (SQPOLL-only) ===");
+    println!("[DEBUG] Next: test_ring_sqpoll_doorbell will be called");
+    test_ring_sqpoll_doorbell();
     
     println!("\n--- Calling test_single_nop ---");
     
@@ -88,6 +87,63 @@ fn test_ring_setup() {
                     print_error(e.code());
                     println!("  [FAIL]");
                 }
+            }
+        }
+        Err(e) => {
+            print!("  Ring setup failed: ");
+            print_error(e.code());
+            println!("  [FAIL]");
+        }
+    }
+}
+
+fn test_ring_sqpoll_doorbell() {
+    println!("[TEST] Ring::setup(true) - SQPOLL + Doorbell (Zero-syscall)");
+    match Ring::setup(true) {
+        Ok(mut ring) => {
+            println!("  Ring (SQPOLL) created successfully");
+            let ud = 0xABCDu64;
+            let sqe = Sqe::nop(ud);
+
+            match ring.submit(sqe) {
+                Ok(_) => println!("  Submitted NOP - now ring the doorbell (no syscall)..."),
+                Err(_) => {
+                    println!("  Submit failed");
+                    println!("  [FAIL]");
+                    return;
+                }
+            }
+
+            ring.ring_doorbell(); // No syscall
+
+            // Wait for kernel to set CQ ready via doorbell (poll)
+            let mut attempts: u32 = 0;
+            while !ring.check_cq_ready() && attempts < 100_000 {
+                attempts += 1;
+                core::hint::spin_loop();
+            }
+
+            if !ring.check_cq_ready() {
+                println!("  SQPOLL did not set cq_ready after doorbell ring");
+                println!("  [FAIL]");
+                return;
+            }
+
+            ring.clear_cq_ready();
+            if let Some(cqe) = ring.try_get_cqe() {
+                if cqe.user_data == ud {
+                    println!("  Received expected completion (user_data={})", ud);
+                    println!("  [PASS]");
+                    return;
+                } else {
+                    println!("  Completion user_data mismatch");
+                    println!("  [FAIL]");
+                    return;
+                }
+            } else {
+                println!("  No CQE found even though cq_ready flag was set");
+                println!("  [FAIL]");
+                return;
             }
         }
         Err(e) => {

@@ -5,6 +5,7 @@
 //! for user-mode processes.
 
 use x86_64::structures::paging::{PhysFrame, PageTable, FrameAllocator, Size4KiB};
+use crate::debug_println;
 use x86_64::VirtAddr;
 use alloc::vec::Vec;
 use alloc::sync::Arc;
@@ -127,6 +128,8 @@ pub struct Process {
     io_uring_ctx: Option<Box<IoUringContext>>,
     /// Ring-based syscall context for async message passing (new architecture)
     ring_ctx: Option<Box<RingContext>>,
+    /// Kernel virtual address of the mapped doorbell page for ring-based IO
+    ring_doorbell_kern_ptr: Option<u64>,
     /// Capability table for V2 resource management (Next-gen)
     capability_table: CapabilityTable,
 }
@@ -158,6 +161,14 @@ impl Drop for Process {
         
         // Clear capability table (drops all resources)
         self.capability_table.clear();
+        
+        // Free doorbell frame if allocated for ring-based syscall
+        if let Some(kptr) = self.ring_doorbell_kern_ptr {
+            let mut allocator_lock = BOOT_INFO_ALLOCATOR.lock();
+            if let Some(frame_allocator) = allocator_lock.as_mut() {
+                crate::kernel::io_uring::doorbell::manager().free(kptr as *const crate::kernel::io_uring::doorbell::Doorbell, frame_allocator);
+            }
+        }
         
         crate::debug_println!("[Process] Dropped PID={} (Freed resources)", self.pid.as_u64());
     }
@@ -207,6 +218,7 @@ impl Process {
             fpu_state: FpuState::default(),
             io_uring_ctx: None,
             ring_ctx: None,
+            ring_doorbell_kern_ptr: None,
             capability_table: CapabilityTable::new(),
         }
     }
@@ -430,6 +442,68 @@ impl Process {
             "[Process] Ring context mapped to user space at {:#x} for PID={}",
             user_addr, self.pid.as_u64()
         );
+
+        // -----------------------------------------------------------------
+        // Allocate and map the doorbell page for this ring (zero-syscall mode)
+        // -----------------------------------------------------------------
+        // use crate::kernel::io_uring::doorbell::manager as doorbell_manager;
+        use crate::kernel::mm::user_paging::USER_RING_CONTEXT_BASE;
+        use x86_64::structures::paging::{Page, PageTableFlags, Mapper, PhysFrame, Size4KiB};
+        use x86_64::VirtAddr as X64VirtAddr;
+        use x86_64::PhysAddr as X64PhysAddr;
+
+        const DOORBELL_OFFSET: u64 = 0x7000;
+
+        // Allocate a doorbell page (backed by a physical frame) only if we
+        // do not already have one. If ring context existed previously but
+        // was created without SQPOLL, then this path enables SQPOLL.
+        let kernel_doorbell_ptr = if let Some(kptr) = self.ring_doorbell_kern_ptr {
+            kptr as *mut crate::kernel::io_uring::doorbell::Doorbell
+        } else {
+            match crate::kernel::io_uring::doorbell::manager().allocate(frame_allocator) {
+                Some((_id, kptr)) => kptr,
+                None => {
+                    debug_println!("[Process] Failed to allocate doorbell frame for PID={}", self.pid.as_u64());
+                    return Err(-12);
+                }
+            }
+        };
+
+        let user_doorbell_addr = USER_RING_CONTEXT_BASE + DOORBELL_OFFSET;
+
+        // Map the kernel doorbell page into the user's address space
+        let phys_addr = (kernel_doorbell_ptr as u64).wrapping_sub(phys_offset.as_u64());
+        let phys_frame = x86_64::structures::paging::PhysFrame::containing_address(X64PhysAddr::new(phys_addr));
+        let user_page = Page::<Size4KiB>::containing_address(X64VirtAddr::new(user_doorbell_addr));
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+
+        // If mapping fails, free the allocated doorbell frame and return ENOMEM
+        unsafe {
+            match mapper.map_to(user_page, phys_frame, flags, frame_allocator) {
+                Ok(flush) => {
+                    flush.flush();
+                }
+                Err(e) => {
+                    debug_println!("[Process] Failed to map doorbell to user (PID={}, err={:?})", self.pid.as_u64(), e);
+                    // Free the allocated physical frame
+                    crate::kernel::io_uring::doorbell::manager().free(kernel_doorbell_ptr, frame_allocator);
+                    return Err(-12);
+                }
+            }
+        }
+
+        // Store kernel doorbell pointer for cleanup and for SQPOLL registration
+        self.ring_doorbell_kern_ptr = Some(kernel_doorbell_ptr as u64);
+
+        // Register ring with SQPOLL if requested
+        if enable_sqpoll {
+            // Compute kernel sq tail address (sq_header + 4)
+            let sq_header_addr = (&**ctx) as *const crate::arch::x86_64::syscall_ring::RingContext as u64;
+            let sq_tail_addr = sq_header_addr + 4;
+            crate::kernel::io_uring::sqpoll::register_ring(self.pid(), 0, sq_tail_addr, kernel_doorbell_ptr as u64);
+            // Ensure SQPOLL background task is started
+            crate::kernel::scheduler::start_sqpoll_async();
+        }
         
         Ok(user_addr)
     }
@@ -481,6 +555,12 @@ impl Process {
         self.ring_ctx.as_ref()
             .filter(|ctx| ctx.exit_requested())
             .map(|ctx| ctx.exit_code())
+    }
+
+    /// Get kernel pointer to the ring's doorbell, if mapped
+    #[must_use]
+    pub fn ring_doorbell_kern_ptr(&self) -> Option<u64> {
+        self.ring_doorbell_kern_ptr
     }
 
     // ========================================================================

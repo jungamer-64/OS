@@ -14,6 +14,12 @@ pub extern "C" fn _start() -> ! {
     
     // Spawn shell
     println!("[init] Spawning shell...");
+    // Also spawn io_uring_test for testing
+    match process::spawn("/bin/io_uring_test") {
+        Ok(pid) => println!("[init] io_uring_test spawned with PID={}", pid),
+        Err(e) => println!("[init] Failed to spawn io_uring_test: {:?}", e),
+    }
+    
     match process::spawn("/bin/shell") {
         Ok(pid) => println!("[init] Shell spawned with PID={}", pid),
         Err(e) => {

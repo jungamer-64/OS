@@ -856,6 +856,42 @@ pub fn sys_io_uring_setup(entries: u64, _params_ptr: u64, _arg3: u64, _arg4: u64
         user_sq_header
     );
     
+    // Map doorbell page for user-space notification (zero-syscall mode)
+    // Allocate a doorbell page backed by a physical frame
+    let (doorbell_id, kernel_doorbell_ptr) = match crate::kernel::io_uring::doorbell::manager().allocate(frame_allocator) {
+        Some(p) => p,
+        None => {
+            debug_println!("[SYSCALL] io_uring_setup: failed to allocate doorbell");
+            return ENOMEM;
+        }
+    };
+
+    let user_doorbell = USER_IO_URING_BASE + 0x7000u64; // Next page after cq_entries
+
+    if map_kernel_region_to_user_addr(
+        &mut user_mapper,
+        kernel_doorbell_ptr as u64,
+        user_doorbell,
+        4096usize,
+        frame_allocator,
+        phys_mem_offset,
+    ).is_err() {
+        debug_println!("[SYSCALL] io_uring_setup: failed to map doorbell to user space");
+        return ENOMEM;
+    }
+
+    debug_println!("[SYSCALL] io_uring_setup: mapped doorbell to user {:#x}", user_doorbell);
+
+    // Set the doorbell pointer on the IoUringContext so kernel can write CQ_READY
+    ctx.set_doorbell(kernel_doorbell_ptr);
+
+    // Register with SQPOLL if the io_uring context requested polling
+    if ctx.is_sqpoll_enabled() {
+        // Note: We register ring id 0 for now (single ring per process)
+        let sq_tail_addr = sq_header_addr + 4; // tail is second field (AtomicU32) at offset 4
+        crate::kernel::io_uring::sqpoll::register_ring(process.pid(), 0, sq_tail_addr, kernel_doorbell_ptr as u64);
+    }
+
     // Return the user space SQ header address
     user_sq_header as SyscallResult
 }
@@ -1192,6 +1228,11 @@ pub fn sys_ring_setup(flags: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64
     use crate::kernel::mm::allocator::BOOT_INFO_ALLOCATOR;
     
     let enable_sqpoll = (flags & 1) != 0;
+    crate::debug_println!(
+        "[SYSCALL] sys_ring_setup: enable_sqpoll={} (flags={:#x})",
+        enable_sqpoll,
+        flags
+    );
     
     // Get physical memory offset
     let phys_offset = x86_64::VirtAddr::new(

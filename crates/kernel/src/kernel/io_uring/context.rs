@@ -6,6 +6,7 @@
 
 use spin::Mutex;
 
+use super::doorbell::Doorbell;
 use super::ring::IoUring;
 use super::handlers::{dispatch_sqe, OpResult};
 use super::handlers_v2::dispatch_sqe_v2;
@@ -39,6 +40,9 @@ pub struct IoUringContext {
     
     /// Whether SQPOLL is enabled for this context
     sqpoll_enabled: bool,
+
+    /// Kernel virtual address of the optional doorbell page (shared with userspace)
+    doorbell: Option<u64>,
 }
 
 impl IoUringContext {
@@ -58,6 +62,7 @@ impl IoUringContext {
             max_in_flight: 256, // Match ring size
             registered_buffers: RegisteredBufferTable::new(),
             sqpoll_enabled: false,
+            doorbell: None,
         })
     }
     
@@ -180,6 +185,12 @@ impl IoUringContext {
             // Post completion
             if self.ring.post_completion(result.user_data, result.result, result.flags).is_ok() {
                 completed += 1;
+                // Notify userspace via doorbell if present
+                if let Some(db_addr) = self.doorbell {
+                    // SAFETY: db_addr is a valid kernel virtual address to a Doorbell page
+                    let db_ptr = db_addr as *mut Doorbell;
+                    unsafe { (*db_ptr).set_cq_ready(); }
+                }
             }
         }
         
@@ -254,6 +265,17 @@ impl IoUringContext {
     /// Get a mutable reference to the registered buffer table
     pub fn registered_buffer_table_mut(&mut self) -> &mut RegisteredBufferTable {
         &mut self.registered_buffers
+    }
+
+    /// Set the doorbell kernel pointer for this io_uring context
+    pub fn set_doorbell(&mut self, addr: *mut Doorbell) {
+        self.doorbell = Some(addr as u64);
+    }
+
+    /// Get the doorbell pointer if present
+    #[must_use]
+    pub fn doorbell_ptr(&self) -> Option<u64> {
+        self.doorbell
     }
 
     /// Get the SQ header address for mapping to user space

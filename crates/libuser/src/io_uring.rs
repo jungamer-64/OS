@@ -1,9 +1,18 @@
+#![allow(
+    clippy::missing_const_for_fn,
+    clippy::cast_ptr_alignment,
+    clippy::must_use_candidate,
+    clippy::mut_from_ref,
+    clippy::ptr_as_ptr,
+    clippy::result_unit_err,
+    clippy::cast_possible_truncation
+)]
 //! io_uring user-space interface
 //!
 //! This module provides the user-space API for `io_uring`-style async I/O.
 //! It mirrors the kernel's ABI definitions to ensure compatibility.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 
 /// Size of the ring buffer (power of 2 for efficient modulo)
 pub const RING_SIZE: usize = 256;
@@ -360,6 +369,8 @@ pub struct IoUring {
     sq_entries_ptr: *mut u8,
     /// Completion queue entries base address
     cq_entries_ptr: *mut u8,
+    /// Doorbell page address for zero-syscall signaling
+    doorbell_ptr: *mut u8,
 }
 
 /// Fixed offsets for io_uring memory layout in user space
@@ -373,6 +384,18 @@ mod io_uring_offsets {
     pub const SQ_ENTRIES_OFFSET: usize = 0x2000;
     /// Offset to cq_entries from base
     pub const CQ_ENTRIES_OFFSET: usize = 0x6000;
+    /// Offset to doorbell page from base
+    pub const DOORBELL_OFFSET: usize = 0x7000;
+}
+
+/// Doorbell layout (shared with kernel). Must exactly match kernel's Doorbell struct
+#[repr(C, align(4096))]
+pub struct DoorbellLayout {
+    pub ring: AtomicU32,
+    pub needs_wakeup: AtomicBool,
+    pub cq_ready: AtomicBool,
+    pub sqpoll_running: AtomicBool,
+    _pad: [u8; 4096 - 10],
 }
 
 impl IoUring {
@@ -383,7 +406,7 @@ impl IoUring {
     /// The returned ring must be properly initialized before use.
     pub unsafe fn setup(entries: u32, params: &mut IoUringParams) -> Result<Self, i32> {
         use crate::syscall::io_uring_setup;
-        use io_uring_offsets::*;
+        use io_uring_offsets::{SQ_HEADER_OFFSET, CQ_HEADER_OFFSET, SQ_ENTRIES_OFFSET, CQ_ENTRIES_OFFSET, DOORBELL_OFFSET};
         
         let result = match io_uring_setup(entries) {
             Ok(addr) => addr,
@@ -399,6 +422,7 @@ impl IoUring {
         let cq_header_ptr = unsafe { base.add(CQ_HEADER_OFFSET) };
         let sq_entries_ptr = unsafe { base.add(SQ_ENTRIES_OFFSET) };
         let cq_entries_ptr = unsafe { base.add(CQ_ENTRIES_OFFSET) };
+        let doorbell_ptr = unsafe { base.add(DOORBELL_OFFSET) };
         
         // Update params with actual values (for compatibility)
         params.sq_off = SQ_HEADER_OFFSET as u64;
@@ -409,7 +433,37 @@ impl IoUring {
             cq_header_ptr,
             sq_entries_ptr,
             cq_entries_ptr,
+            doorbell_ptr,
         })
+    }
+
+    // DoorbellLayout is declared at module scope
+
+    /// Get a reference to the doorbell layout
+    #[allow(clippy::cast_ptr_alignment)]
+    #[allow(clippy::missing_const_for_fn)]
+    #[inline]
+    fn doorbell(&self) -> &DoorbellLayout {
+        // SAFETY: doorbell_ptr is a page-aligned address provided by the kernel
+        unsafe { &*(self.doorbell_ptr as *const DoorbellLayout) }
+    }
+
+    /// Ring the doorbell to notify kernel (no syscall)
+    pub fn ring_doorbell(&self) {
+        let db = self.doorbell();
+        db.ring.fetch_add(1, Ordering::Release);
+    }
+
+    /// Check if CQ is ready via doorbell
+    pub fn check_cq_ready(&self) -> bool {
+        let db = self.doorbell();
+        db.cq_ready.load(Ordering::Acquire)
+    }
+
+    /// Clear doorbell CQ ready flag
+    pub fn clear_cq_ready(&self) {
+        let db = self.doorbell();
+        db.cq_ready.store(false, Ordering::Release);
     }
 
     /// Get the submission queue header

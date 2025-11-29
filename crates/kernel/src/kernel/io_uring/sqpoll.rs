@@ -115,11 +115,13 @@ pub struct SqPollRingContext {
     
     /// Whether this ring is active for polling
     pub active: AtomicBool,
+    /// Optional kernel virtual address of the doorbell page for this ring
+    pub doorbell_addr: u64,
 }
 
 impl SqPollRingContext {
     /// Create a new ring context
-    pub fn new(pid: ProcessId, ring_id: u32, sq_tail_addr: u64) -> Self {
+    pub fn new(pid: ProcessId, ring_id: u32, sq_tail_addr: u64, doorbell_addr: u64) -> Self {
         Self {
             pid,
             ring_id,
@@ -127,6 +129,7 @@ impl SqPollRingContext {
             last_tail: AtomicU32::new(0),
             submissions_polled: AtomicU64::new(0),
             active: AtomicBool::new(true),
+            doorbell_addr,
         }
     }
     
@@ -148,6 +151,13 @@ impl SqPollRingContext {
             let new_count = current_tail.wrapping_sub(last);
             new_count
         } else {
+            // If there is a doorbell, check if it was rung
+            if self.doorbell_addr != 0 {
+                // SAFETY: doorbell_addr comes from kernel and points to a valid Doorbell page
+                let db_ptr = self.doorbell_addr as *const crate::kernel::io_uring::doorbell::Doorbell;
+                let rings = unsafe { (*db_ptr).peek() };
+                if rings > 0 { return rings; }
+            }
             0
         }
     }
@@ -204,8 +214,9 @@ impl SqPollWorker {
     /// Register a ring for polling
     pub fn register_ring(&self, ctx: Arc<SqPollRingContext>) {
         let key = (ctx.pid, ctx.ring_id);
-        self.rings.lock().insert(key, ctx);
-        debug_println!("[SQPOLL] Registered ring {:?}", key);
+        let doorbell_addr = ctx.doorbell_addr;
+        self.rings.lock().insert(key, ctx.clone());
+        debug_println!("[SQPOLL] Registered ring {:?} (doorbell={:#x})", key, doorbell_addr);
     }
     
     /// Unregister a ring
@@ -258,10 +269,22 @@ impl SqPollWorker {
             if new_count > 0 {
                 total_new += new_count;
                 ctx.submissions_polled.fetch_add(u64::from(new_count), Ordering::Relaxed);
-                
-                // Process the ring
-                // Note: This would trigger the io_uring context's process() method
-                // The actual implementation depends on how we access the IoUringContext
+                // Process the ring using the process table
+                use crate::kernel::process::PROCESS_TABLE;
+                let mut table = PROCESS_TABLE.lock();
+                if let Some(process) = table.get_process_mut(ctx.pid) {
+                    if let Some((iog_ctx, cap_table)) = process.io_uring_with_capabilities() {
+                        let processed = iog_ctx.process(cap_table);
+                        if processed > 0 {
+                            // If ring has a doorbell, set CQ ready
+                            if ctx.doorbell_addr != 0 {
+                                let db_ptr = ctx.doorbell_addr as *mut crate::kernel::io_uring::doorbell::Doorbell;
+                                unsafe { (*db_ptr).set_cq_ready(); }
+                                debug_println!("[SQPOLL] Set CQ ready for PID={} ring={} (doorbell={:#x})", ctx.pid.as_u64(), ctx.ring_id, ctx.doorbell_addr);
+                            }
+                        }
+                    }
+                }
             }
         }
         
@@ -342,6 +365,9 @@ impl SqPollWorker {
     /// 
     /// Number of submissions processed
     pub fn poll_with_doorbell(&self, doorbell: &super::doorbell::Doorbell) -> u32 {
+        // Debug: print doorbell address being polled
+        let addr = doorbell as *const super::doorbell::Doorbell as u64;
+        debug_println!("[SQPOLL] poll_with_doorbell called for doorbell addr={:#x}", addr);
         // Check if doorbell was rung
         let rings_count = doorbell.check_and_clear();
         
@@ -412,8 +438,8 @@ pub fn init() {
 }
 
 /// Register a ring for SQPOLL
-pub fn register_ring(pid: ProcessId, ring_id: u32, sq_tail_addr: u64) {
-    let ctx = Arc::new(SqPollRingContext::new(pid, ring_id, sq_tail_addr));
+pub fn register_ring(pid: ProcessId, ring_id: u32, sq_tail_addr: u64, doorbell_addr: u64) {
+    let ctx = Arc::new(SqPollRingContext::new(pid, ring_id, sq_tail_addr, doorbell_addr));
     SQPOLL_WORKER.register_ring(ctx);
 }
 

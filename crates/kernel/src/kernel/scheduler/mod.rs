@@ -152,10 +152,33 @@ pub fn sqpoll_tick() -> u64 {
     // Poll all registered SQPOLL contexts
     let processed = crate::arch::x86_64::syscall_ring::kernel_poll_all();
     
+    // Also poll doorbells for ring-based SQPOLL
+    // Iterate over processes and call the doorbell-aware poll for any process
+    // which has a doorbell pointer allocated. This integrates the new
+    // io_uring::sqpoll implementation while keeping the legacy poller.
+    let mut processed_total = processed;
+    {
+        use crate::kernel::process::PROCESS_TABLE;
+        use crate::kernel::io_uring::doorbell::Doorbell;
+        let table = PROCESS_TABLE.lock();
+        for p in table.ready_processes() {
+                if let Some(kptr) = p.ring_doorbell_kern_ptr() {
+                // SAFETY: kptr is a kernel virtual pointer to a Doorbell page
+                let db_ptr = kptr as *const Doorbell;
+                // Print debug info for tracing
+                    crate::debug_println!("[SQPOLL] Polling process PID={} doorbell at {:#x}", p.pid().as_u64(), kptr);
+                let processed = crate::kernel::io_uring::sqpoll::poll_with_doorbell(unsafe { &*db_ptr });
+                processed_total += processed as u64;
+            }
+                // Also poll legacy syscall_ring contexts for this process (if any)
+                // This keeps legacy flow working alongside new doorbell flow.
+        }
+    }
+
     // Record statistics
-    SQPOLL.record_poll(processed);
+    SQPOLL.record_poll(processed_total);
     
-    processed
+    processed_total
 }
 
 /// Idle loop with SQPOLL support

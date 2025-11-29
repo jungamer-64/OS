@@ -192,6 +192,13 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
     
     // Update async timer tick counter and wake sleeping tasks
     crate::kernel::r#async::tick();
+
+    // Also poll SQPOLL contexts on each timer tick to ensure background
+    // polling runs even when user-mode processes are active.
+    let processed = crate::kernel::scheduler::sqpoll_tick();
+    if processed > 0 {
+        crate::debug_println!("[TIMER] SQPOLL processed {} operations", processed);
+    }
     
     // Send EOI first to allow nested interrupts if needed
     unsafe {

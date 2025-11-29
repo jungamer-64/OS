@@ -386,7 +386,7 @@ impl ResourceKind for ShmemResource {
 ///
 /// - Use-after-close bugs
 #[repr(transparent)]
-#[derive(PartialEq, Eq, Hash, Clone)]
+#[derive(PartialEq, Eq, Hash)]
 pub struct Handle<R: ResourceKind> {
     /// Encoded ID: (generation << 32) | index
     id: u64,

@@ -181,6 +181,7 @@ impl Sqe {
         }
     }
     
+    
     /// Create a NOP (no operation) for testing
     pub const fn nop(user_data: u64) -> Self {
         Self {
@@ -432,6 +433,8 @@ pub struct Ring {
 /// Fixed user-space address where `RingContext` is mapped
 /// This must match `USER_RING_CONTEXT_BASE` in kernel
 pub const USER_RING_CONTEXT_BASE: u64 = 0x0000_1000_0000_0000;
+/// Doorbell offset within ring context
+const DOORBELL_OFFSET: u64 = 0x7000;
 
 /// `RingContext` layout in user memory
 /// This mirrors the kernel's `RingContext` structure layout
@@ -457,14 +460,26 @@ impl Ring {
     /// Returns an error if the syscall fails (e.g., ring already set up).
     #[allow(clippy::cast_possible_truncation)]
     pub fn setup(sqpoll: bool) -> SyscallResult<Self> {
+        // Convert bool to integer explicitly and log it for debugging
+        let flag_val: i64 = sqpoll as i64;
+        // Print a simple string describing the flags to avoid macro formatting issues
+        if sqpoll {
+            crate::println("[DEBUG] Ring::setup called: sqpoll=true flag_val=1");
+        } else {
+            crate::println("[DEBUG] Ring::setup called: sqpoll=false flag_val=0");
+        }
+
         // Call ring setup syscall
         let result = unsafe {
-            super::syscall::syscall1(SYSCALL_RING_SETUP, i64::from(sqpoll))
+            super::syscall::syscall1(SYSCALL_RING_SETUP, flag_val)
         };
         
         if result < 0 {
             return Err(SyscallError::from_raw(-result));
         }
+    
+
+    
         
         // The kernel returns the user-space address of the RingContext
         // SAFETY: We checked result >= 0 above
@@ -494,6 +509,33 @@ impl Ring {
         }
     }
     
+    /// Get a reference to the doorbell layout
+    #[allow(clippy::cast_ptr_alignment)]
+    #[inline]
+    fn doorbell(&self) -> &crate::io_uring::DoorbellLayout {
+        let base = self.sq as u64; // sq header is at base of mapping
+        let db_ptr = (base + DOORBELL_OFFSET) as *const crate::io_uring::DoorbellLayout;
+        unsafe { &*db_ptr }
+    }
+
+    /// Ring the doorbell (user-space, no syscall)
+    pub fn ring_doorbell(&self) {
+        let db = self.doorbell();
+        db.ring.fetch_add(1, Ordering::Release);
+    }
+
+    /// Check if CQ is ready via doorbell
+    pub fn check_cq_ready(&self) -> bool {
+        let db = self.doorbell();
+        db.cq_ready.load(Ordering::Acquire)
+    }
+
+    /// Clear CQ ready flag on doorbell
+    pub fn clear_cq_ready(&self) {
+        let db = self.doorbell();
+        db.cq_ready.store(false, Ordering::Release);
+    }
+
     /// Create a ring from a raw address (e.g., passed in RDI at startup)
     ///
     /// This is useful when the kernel passes the ring address directly
@@ -598,9 +640,11 @@ impl Ring {
     /// In SQPOLL mode, this checks if kernel needs wakeup.
     pub fn enter(&self) -> SyscallResult<u64> {
         if self.sqpoll {
-            // Check if kernel poller needs wakeup
+            // Check if kernel poller needs wakeup (either via header flags or doorbell's needs_wakeup)
             let sq = unsafe { &*self.sq };
-            if sq.flags.load(Ordering::Acquire) & flags::NEED_WAKEUP != 0 {
+            let needs_wakeup_flag = (sq.flags.load(Ordering::Acquire) & flags::NEED_WAKEUP) != 0;
+            let needs_wakeup_doorbell = self.doorbell().needs_wakeup.load(Ordering::Acquire);
+            if needs_wakeup_flag || needs_wakeup_doorbell {
                 // Kernel poller sleeping, need to wake it
                 unsafe {
                     let result = super::syscall::syscall1(SYSCALL_RING_ENTER, 0);

@@ -241,6 +241,25 @@ impl DoorbellManager {
         let phys_offset = crate::kernel::mm::PHYS_MEM_OFFSET.load(Ordering::Relaxed);
         (doorbell_ptr as u64).wrapping_sub(phys_offset)
     }
+
+    /// Free an allocated doorbell
+    ///
+    /// Deallocates the physical frame backing the given kernel virtual pointer.
+    pub fn free(
+        &self,
+        doorbell_ptr: *const Doorbell,
+        frame_allocator: &mut crate::kernel::mm::BootInfoFrameAllocator,
+    ) {
+        use x86_64::PhysAddr;
+        use x86_64::structures::paging::PhysFrame;
+        use x86_64::structures::paging::Size4KiB;
+
+        let phys_addr = Self::get_phys_addr(doorbell_ptr);
+        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(phys_addr));
+        unsafe {
+            frame_allocator.deallocate_frame(frame);
+        }
+    }
 }
 
 impl Default for DoorbellManager {
