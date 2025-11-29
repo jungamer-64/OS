@@ -96,7 +96,7 @@ pub enum IoUringOp {
 
     /// Read from capability (V2)
     ReadV2 {
-        cap: Handle<FileResource>,
+        capability_id: u64,
         buf: *mut u8,
         len: u32,
         offset: u64,
@@ -104,7 +104,7 @@ pub enum IoUringOp {
     
     /// Write to capability (V2)
     WriteV2 {
-        cap: Handle<FileResource>,
+        capability_id: u64,
         buf: *const u8,
         len: u32,
         offset: u64,
@@ -112,7 +112,7 @@ pub enum IoUringOp {
     
     /// Close capability (V2)
     CloseV2 {
-        cap: Handle<FileResource>,
+        capability_id: u64,
     },
 }
 
@@ -302,8 +302,8 @@ fn submit_op_to_ring(op: &IoUringOp, user_data: u64) -> i32 {
 
     // Handle V2 operations
     match op {
-        IoUringOp::ReadV2 { cap, buf, len, offset } => {
-            let sqe = SubmissionEntryV2::read_raw(cap.raw(), *buf as u64, *len, *offset, user_data);
+        IoUringOp::ReadV2 { capability_id, buf, len, offset } => {
+            let sqe = SubmissionEntryV2::read_raw(*capability_id, *buf as u64, *len, *offset, user_data);
             let cqe = dispatch_sqe_v2(&sqe, cap_table, None, true); // Allow raw addr for kernel
             let result = match cqe.into_result() {
                 Ok(val) => val,
@@ -312,8 +312,8 @@ fn submit_op_to_ring(op: &IoUringOp, user_data: u64) -> i32 {
             complete_operation(user_data, result);
             return 0;
         }
-        IoUringOp::WriteV2 { cap, buf, len, offset } => {
-            let sqe = SubmissionEntryV2::write_raw(cap.raw(), *buf as u64, *len, *offset, user_data);
+        IoUringOp::WriteV2 { capability_id, buf, len, offset } => {
+            let sqe = SubmissionEntryV2::write_raw(*capability_id, *buf as u64, *len, *offset, user_data);
             let cqe = dispatch_sqe_v2(&sqe, cap_table, None, true); // Allow raw addr for kernel
             let result = match cqe.into_result() {
                 Ok(val) => val,
@@ -322,8 +322,8 @@ fn submit_op_to_ring(op: &IoUringOp, user_data: u64) -> i32 {
             complete_operation(user_data, result);
             return 0;
         }
-        IoUringOp::CloseV2 { cap } => {
-            let sqe = SubmissionEntryV2::close(cap.raw(), user_data);
+        IoUringOp::CloseV2 { capability_id } => {
+            let sqe = SubmissionEntryV2::close(*capability_id, user_data);
             let cqe = dispatch_sqe_v2(&sqe, cap_table, None, true);
             let result = match cqe.into_result() {
                 Ok(val) => val,
@@ -416,9 +416,12 @@ pub fn close_async(fd: i32) -> IoUringFuture {
 }
 
 /// 非同期 write (V2 Capability-based)
-pub fn write_async_v2(cap: Handle<FileResource>, buf: &[u8], offset: u64) -> IoUringFuture {
+///
+/// # Ownership
+/// `cap` is borrowed. The caller retains ownership.
+pub fn write_async_v2(cap: &Handle<FileResource>, buf: &[u8], offset: u64) -> IoUringFuture {
     submit_async(IoUringOp::WriteV2 {
-        cap,
+        capability_id: cap.raw(),
         buf: buf.as_ptr(),
         len: buf.len() as u32,
         offset,
@@ -429,9 +432,12 @@ pub fn write_async_v2(cap: Handle<FileResource>, buf: &[u8], offset: u64) -> IoU
 ///
 /// # Safety
 /// The buffer must remain valid until the Future completes.
-pub fn read_async_v2(cap: Handle<FileResource>, buf: &mut [u8], offset: u64) -> IoUringFuture {
+/// 
+/// # Ownership
+/// `cap` is borrowed. The caller retains ownership.
+pub fn read_async_v2(cap: &Handle<FileResource>, buf: &mut [u8], offset: u64) -> IoUringFuture {
     submit_async(IoUringOp::ReadV2 {
-        cap,
+        capability_id: cap.raw(),
         buf: buf.as_mut_ptr(),
         len: buf.len() as u32,
         offset,
@@ -439,8 +445,12 @@ pub fn read_async_v2(cap: Handle<FileResource>, buf: &mut [u8], offset: u64) -> 
 }
 
 /// 非同期 close (V2 Capability-based)
+///
+/// # Ownership
+/// `cap` is moved. The resource will be closed.
 pub fn close_async_v2(cap: Handle<FileResource>) -> IoUringFuture {
-    submit_async(IoUringOp::CloseV2 { cap })
+    let capability_id = cap.into_raw();
+    submit_async(IoUringOp::CloseV2 { capability_id })
 }
 
 /// 非同期メモリ割り当て

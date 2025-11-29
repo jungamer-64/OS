@@ -461,7 +461,7 @@ impl Ring {
     #[allow(clippy::cast_possible_truncation)]
     pub fn setup(sqpoll: bool) -> SyscallResult<Self> {
         // Convert bool to integer explicitly and log it for debugging
-        let flag_val: i64 = sqpoll as i64;
+        let flag_val: i64 = i64::from(sqpoll as i8);
         // Print a simple string describing the flags to avoid macro formatting issues
         if sqpoll {
             crate::println("[DEBUG] Ring::setup called: sqpoll=true flag_val=1");

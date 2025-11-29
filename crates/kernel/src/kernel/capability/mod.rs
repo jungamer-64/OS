@@ -293,7 +293,6 @@ pub trait ResourceKind: Send + Sync + 'static {
 }
 
 /// File resource
-#[derive(Clone)]
 pub struct FileResource;
 
 impl ResourceKind for FileResource {
@@ -303,7 +302,6 @@ impl ResourceKind for FileResource {
 }
 
 /// Socket resource
-#[derive(Clone)]
 pub struct SocketResource;
 
 impl ResourceKind for SocketResource {
@@ -313,7 +311,6 @@ impl ResourceKind for SocketResource {
 }
 
 /// Pipe resource
-#[derive(Clone)]
 pub struct PipeResource;
 
 impl ResourceKind for PipeResource {
@@ -323,7 +320,6 @@ impl ResourceKind for PipeResource {
 }
 
 /// Registered buffer resource
-#[derive(Clone)]
 pub struct BufferResource;
 
 impl ResourceKind for BufferResource {
@@ -333,7 +329,6 @@ impl ResourceKind for BufferResource {
 }
 
 /// Directory resource
-#[derive(Clone)]
 pub struct DirectoryResource;
 
 impl ResourceKind for DirectoryResource {
@@ -343,7 +338,6 @@ impl ResourceKind for DirectoryResource {
 }
 
 /// Event/notification resource
-#[derive(Clone)]
 pub struct EventResource;
 
 impl ResourceKind for EventResource {
@@ -353,7 +347,6 @@ impl ResourceKind for EventResource {
 }
 
 /// Shared memory resource
-#[derive(Clone)]
 pub struct ShmemResource;
 
 impl ResourceKind for ShmemResource {
