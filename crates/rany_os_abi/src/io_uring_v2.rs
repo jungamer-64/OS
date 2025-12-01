@@ -1,4 +1,4 @@
-// libuser/src/abi/io_uring_v2.rs
+// rany_os_abi/src/io_uring_v2.rs
 //! Next-Generation io_uring ABI
 //!
 //! This module defines the V2 io_uring ABI that uses capabilities instead

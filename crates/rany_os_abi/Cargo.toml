@@ -1,0 +1,31 @@
+[package]
+name = "rany_os_abi"
+version = "0.1.0"
+edition = "2024"
+description = "Shared ABI definitions for RanY OS kernel and userspace"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/jungamer-64/OS"
+keywords = ["os", "abi", "kernel", "syscall"]
+categories = ["os", "no-std"]
+
+[lib]
+name = "rany_os_abi"
+
+[features]
+default = []
+# Enable kernel-specific features
+kernel = []
+# Enable userspace-specific features  
+userspace = []
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "deny"
+pedantic = "deny"
+nursery = "warn"
+cargo = "deny"

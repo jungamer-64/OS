@@ -21,6 +21,7 @@
 
 [workspace]
 members = [
+    "crates/rany_os_abi",                # Shared ABI definitions
     "crates/kernel",                     # OS kernel
     "crates/libuser",                    # Userland standard library
     "crates/programs/shell",             # Interactive shell

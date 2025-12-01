@@ -1,21 +1,13 @@
-// kernel/src/abi/native.rs
 //! Rust-Native ABI Definitions
 //!
-//! This module defines Rust-native ABI types that do NOT use `repr(C)`.
-//! These types are designed for maximum efficiency and Rust idiomacy,
-//! completely abandoning C compatibility.
+//! This module defines Rust-native ABI types shared between kernel and userspace.
 //!
 //! # Design Philosophy
 //!
-//! - **No C compatibility**: We use Rust's native representations
-//! - **Type safety first**: All types are strongly typed
+//! - **No C compatibility**: Uses Rust's native representations for efficiency
+//! - **Type safety first**: All types are strongly typed with compile-time checks
 //! - **Zero-cost abstractions**: No runtime overhead for type safety
-//! - **Move semantics**: Resources are automatically cleaned up
-//!
-//! # Memory Safety
-//!
-//! All types in this module are designed to be memory-safe when used
-//! correctly. The type system enforces correct usage patterns.
+//! - **Move semantics**: Resources are automatically managed
 
 use core::marker::PhantomData;
 
@@ -103,10 +95,16 @@ impl SyscallNumber {
         }
     }
 
+    /// Convert to raw u16 value
+    #[must_use]
+    pub const fn as_u16(self) -> u16 {
+        self as u16
+    }
+
     /// Get the category of this syscall
     #[must_use]
     pub const fn category(&self) -> SyscallCategory {
-        match *self as u16 >> 8 {
+        match (*self as u16) >> 8 {
             0x00 => SyscallCategory::IoUring,
             0x01 => SyscallCategory::Capability,
             0x02 => SyscallCategory::Memory,
@@ -244,13 +242,6 @@ impl ResourceMarker for DirectoryMarker {
 /// `Handle` does NOT implement `Clone` or `Copy`. This enforces
 /// move semantics: when a handle is passed to a function, ownership
 /// is transferred. This prevents use-after-close bugs.
-///
-/// # Example
-/// ```ignore
-/// let file: Handle<FileMarker> = open("/data", Rights::READ)?;
-/// let _ = read(file, buf); // `file` is moved here
-/// // read(file, buf); // ERROR: use of moved value
-/// ```
 #[repr(transparent)]
 pub struct Handle<R: ResourceMarker> {
     id: ResourceId,
@@ -258,9 +249,9 @@ pub struct Handle<R: ResourceMarker> {
 }
 
 impl<R: ResourceMarker> Handle<R> {
-    /// Create a new handle (kernel-internal)
+    /// Create a new handle from resource ID
     #[must_use]
-    pub(crate) const fn new(id: ResourceId) -> Self {
+    pub const fn new(id: ResourceId) -> Self {
         Self {
             id,
             _marker: PhantomData,
@@ -302,20 +293,22 @@ impl<R: ResourceMarker> Handle<R> {
         core::mem::forget(self);
         raw
     }
+
+    /// Borrow this handle without consuming it
+    ///
+    /// Returns the raw ID for use in syscalls while keeping ownership.
+    #[must_use]
+    pub const fn as_raw(&self) -> u64 {
+        self.id.raw()
+    }
 }
 
 // Intentionally NOT implementing Clone/Copy to enforce move semantics
 
 impl<R: ResourceMarker> Drop for Handle<R> {
     fn drop(&mut self) {
-        // In a real implementation, this would close the resource
-        // For now, just log it in debug builds
-        #[cfg(debug_assertions)]
-        {
-            // Note: Can't use debug_println! here as it might cause issues
-            // during panic unwinding. The actual close will be done via
-            // the capability table's Drop implementation.
-        }
+        // Drop is a no-op in the shared ABI crate.
+        // Kernel and userspace implement their own cleanup logic.
     }
 }
 
@@ -331,10 +324,57 @@ impl<R: ResourceMarker> core::fmt::Debug for Handle<R> {
 
 /// Type aliases for common handle types
 pub type FileHandle = Handle<FileMarker>;
+/// Socket handle type alias
 pub type SocketHandle = Handle<SocketMarker>;
+/// Pipe handle type alias
 pub type PipeHandle = Handle<PipeMarker>;
+/// Buffer handle type alias
 pub type BufferHandle = Handle<BufferMarker>;
+/// Directory handle type alias
 pub type DirectoryHandle = Handle<DirectoryMarker>;
+
+/// Standard capability IDs for stdin/stdout/stderr (userspace only)
+#[cfg(feature = "userspace")]
+pub mod stdio {
+    use super::{FileHandle, ResourceId};
+
+    /// Standard input capability ID (index=0, generation=0)
+    pub const STDIN_ID: u64 = 0;
+    /// Standard output capability ID (index=1, generation=0)
+    pub const STDOUT_ID: u64 = 1;
+    /// Standard error capability ID (index=2, generation=0)
+    pub const STDERR_ID: u64 = 2;
+
+    /// Get stdin handle
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the process has stdin capability.
+    #[must_use]
+    pub const unsafe fn stdin() -> FileHandle {
+        FileHandle::new(ResourceId::from_raw(STDIN_ID))
+    }
+
+    /// Get stdout handle
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the process has stdout capability.
+    #[must_use]
+    pub const unsafe fn stdout() -> FileHandle {
+        FileHandle::new(ResourceId::from_raw(STDOUT_ID))
+    }
+
+    /// Get stderr handle
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the process has stderr capability.
+    #[must_use]
+    pub const unsafe fn stderr() -> FileHandle {
+        FileHandle::new(ResourceId::from_raw(STDERR_ID))
+    }
+}
 
 #[cfg(test)]
 mod tests {

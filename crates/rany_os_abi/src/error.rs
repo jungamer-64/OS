@@ -1,4 +1,4 @@
-// libuser/src/abi/error.rs
+// rany_os_abi/src/error.rs
 //! Type-safe System Call Errors
 //!
 //! This module defines a comprehensive error type for system calls,

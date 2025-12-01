@@ -1,7 +1,7 @@
 [package]
 name = "libuser"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 license-file = "LICENSE"
 
@@ -10,4 +10,5 @@ name = "libuser"
 path = "src/lib.rs"
 
 [dependencies]
-# No external dependencies - pure no_std library
+# Shared ABI definitions
+rany_os_abi = { path = "../rany_os_abi", features = ["userspace"] }

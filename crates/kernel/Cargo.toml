@@ -45,6 +45,9 @@ panic = "abort"            # パニック時即座にabort
 opt-level = 1
 
 [dependencies]
+# Shared ABI definitions
+rany_os_abi = { path = "../rany_os_abi", features = ["kernel"] }
+
 # Bootloader API
 bootloader_api = "=0.11.12"
 

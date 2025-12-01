@@ -1,4 +1,3 @@
-// kernel/src/abi/result.rs
 //! ABI-safe Result Type
 //!
 //! This module defines `AbiResult<T, E>`, a type that can safely cross
@@ -9,20 +8,10 @@
 //! - **Zero-cost**: Same size as `max(size_of::<T>(), size_of::<E>()) + 8`
 //! - **Safe**: Cannot be misinterpreted due to explicit tag
 //! - **Ergonomic**: Converts to/from Rust `Result` seamlessly
-//!
-//! # Memory Layout
-//!
-//! ```text
-//! +------------------+
-//! | tag (1 byte)     |  0 = Ok, 1 = Err
-//! | padding (7 bytes)|
-//! | data (N bytes)   |  Either T or E, depending on tag
-//! +------------------+
-//! ```
 
 use core::mem::ManuallyDrop;
 
-use super::error::SyscallError;
+use crate::error::SyscallError;
 
 /// Type alias for syscall results
 pub type SyscallResult<T> = Result<T, SyscallError>;
@@ -38,23 +27,14 @@ pub type SyscallResult<T> = Result<T, SyscallError>;
 /// - `T`: The success type. Must be `Copy` for safe ABI crossing.
 /// - `E`: The error type. Defaults to `SyscallError`.
 ///
-/// # Example
+/// # Memory Layout
 ///
-/// ```ignore
-/// // Kernel side: return AbiResult
-/// fn sys_read(cap: u64, buf: u64, len: u32) -> AbiResult<usize, SyscallError> {
-///     match do_read(cap, buf, len) {
-///         Ok(n) => AbiResult::ok(n),
-///         Err(e) => AbiResult::err(e),
-///     }
-/// }
-///
-/// // User side: convert to Result
-/// let result: Result<usize, SyscallError> = abi_result.into();
-/// match result {
-///     Ok(n) => println!("Read {} bytes", n),
-///     Err(e) => println!("Error: {}", e),
-/// }
+/// ```text
+/// +------------------+
+/// | tag (1 byte)     |  0 = Ok, 1 = Err
+/// | padding (7 bytes)|
+/// | data (N bytes)   |  Either T or E, depending on tag
+/// +------------------+
 /// ```
 #[repr(C)]
 pub struct AbiResult<T, E = SyscallError>
@@ -136,6 +116,7 @@ impl<T: Copy, E: Copy> AbiResult<T, E> {
     #[inline]
     pub fn ok_value(&self) -> Option<T> {
         if self.is_ok() {
+            // SAFETY: Tag is TAG_OK, so the ok field is initialized
             Some(unsafe { ManuallyDrop::into_inner(self.data.ok) })
         } else {
             None
@@ -147,6 +128,7 @@ impl<T: Copy, E: Copy> AbiResult<T, E> {
     #[inline]
     pub fn err_value(&self) -> Option<E> {
         if self.is_err() {
+            // SAFETY: Tag is TAG_ERR, so the err field is initialized
             Some(unsafe { ManuallyDrop::into_inner(self.data.err) })
         } else {
             None
@@ -158,8 +140,10 @@ impl<T: Copy, E: Copy> AbiResult<T, E> {
     #[inline]
     pub fn into_result(self) -> Result<T, E> {
         if self.is_ok() {
+            // SAFETY: Tag is TAG_OK, so the ok field is initialized
             Ok(unsafe { ManuallyDrop::into_inner(self.data.ok) })
         } else {
+            // SAFETY: Tag is TAG_ERR, so the err field is initialized
             Err(unsafe { ManuallyDrop::into_inner(self.data.err) })
         }
     }
@@ -193,10 +177,12 @@ impl<T: Copy, E: Copy> Clone for AbiResult<T, E> {
 impl<T: Copy + core::fmt::Debug, E: Copy + core::fmt::Debug> core::fmt::Debug for AbiResult<T, E> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if self.is_ok() {
+            // SAFETY: Tag is TAG_OK, so the ok field is initialized
             f.debug_tuple("AbiResult::Ok")
                 .field(unsafe { &*self.data.ok })
                 .finish()
         } else {
+            // SAFETY: Tag is TAG_ERR, so the err field is initialized
             f.debug_tuple("AbiResult::Err")
                 .field(unsafe { &*self.data.err })
                 .finish()
@@ -210,8 +196,10 @@ impl<T: Copy + PartialEq, E: Copy + PartialEq> PartialEq for AbiResult<T, E> {
             return false;
         }
         if self.is_ok() {
+            // SAFETY: Both tags are TAG_OK, so both ok fields are initialized
             unsafe { *self.data.ok == *other.data.ok }
         } else {
+            // SAFETY: Both tags are TAG_ERR, so both err fields are initialized
             unsafe { *self.data.err == *other.data.err }
         }
     }
@@ -291,6 +279,7 @@ impl CompactResult {
     /// Convert to Result
     #[must_use]
     #[inline]
+    #[allow(clippy::cast_sign_loss)]
     pub fn into_result(self) -> Result<i64, SyscallError> {
         if self.is_ok() {
             Ok(self.0)
@@ -365,10 +354,8 @@ mod tests {
 
     #[test]
     fn test_abi_result_size() {
-        // AbiResult<i32, SyscallError> should be 8 (header) + max(4, 4) = 12, aligned to 8 = 16
-        // Actually: tag(1) + pad(7) + data(4) = 12, but repr(C) may add padding
         let size = core::mem::size_of::<AbiResult<i32, SyscallError>>();
-        assert!(size <= 16, "AbiResult should be compact: {}", size);
+        assert!(size <= 16, "AbiResult should be compact: {size}");
     }
 
     #[test]
