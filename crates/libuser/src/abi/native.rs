@@ -44,8 +44,6 @@ pub enum SyscallNumber {
     // Process management (0x03xx)
     /// Exit current process
     Exit = 0x0300,
-    /// Fork process
-    Fork = 0x0301,
     /// Execute program
     Exec = 0x0302,
     /// Wait for child process
@@ -80,7 +78,6 @@ impl SyscallNumber {
             0x0201 => Some(Self::Munmap),
             0x0202 => Some(Self::Mprotect),
             0x0300 => Some(Self::Exit),
-            0x0301 => Some(Self::Fork),
             0x0302 => Some(Self::Exec),
             0x0303 => Some(Self::Wait),
             0x0304 => Some(Self::GetPid),

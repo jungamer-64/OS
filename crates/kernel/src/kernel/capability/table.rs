@@ -522,48 +522,6 @@ impl CapabilityTable {
         self.count.store(0, Ordering::Release);
         self.next_free_hint.store(0, Ordering::Relaxed);
     }
-
-    /// Clone this capability table for fork()
-    ///
-    /// Creates a new CapabilityTable with cloned entries. The resources
-    /// themselves are Arc-cloned (shared), but each process gets its own
-    /// capability table and handles.
-    ///
-    /// # Returns
-    /// A new CapabilityTable with the same entries
-    pub fn clone_for_fork(&self) -> Self {
-        let slots = self.slots.read();
-        let count = self.count.load(Ordering::Acquire);
-        
-        let mut new_slots = Vec::with_capacity(slots.len());
-        
-        for slot in slots.iter() {
-            match slot {
-                Slot::Empty => {
-                    new_slots.push(Slot::Empty);
-                }
-                Slot::Occupied(entry) => {
-                    // Clone the entry with the same generation, type_id, rights
-                    // The resource is Arc-cloned (just increments ref count)
-                    let cloned_entry = Box::new(CapabilityEntry {
-                        type_id: entry.type_id,
-                        generation: entry.generation,
-                        rights: entry.rights,
-                        ref_count: AtomicU32::new(1), // Fresh ref count in child
-                        resource: entry.resource.clone(),
-                    });
-                    new_slots.push(Slot::Occupied(cloned_entry));
-                }
-            }
-        }
-        
-        Self {
-            slots: RwLock::new(new_slots),
-            count: AtomicU32::new(count),
-            next_free_hint: AtomicU32::new(self.next_free_hint.load(Ordering::Relaxed)),
-            generation: AtomicU64::new(self.generation.load(Ordering::Relaxed)),
-        }
-    }
 }
 
 impl Default for CapabilityTable {

@@ -30,3 +30,4 @@ pub mod security;  // Phase 3: Security module
 pub mod loader;
 pub mod io_uring;  // io_uring-style async I/O
 pub mod capability; // Next-gen capability-based resource management
+pub mod ipc;  // Inter-process communication (Phase 1/3)

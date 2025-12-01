@@ -17,9 +17,6 @@ pub extern "C" fn _start() -> ! {
     // Test 2: Memory allocation
     test_memory();
     
-    // Test 3: Fork/wait
-    test_fork();
-    
     println!("=== All tests completed ===");
     process::exit(0);
 }
@@ -52,31 +49,6 @@ fn test_memory() {
             }
         }
         Err(_) => println!("  Allocation FAILED"),
-    }
-}
-
-fn test_fork() {
-    println!("\n[Test] Fork/Wait");
-    
-    match process::fork() {
-        Ok(0) => {
-            // Child process
-            println!("  Child: I am the child");
-            process::exit(42);
-        }
-        Ok(child_pid) => {
-            // Parent process
-            println!("  Parent: Child PID = {}", child_pid);
-            
-            let mut status = 0i32;
-            match process::wait(-1, Some(&mut status)) {
-                Ok(pid) => {
-                    println!("  Parent: Child {} exited with status {}", pid, status);
-                },
-                Err(_) => println!("  Parent: Wait FAILED"),
-            }
-        }
-        Err(_) => println!("  Fork FAILED"),
     }
 }
 

@@ -601,8 +601,6 @@ pub enum SyscallNumber {
     /// Get process ID
     GetPid = 3,
 
-    /// Fork process
-    Fork = 6,
     /// Execute program
     Exec = 7,
     /// Wait for child process

@@ -615,22 +615,6 @@ impl Process {
     }
 
     /// Get the number of active capabilities
-    #[must_use]
-    pub fn capability_count(&self) -> u32 {
-        self.capability_table.count()
-    }
-
-    /// Set the capability table (used during fork)
-    ///
-    /// Replaces the process's capability table with the provided one.
-    /// This is used during fork to copy the parent's capabilities to the child.
-    pub fn set_capability_table(&mut self, cap_table: CapabilityTable) {
-        self.capability_table = cap_table;
-    }
-
-    /// Initialize standard I/O capabilities (stdin, stdout, stderr)
-    ///
-    /// This method registers stdin (ID=0), stdout (ID=1), and stderr (ID=2)
     /// as capabilities in the process's capability table. These are automatically
     /// registered when a new process is created.
     ///

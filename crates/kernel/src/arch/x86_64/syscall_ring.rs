@@ -88,8 +88,6 @@ pub enum RingOpcode {
     Alloc = 10,
     /// Deallocate memory
     Dealloc = 11,
-    /// Fork process
-    Fork = 12,
     /// Execute program
     Exec = 13,
     /// Wait for child
@@ -125,7 +123,6 @@ impl From<u8> for RingOpcode {
             9 => RingOpcode::UnregisterBuffer,
             10 => RingOpcode::Alloc,
             11 => RingOpcode::Dealloc,
-            12 => RingOpcode::Fork,
             13 => RingOpcode::Exec,
             14 => RingOpcode::Wait,
             15 => RingOpcode::ConsoleWrite,

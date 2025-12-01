@@ -24,6 +24,8 @@ pub enum FileError {
     IoError,
     /// Invalid argument
     InvalidArgument,
+    /// Permission denied
+    AccessDenied,
 }
 
 /// File descriptor trait (stub for now)

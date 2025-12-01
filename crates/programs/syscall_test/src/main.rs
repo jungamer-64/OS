@@ -17,9 +17,6 @@ pub extern "C" fn _start() -> ! {
     // Test 2: mmap/munmap
     test_mmap();
     
-    // Test 3: fork/wait
-    test_fork();
-    
     println!("\n=== All Tests Complete ===");
     process::exit(0);
 }
@@ -59,30 +56,6 @@ fn test_mmap() {
             }
         }
         Err(_) => println!("  [FAIL] Allocation failed"),
-    }
-}
-
-fn test_fork() {
-    println!("\n[TEST] fork/wait");
-    match process::fork() {
-        Ok(0) => {
-            // Child
-            println!("  Child: Running");
-            process::exit(42);
-        }
-        Ok(child_pid) => {
-            // Parent
-            println!("  Parent: Child PID = {}", child_pid);
-            let mut status = 0;
-            match process::wait(-1, Some(&mut status)) {
-                Ok(pid) => {
-                    println!("  Parent: Child {} exited with {}", pid, status);
-                    println!("  [PASS]");
-                }
-                Err(_) => println!("  [FAIL] Wait failed"),
-            }
-        }
-        Err(_) => println!("  [FAIL] Fork failed"),
     }
 }
 
