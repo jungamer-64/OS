@@ -1,52 +1,67 @@
-/* Linker script for x86_64 higher-half kernel */
+/* linker.ld - x86_64 Higher-Half Kernel Linker Script */
 
 ENTRY(_start)
 
-/* Higher-half kernel base address */
+/* 定数定義 */
 KERNEL_BASE = 0xFFFFFFFF80000000;
+PAGE_SIZE = 4K;
 
 SECTIONS
 {
-    /* Start at higher-half address */
+    /* Higher-half addressing */
     . = KERNEL_BASE;
 
-    /* Code section */
-    .text ALIGN(4K) : AT(ADDR(.text) - KERNEL_BASE)
+    /* テキストセクション（実行可能コード） */
+    .text ALIGN(PAGE_SIZE) : AT(ADDR(.text) - KERNEL_BASE)
     {
-        *(.text.boot)
+        KEEP(*(.text.boot))      /* ブートコードを先頭に配置 */
         *(.text .text.*)
+        
+        /* テキストセクションの終端マーカー */
+        __text_end = .;
     }
 
-    /* Read-only data */
-    .rodata ALIGN(4K) : AT(ADDR(.rodata) - KERNEL_BASE)
+    /* Read-onlyデータ */
+    .rodata ALIGN(PAGE_SIZE) : AT(ADDR(.rodata) - KERNEL_BASE)
     {
         *(.rodata .rodata.*)
+        __rodata_end = .;
     }
 
-    /* Data section */
-    .data ALIGN(4K) : AT(ADDR(.data) - KERNEL_BASE)
+    /* 初期化済みデータ */
+    .data ALIGN(PAGE_SIZE) : AT(ADDR(.data) - KERNEL_BASE)
     {
         *(.data .data.*)
+        __data_end = .;
     }
 
-    /* BSS section (uninitialized data) */
-    .bss ALIGN(4K) : AT(ADDR(.bss) - KERNEL_BASE)
+    /* 未初期化データ（BSS） */
+    .bss ALIGN(PAGE_SIZE) : AT(ADDR(.bss) - KERNEL_BASE)
     {
+        __bss_start = .;
         *(COMMON)
         *(.bss .bss.*)
+        __bss_end = .;
     }
 
-    /* Debug sections (not loaded) */
-    .debug_info     0 : { *(.debug_info) }
-    .debug_abbrev   0 : { *(.debug_abbrev) }
-    .debug_line     0 : { *(.debug_line) }
-    .debug_str      0 : { *(.debug_str) }
-    .debug_ranges   0 : { *(.debug_ranges) }
+    /* カーネル終端マーカー */
+    __kernel_end = .;
 
-    /* Discard sections */
+    /* デバッグセクション（メモリにロードしない） */
+    .debug_info     0 : { *(.debug_info .debug_info.*) }
+    .debug_abbrev   0 : { *(.debug_abbrev .debug_abbrev.*) }
+    .debug_line     0 : { *(.debug_line .debug_line.*) }
+    .debug_str      0 : { *(.debug_str .debug_str.*) }
+    .debug_ranges   0 : { *(.debug_ranges .debug_ranges.*) }
+    .debug_loc      0 : { *(.debug_loc .debug_loc.*) }
+    .debug_frame    0 : { *(.debug_frame .debug_frame.*) }
+
+    /* 不要なセクションを破棄 */
     /DISCARD/ :
     {
         *(.eh_frame)
+        *(.eh_frame_hdr)
         *(.note.gnu.build-id)
+        *(.comment)
     }
 }

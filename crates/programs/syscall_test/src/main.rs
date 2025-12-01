@@ -16,6 +16,9 @@ pub extern "C" fn _start() -> ! {
     
     // Test 2: mmap/munmap
     test_mmap();
+
+    // Test 3: pipe
+    test_pipe();
     
     println!("\n=== All Tests Complete ===");
     process::exit(0);
@@ -56,6 +59,43 @@ fn test_mmap() {
             }
         }
         Err(_) => println!("  [FAIL] Allocation failed"),
+    }
+}
+
+fn test_pipe() {
+    println!("\n[TEST] pipe");
+    
+    match libuser::io::pipe() {
+        Ok((mut reader, mut writer)) => {
+            println!("  Pipe created: reader={}, writer={}", reader.as_raw_fd(), writer.as_raw_fd());
+            
+            let data = b"Hello Pipe!";
+            match writer.write(data) {
+                Ok(n) => {
+                    println!("  Wrote {} bytes", n);
+                    if n == data.len() {
+                        println!("  Write: [PASS]");
+                    } else {
+                        println!("  Write: [FAIL] (partial write)");
+                    }
+                },
+                Err(e) => println!("  Write: [FAIL] {:?}", e),
+            }
+            
+            let mut buf = [0u8; 32];
+            match reader.read(&mut buf) {
+                Ok(n) => {
+                    println!("  Read {} bytes", n);
+                    if n == data.len() && &buf[..n] == data {
+                        println!("  Read: [PASS]");
+                    } else {
+                        println!("  Read: [FAIL] (content mismatch)");
+                    }
+                },
+                Err(e) => println!("  Read: [FAIL] {:?}", e),
+            }
+        },
+        Err(e) => println!("  [FAIL] Pipe creation failed: {:?}", e),
     }
 }
 

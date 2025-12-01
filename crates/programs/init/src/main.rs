@@ -19,6 +19,12 @@ pub extern "C" fn _start() -> ! {
         Ok(pid) => println!("[init] io_uring_test spawned with PID={}", pid),
         Err(e) => println!("[init] Failed to spawn io_uring_test: {:?}", e),
     }
+
+    // Spawn syscall_test
+    match process::spawn("/bin/syscall_test") {
+        Ok(pid) => println!("[init] syscall_test spawned with PID={}", pid),
+        Err(e) => println!("[init] Failed to spawn syscall_test: {:?}", e),
+    }
     
     match process::spawn("/bin/shell") {
         Ok(pid) => println!("[init] Shell spawned with PID={}", pid),

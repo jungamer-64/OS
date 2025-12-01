@@ -24,6 +24,37 @@ pub fn read(fd: u64, buf: &mut [u8]) -> SyscallResult<usize> {
     syscall::read(fd, buf)
 }
 
+/// Pipe ends
+pub struct PipeReader(u64);
+pub struct PipeWriter(u64);
+
+impl PipeReader {
+    pub fn read(&mut self, buf: &mut [u8]) -> SyscallResult<usize> {
+        read(self.0, buf)
+    }
+    
+    pub fn as_raw_fd(&self) -> u64 {
+        self.0
+    }
+}
+
+impl PipeWriter {
+    pub fn write(&mut self, buf: &[u8]) -> SyscallResult<usize> {
+        write(self.0, buf)
+    }
+    
+    pub fn as_raw_fd(&self) -> u64 {
+        self.0
+    }
+}
+
+/// Create a new pipe
+pub fn pipe() -> SyscallResult<(PipeReader, PipeWriter)> {
+    let mut fds = [0i32; 2];
+    syscall::pipe(&mut fds)?;
+    Ok((PipeReader(fds[0] as u64), PipeWriter(fds[1] as u64)))
+}
+
 /// Read a line from stdin
 ///
 /// Reads characters until a newline ('\n') is encountered or the buffer is full.

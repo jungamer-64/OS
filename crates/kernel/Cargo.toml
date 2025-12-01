@@ -6,7 +6,6 @@ edition = "2024"
 default-run = "tiny_os"
 description = "Minimal x86_64 no_std Rust kernel with robust hardware support"
 license = "MIT"
-license-file = "LICENSE"
 repository = "https://github.com/jungamer-64/OS"
 keywords = ["os", "kernel", "no-std", "bare-metal", "x86_64"]
 categories = ["no-std", "embedded", "os"]
@@ -20,57 +19,61 @@ name = "tiny_os"
 path = "src/main.rs"
 
 [features]
-# Feature to enable standard library unit tests (not compatible with no_std kernel)
-# These tests require std features like Vec, String, and the test crate
+default = []
+
+# テスト用feature（stdが必要）
 std-tests = []
 
-# Feature to enable syscall tracing in debug builds
-# Usage: cargo build --features syscall_trace
+# Syscallトレース（デバッグビルド向け）
 syscall_trace = []
 
-# Feature to enable usermode execution test (Phase 1)
-# Usage: cargo build --features test_usermode
+# Usermode実行テスト
 test_usermode = []
 
+# 最適化プロファイル
+[profile.dev]
+opt-level = 1              # 最小限の最適化でビルド時間短縮
+overflow-checks = true     # オーバーフローチェック有効
+
+[profile.release]
+opt-level = 3              # 最大最適化
+lto = "fat"                # Link Time Optimization
+codegen-units = 1          # 単一コードユニット（最適化重視）
+panic = "abort"            # パニック時即座にabort
+
+[profile.test]
+opt-level = 1
+
 [dependencies]
-# Bootloader API for kernel (v0.11)
+# Bootloader API
 bootloader_api = "=0.11.12"
 
-# x86_64 specific types and instructions
-# Using latest 0.15.x for better long mode support
-x86_64 = { version = "0.15", features = [] }
+# x86_64アーキテクチャサポート
+x86_64 = "0.15"
 
-# Spin-based synchronization primitives (no_std compatible)
-# Includes Lazy for lazy initialization (replaces lazy_static)
+# Spin-based同期プリミティブ（no_std互換）
 spin = "0.9.8"
 
-# Heap allocator
+# ヒープアロケータ
 linked_list_allocator = "0.10.5"
 
-# Keyboard scancode decoder
+# キーボードスキャンコードデコーダ
 pc-keyboard = "0.7.0"
 
-# CPU feature detection (CPUID instruction wrapper)
+# CPU機能検出
 raw-cpuid = "11.2"
 
-# --- New additions for modern async kernel ---
-
-# Standardized logging trait (integrates with external drivers)
+# ログ出力trait
 log = "0.4"
 
-# Async utilities for no_std (essential for ring buffer syscalls)
+# 非同期ユーティリティ（no_std、allocのみ）
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 
-# Lock-free queue for kernel-userspace communication
+# ロックフリーキュー
 crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
 
-# Type-safe bitflags for hardware registers, page table flags, RFLAGS, etc.
+# ビットフラグ
 bitflags = "2.4"
 
-
-
-# ============================================================================
-# Linting Configuration
-# ============================================================================
-
-# Note: These settings are enforced via #![deny(...)] in source files
+[build-dependencies]
+# ビルドスクリプト用の依存関係は不要（標準ライブラリのみ使用）

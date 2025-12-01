@@ -129,3 +129,30 @@ impl PipeReader {
         self.read(buf)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec::Vec;
+
+    #[test_case]
+    fn test_pipe_basic() {
+        let (mut reader, mut writer) = Pipe::new(10);
+        let data = b"Hello";
+        
+        assert_eq!(writer.write(data), Ok(5));
+        
+        let mut buf = [0u8; 5];
+        assert_eq!(reader.read(&mut buf), Ok(5));
+        assert_eq!(&buf, data);
+    }
+
+    #[test_case]
+    fn test_pipe_close() {
+        let (mut reader, writer) = Pipe::new(10);
+        drop(writer);
+        
+        let mut buf = [0u8; 5];
+        assert_eq!(reader.read(&mut buf), Err(FileError::BrokenPipe));
+    }
+}

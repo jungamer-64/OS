@@ -17,6 +17,7 @@ pub const SYS_SPAWN: u64 = 6;
 pub const SYS_WAIT: u64 = 8;
 pub const SYS_MMAP: u64 = 9;
 pub const SYS_MUNMAP: u64 = 10;
+pub const SYS_PIPE: u64 = 11;
 
 
 
@@ -213,6 +214,14 @@ pub fn mmap(addr: u64, len: u64, prot: u64, flags: u64) -> SyscallResult<u64> {
 pub fn munmap(addr: u64, len: u64) -> SyscallResult<()> {
     let ret = unsafe {
         syscall6(SYS_MUNMAP, addr, len, 0, 0, 0, 0)
+    };
+    syscall_result(ret).map(|_| ())
+}
+
+/// sys_pipe - Create a pipe
+pub fn pipe(fds: &mut [i32; 2]) -> SyscallResult<()> {
+    let ret = unsafe {
+        syscall6(SYS_PIPE, fds.as_mut_ptr() as u64, 0, 0, 0, 0, 0)
     };
     syscall_result(ret).map(|_| ())
 }

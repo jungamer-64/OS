@@ -259,3 +259,41 @@ impl<T> Clone for Channel<T> {
 // Safety: Channel<T> is Send + Sync if T is Send + Sync
 unsafe impl<T: Send> Send for Channel<T> {}
 unsafe impl<T: Send> Sync for Channel<T> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec::Vec;
+
+    #[test_case]
+    fn test_channel_basic() {
+        let (sender, receiver) = Channel::new(10);
+        
+        assert!(sender.send(1).is_ok());
+        assert!(sender.send(2).is_ok());
+        
+        assert_eq!(receiver.recv(), Ok(1));
+        assert_eq!(receiver.recv(), Ok(2));
+        assert_eq!(receiver.recv(), Err(ChannelError::Empty));
+    }
+
+    #[test_case]
+    fn test_channel_full() {
+        let (sender, _receiver) = Channel::new(2);
+        
+        assert!(sender.send(1).is_ok());
+        assert!(sender.send(2).is_ok());
+        assert_eq!(sender.send(3), Err(ChannelError::Full));
+    }
+
+    #[test_case]
+    fn test_channel_close() {
+        let (sender, receiver) = Channel::new(10);
+        
+        assert!(sender.send(1).is_ok());
+        drop(sender);
+        
+        assert_eq!(receiver.recv(), Ok(1));
+        assert_eq!(receiver.recv(), Err(ChannelError::Closed));
+    }
+}

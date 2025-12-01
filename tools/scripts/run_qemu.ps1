@@ -595,7 +595,8 @@ try {
     # OVMF Firmware Path
     $ovmfPath = if ($OverrideOvmfPath -ne "") { 
         $OverrideOvmfPath 
-    } else { 
+    }
+    else { 
         Join-Path $projectRoot "assets\firmware\ovmf-x64\OVMF.fd"
     }
     

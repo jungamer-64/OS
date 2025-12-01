@@ -25,6 +25,7 @@ struct QuickImageArgs {
     kernel_path: PathBuf,
     output_path: PathBuf,
     ramdisk_path: Option<PathBuf>,
+    project_root: Option<PathBuf>,
 }
 
 fn parse_args() -> Option<QuickImageArgs> {
@@ -33,6 +34,7 @@ fn parse_args() -> Option<QuickImageArgs> {
     let mut kernel_path = None;
     let mut output_path = None;
     let mut ramdisk_path = None;
+    let mut project_root = None;
     
     let mut i = 1;
     while i < args.len() {
@@ -49,6 +51,10 @@ fn parse_args() -> Option<QuickImageArgs> {
                 ramdisk_path = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             }
+            "--project-root" if i + 1 < args.len() => {
+                project_root = Some(PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
             "--help" | "-h" => {
                 print_help();
                 std::process::exit(0);
@@ -57,12 +63,24 @@ fn parse_args() -> Option<QuickImageArgs> {
         }
     }
     
+    // If project_root is provided, we return args even if kernel/output are missing
+    // (This allows Full Build mode to use parsed args)
+    if project_root.is_some() {
+        return Some(QuickImageArgs {
+            kernel_path: kernel_path.unwrap_or_default(), // Dummy if not provided
+            output_path: output_path.unwrap_or_default(), // Dummy if not provided
+            ramdisk_path,
+            project_root,
+        });
+    }
+
     // If both kernel and output paths are provided, use quick mode
     if let (Some(kernel), Some(output)) = (kernel_path, output_path) {
         Some(QuickImageArgs {
             kernel_path: kernel,
             output_path: output,
             ramdisk_path,
+            project_root: None,
         })
     } else {
         None
@@ -112,17 +130,30 @@ fn quick_image_mode(args: QuickImageArgs) {
     println!("Created EFI image at {}", args.output_path.display());
 }
 
-fn main() {
     // Check for quick image mode
-    if let Some(args) = parse_args() {
-        quick_image_mode(args);
-        return;
+    // If kernel_path and output_path are set, AND project_root is NOT set, use quick mode
+    // If project_root IS set, we assume full build mode using that root
+    let args = parse_args();
+    if let Some(quick_args) = &args {
+        if quick_args.project_root.is_none() {
+             quick_image_mode(quick_args);
+             return;
+        }
     }
     
     // Full build mode
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let builder_dir = PathBuf::from(manifest_dir);
-    let root_dir = builder_dir.parent().unwrap();
+    let root_dir = if let Some(args) = args {
+        if let Some(root) = args.project_root {
+            root
+        } else {
+            // Fallback (should be unreachable due to check above)
+            let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+            PathBuf::from(manifest_dir).parent().unwrap().parent().unwrap().parent().unwrap()
+        }
+    } else {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        PathBuf::from(manifest_dir).parent().unwrap().parent().unwrap().parent().unwrap()
+    };
     
     // 1. Build Userland Programs
     println!("Building userland programs...");
@@ -131,7 +162,7 @@ fn main() {
     for prog in user_programs {
         println!("  Building {}...", prog);
         let status = Command::new("cargo")
-            .current_dir(root_dir.join("userland/programs").join(prog))
+            .current_dir(root_dir.join("crates/programs").join(prog))
             .args(&["build", "--release", "--target", "x86_64-unknown-none"])
             .status()
             .expect("Failed to build userland program");
@@ -140,6 +171,17 @@ fn main() {
             eprintln!("Failed to build {}", prog);
             std::process::exit(1);
         }
+    }
+    
+    // Copy init binary to crates/kernel/shell.bin (Temporary workaround for Phase 2)
+    println!("Updating kernel shell.bin...");
+    let init_bin = root_dir.join("target/x86_64-unknown-none/release/init");
+    let shell_bin_dest = root_dir.join("crates/kernel/shell.bin");
+    if init_bin.exists() {
+        std::fs::copy(&init_bin, &shell_bin_dest).expect("Failed to update shell.bin");
+        println!("  Updated shell.bin with init binary");
+    } else {
+        eprintln!("  Warning: init binary not found, skipping shell.bin update");
     }
     
     // 2. Prepare Initrd Directory

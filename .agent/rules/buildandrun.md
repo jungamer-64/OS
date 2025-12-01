@@ -2,4 +2,8 @@
 trigger: always_on
 ---
 
-ビルド・実行には常に./run_qemu.ps1を使用してください。
+DO
+ビルド・実行には**常に**./run_qemu.ps1を使用してください。
+
+NO
+bootloaderでコケるので**絶対に**cargoを直接使用しないでください。

@@ -11,6 +11,7 @@
 # ============================================================================
 
 KERNEL_NAME = tiny_os
+KERNEL_DIR = crates/kernel
 
 # Architecture selection (can be overridden for multi-architecture support)
 # Currently fully implemented: x86_64
@@ -168,6 +169,19 @@ clippy:
 	@cd kernel && cargo clippy --target $(TARGET) -- -D warnings
 	@echo "$(COLOR_GREEN)✓ Clippy checks passed$(COLOR_RESET)"
 
+## check-asm: Validate assembly files
+check-asm:
+	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Checking assembly files...$(COLOR_RESET)"
+	@for asm in $(KERNEL_DIR)/src/arch/x86_64/*.asm; do \
+		echo "Validating $$asm..."; \
+		nasm -f elf64 -o /dev/null $$asm || exit 1; \
+	done
+	@echo "$(COLOR_GREEN)✓ All assembly files are valid$(COLOR_RESET)"
+
+## pre-build-check: Run all pre-build checks
+pre-build-check: check-asm fmt-check clippy
+	@echo "$(COLOR_GREEN)✓ All pre-build checks passed$(COLOR_RESET)"
+
 # ============================================================================
 # Format targets
 # ============================================================================
@@ -237,7 +251,7 @@ bloat: build
 # ============================================================================
 
 ## ci: Run all CI checks
-ci: fmt-check clippy test build
+ci: pre-build-check test build
 	@echo "$(COLOR_BOLD)$(COLOR_GREEN)✓ All CI checks passed$(COLOR_RESET)"
 
 # ============================================================================

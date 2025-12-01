@@ -182,6 +182,8 @@ pub const EPIPE: SyscallResult = -32;
 pub const ENOSYS: SyscallResult = -38;
 /// No space left on device
 pub const ENOSPC: SyscallResult = -28;
+/// Too many open files
+pub const EMFILE: SyscallResult = -24;
 
 // ============================================================================
 // System Call Implementations
@@ -1212,6 +1214,74 @@ pub fn sys_capability_revoke(
     }
 }
 
+/// sys_pipe - Create a pipe
+///
+/// Arguments:
+/// - arg1: pipefd (pointer to array of 2 integers)
+///
+/// Returns:
+/// - 0: Success
+/// - Negative: Error code
+pub fn sys_pipe(pipefd: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    use crate::kernel::ipc::pipe::Pipe;
+    use crate::kernel::fs::{VfsFile, VfsFileType};
+    use crate::kernel::capability::{FileResource, Rights};
+    use crate::kernel::process::PROCESS_TABLE;
+    use crate::kernel::security::{is_user_address, is_user_range};
+    use alloc::sync::Arc;
+
+    // Validate pointer
+    if !is_user_address(pipefd) || !is_user_range(pipefd, 8) {
+        return EFAULT;
+    }
+
+    // Create pipe
+    let (reader, writer) = Pipe::new(4096); // 4KB buffer
+
+    // Create VfsFiles
+    let reader_vfs = Arc::new(VfsFile::with_type(reader, VfsFileType::PipeRead));
+    let writer_vfs = Arc::new(VfsFile::with_type(writer, VfsFileType::PipeWrite));
+
+    // Get current process
+    let mut table = PROCESS_TABLE.lock();
+    let process = match table.current_process_mut() {
+        Some(p) => p,
+        None => return ESRCH,
+    };
+
+    // Insert into capability table
+    // Reader needs READ rights
+    let reader_handle = match process.capability_table_mut().insert::<FileResource, VfsFile>(
+        reader_vfs,
+        Rights::READ
+    ) {
+        Ok(h) => h,
+        Err(_) => return EMFILE,
+    };
+
+    // Writer needs WRITE rights
+    let writer_handle = match process.capability_table_mut().insert::<FileResource, VfsFile>(
+        writer_vfs,
+        Rights::WRITE
+    ) {
+        Ok(h) => h,
+        Err(_) => {
+            // Cleanup reader if writer fails
+            let _ = process.capability_table_mut().remove(reader_handle);
+            return EMFILE;
+        }
+    };
+
+    // Write back to user space
+    unsafe {
+        let ptr = pipefd as *mut i32;
+        *ptr = reader_handle.into_raw() as i32;
+        *ptr.add(1) = writer_handle.into_raw() as i32;
+    }
+
+    SUCCESS
+}
+
 /// Syscall handler function type
 type SyscallHandler = fn(u64, u64, u64, u64, u64, u64) -> SyscallResult;
 
@@ -1228,7 +1298,7 @@ static SYSCALL_TABLE: &[SyscallHandler] = &[
     sys_wait,     // 8
     sys_mmap,     // 9
     sys_munmap,   // 10
-    sys_ni_syscall,         // 11 - sys_pipe (removed)
+    sys_pipe,     // 11
     sys_ni_syscall,         // 12 - sys_io_uring_setup (removed)
     sys_ni_syscall,         // 13 - reserved
     sys_ni_syscall,         // 14 - reserved
